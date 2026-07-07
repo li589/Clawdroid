@@ -1,0 +1,37 @@
+# Local configuration
+local.properties
+ClawApp/local.properties
+!ClawApp/local.properties.example
+
+# IDE and Android Studio
+.idea/
+.android/
+.android-tmp/
+.vscode/
+
+# Gradle and build outputs
+**/.gradle/
+.gradle-user/
+.gradle-tmp/
+**/build/
+**/app-*/
+
+# Debug and artifact outputs
+debug-artifacts/
+artifacts/
+nb-cache/
+
+# Native and crash artifacts
+hs_err_pid*
+replay_pid*
+
+# Runtime local artifacts
+ClawRuntime/magisk/config/runtime.generated.yaml
+
+# Logs and temporary outputs
+*.log
+*.tmp
+*.bak
+
+# Trae local planning artifacts
+.trae/

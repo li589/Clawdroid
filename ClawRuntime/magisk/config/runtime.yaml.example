@@ -1,0 +1,24 @@
+runtime:
+  socket_name: "clawdroid_secure_ipc"
+  protocol_version: 1
+  request_timeout_ms: 8000
+  rate_limit_per_minute: 120
+  log_level: "info"
+  audit_dir: "/data/local/tmp/clawdroid/audit"
+
+auth:
+  shared_secret: "REPLACE_WITH_LOCAL_SECRET"
+  allowed_packages: "com.clawdroid.app,com.clawdroid.app.debug"
+  allowed_signatures: ""
+  timestamp_skew_seconds: 120
+  challenge_ttl_seconds: 30
+  session_ttl_seconds: 300
+
+capability:
+  input_inject_enabled: true
+  screenshot_enabled: true
+  shell_enabled: true
+  file_bridge_enabled: true
+
+paths:
+  readonly_whitelist: "/sdcard/Pictures,/sdcard/Download"

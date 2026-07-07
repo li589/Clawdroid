@@ -1,0 +1,3 @@
+# Minimal placeholder policy rules for the first scaffold.
+# Tight live policy rules should be generated after protocol and
+# capability checks are implemented in the daemon.

@@ -1,0 +1,514 @@
+package server
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"sort"
+	"strings"
+	"time"
+
+	"clawdroid/runtime/internal/ipc"
+)
+
+const (
+	subscribeEventTaskStateChanged   = "task_state_changed"
+	subscribeEventDaemonStatus       = "daemon_status_changed"
+	subscribeEventCapabilityChanged  = "capability_changed"
+	subscribeEventWindowChanged      = "window_changed"
+	subscribeEventSubscriptionClosed = "subscription_closed"
+	maxSubscribeEvents               = 16
+	eventStreamPollInterval          = 2 * time.Second
+	eventStreamHeartbeatEvery        = 5
+)
+
+var allowedSubscribeEvents = map[string]struct{}{
+	subscribeEventTaskStateChanged:  {},
+	subscribeEventDaemonStatus:      {},
+	subscribeEventCapabilityChanged: {},
+	subscribeEventWindowChanged:     {},
+}
+
+type subscribeEventsArgs struct {
+	Events []string `json:"events"`
+}
+
+type eventFrame struct {
+	Event     string                 `json:"event"`
+	Timestamp int64                  `json:"timestamp"`
+	Data      map[string]interface{} `json:"data"`
+}
+
+type eventSnapshot struct {
+	daemonStatus    map[string]interface{}
+	capabilityState map[string]interface{}
+	windowState     map[string]interface{}
+	taskState       map[string]interface{}
+}
+
+func (s *Server) handleSubscribeEvents(sess *session, req ipc.Request, conn net.Conn, writer *bufio.Writer) error {
+	s.finalizeCapabilityState(sess)
+
+	args, err := parseSubscribeEventsArgs(req.Args)
+	if err != nil {
+		return writeResponseFrame(writer, ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrInvalidRequest,
+			Message:   err.Error(),
+			Data:      s.sessionData(sess),
+		})
+	}
+
+	if err := writeResponseFrame(writer, ipc.Response{
+		RequestID: req.RequestID,
+		OK:        true,
+		Code:      ipc.CodeOK,
+		Message:   ipc.ErrorMessage(ipc.CodeOK),
+		Data: mergeData(s.sessionData(sess), map[string]interface{}{
+			"subscribed":            args.Events,
+			"stream_mode":           "continuous",
+			"initial_snapshot_len":  len(args.Events),
+			"poll_interval_ms":      eventStreamPollInterval.Milliseconds(),
+		}),
+	}); err != nil {
+		return err
+	}
+
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
+
+	currentSnapshot := s.captureEventSnapshot(sess)
+	for _, frame := range buildSnapshotEventFrames(currentSnapshot, args.Events) {
+		if err := writeEventFrame(writer, frame); err != nil {
+			return err
+		}
+	}
+
+	ticker := time.NewTicker(eventStreamPollInterval)
+	defer ticker.Stop()
+
+	heartbeatCounter := 0
+	for range ticker.C {
+		heartbeatCounter++
+		nextSnapshot := s.captureEventSnapshot(sess)
+		changedFrames := diffSnapshotEventFrames(currentSnapshot, nextSnapshot, args.Events)
+		if len(changedFrames) == 0 && heartbeatCounter >= eventStreamHeartbeatEvery && containsEvent(args.Events, subscribeEventDaemonStatus) {
+			changedFrames = append(changedFrames, eventFrame{
+				Event:     subscribeEventDaemonStatus,
+				Timestamp: time.Now().Unix(),
+				Data:      copyMap(nextSnapshot.daemonStatus),
+			})
+		}
+
+		for _, frame := range changedFrames {
+			if err := writeEventFrame(writer, frame); err != nil {
+				return err
+			}
+			heartbeatCounter = 0
+		}
+		currentSnapshot = nextSnapshot
+	}
+
+	return nil
+}
+
+func parseSubscribeEventsArgs(args map[string]interface{}) (subscribeEventsArgs, error) {
+	var parsed subscribeEventsArgs
+	rawEvents, ok := args["events"].([]interface{})
+	if !ok || len(rawEvents) == 0 {
+		return parsed, fmt.Errorf("events must be a non-empty array")
+	}
+	if len(rawEvents) > maxSubscribeEvents {
+		return parsed, fmt.Errorf("events must contain between 1 and %d items", maxSubscribeEvents)
+	}
+
+	seen := make(map[string]struct{}, len(rawEvents))
+	for _, raw := range rawEvents {
+		name := strings.TrimSpace(fmt.Sprint(raw))
+		if name == "" {
+			return parsed, fmt.Errorf("event name must not be empty")
+		}
+		if _, allowed := allowedSubscribeEvents[name]; !allowed {
+			return parsed, fmt.Errorf("unsupported event: %s", name)
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		parsed.Events = append(parsed.Events, name)
+	}
+	if len(parsed.Events) == 0 {
+		return parsed, fmt.Errorf("events must contain at least one supported event")
+	}
+
+	return parsed, nil
+}
+
+func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
+	rootAvailable := detectRootAvailable()
+	accessibilityEnabled := detectAccessibilityEnabled(sess.packageName)
+	lsposedAvailable := detectLSPosedAvailable()
+	lsposedRuntimeMarker := detectLSPosedRuntimeMarker(sess.packageName)
+	load1, load5, load15 := readLoadAverage()
+	memTotalKB, memAvailableKB := readMemoryInfo()
+	runtimePID, runtimeRSSKB := readCurrentProcessMetrics()
+
+	return eventSnapshot{
+		daemonStatus: mergeData(s.versionState(), mergeData(mergeData(s.diagnosticsState(), map[string]interface{}{
+			"daemon_status":    "ok",
+			"root":             rootAvailable,
+			"load_1":           load1,
+			"load_5":           load5,
+			"load_15":          load15,
+			"mem_total_kb":     memTotalKB,
+			"mem_available_kb": memAvailableKB,
+			"server_time":      time.Now().Unix(),
+		}), processMetricsState(runtimePID, runtimeRSSKB))),
+		capabilityState: map[string]interface{}{
+			"root":                      rootAvailable,
+			"accessibility":             accessibilityEnabled,
+			"lsposed":                   lsposedAvailable,
+			"lsposed_runtime_loaded":    lsposedRuntimeMarker.XposedInjected,
+			"lsposed_runtime_process":   lsposedRuntimeMarker.ProcessName,
+			"lsposed_runtime_loaded_at": lsposedRuntimeMarker.LoadedAtEpochMS,
+			"capabilities":              s.capabilityList(),
+		},
+		windowState: map[string]interface{}{
+			"focused_window": detectFocusedWindow(),
+		},
+		taskState: map[string]interface{}{
+			"task_id":       "session:" + sess.id,
+			"state":         string(sess.state),
+			"phase":         "idle",
+			"session_id":    sess.id,
+			"session_state": string(sess.state),
+			"session_trace": sess.traceSnapshot(),
+		},
+	}
+}
+
+func buildSnapshotEventFrames(snapshot eventSnapshot, eventNames []string) []eventFrame {
+	now := time.Now().Unix()
+	frames := make([]eventFrame, 0, len(eventNames))
+	for _, eventName := range eventNames {
+		switch eventName {
+		case subscribeEventTaskStateChanged:
+			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.taskState)})
+		case subscribeEventDaemonStatus:
+			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.daemonStatus)})
+		case subscribeEventCapabilityChanged:
+			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.capabilityState)})
+		case subscribeEventWindowChanged:
+			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.windowState)})
+		}
+	}
+	return frames
+}
+
+func diffSnapshotEventFrames(previous eventSnapshot, current eventSnapshot, eventNames []string) []eventFrame {
+	now := time.Now().Unix()
+	frames := make([]eventFrame, 0, len(eventNames))
+	for _, eventName := range eventNames {
+		switch eventName {
+		case subscribeEventTaskStateChanged:
+			if !mapsEqual(previous.taskState, current.taskState) {
+				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.taskState)})
+			}
+		case subscribeEventDaemonStatus:
+			if !mapsEqual(previous.daemonStatus, current.daemonStatus) {
+				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.daemonStatus)})
+			}
+		case subscribeEventCapabilityChanged:
+			if !mapsEqual(previous.capabilityState, current.capabilityState) {
+				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.capabilityState)})
+			}
+		case subscribeEventWindowChanged:
+			if !mapsEqual(previous.windowState, current.windowState) {
+				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.windowState)})
+			}
+		}
+	}
+	return frames
+}
+
+func writeEventFrame(writer *bufio.Writer, frame eventFrame) error {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	return writeJSONFrame(writer, payload)
+}
+
+func detectFocusedWindow() string {
+	for _, resolver := range []func() string{
+		detectFocusedWindowFromWindows,
+		detectFocusedWindowFromActivityTop,
+		detectFocusedWindowFromActivityActivities,
+	} {
+		if resolved := resolver(); !isUnknownFocusedWindow(resolved) {
+			return resolved
+		}
+	}
+	return unknownFocusedWindowJSON()
+}
+
+func marshalFocusedWindow(raw string) string {
+	source := ""
+	switch {
+	case strings.Contains(raw, "mCurrentFocus"):
+		source = "mCurrentFocus"
+	case strings.Contains(raw, "mFocusedApp"):
+		source = "mFocusedApp"
+	}
+
+	component := extractFocusedComponent(raw)
+	packageName := component
+	activityName := ""
+	if slash := strings.Index(component, "/"); slash >= 0 {
+		packageName = component[:slash]
+		activityName = component[slash+1:]
+	}
+	if packageName == "" {
+		packageName = "unknown"
+	}
+	summary := packageName
+	if activityName != "" {
+		summary = packageName + "/" + activityName
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"summary":  summary,
+		"source":   source,
+		"package":  packageName,
+		"activity": activityName,
+		"raw":      raw,
+	})
+	if err != nil {
+		return `{"summary":"unknown","source":"","package":"","activity":"","raw":""}`
+	}
+	return string(payload)
+}
+
+func detectFocusedWindowFromWindows() string {
+	output, err := exec.Command("dumpsys", "window", "windows").Output()
+	if err != nil {
+		return unknownFocusedWindowJSON()
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "mCurrentFocus") || strings.Contains(trimmed, "mFocusedApp") {
+			return marshalFocusedWindow(trimmed)
+		}
+	}
+	return unknownFocusedWindowJSON()
+}
+
+func detectFocusedWindowFromActivityTop() string {
+	output, err := exec.Command("dumpsys", "activity", "top").Output()
+	if err != nil {
+		return unknownFocusedWindowJSON()
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "ACTIVITY ") || strings.Contains(trimmed, "ACTIVITY ") {
+			component := extractFocusedComponent(trimmed)
+			if component != "" {
+				return marshalFocusedWindowWithSource("activity_top", component, trimmed)
+			}
+		}
+	}
+	return unknownFocusedWindowJSON()
+}
+
+func detectFocusedWindowFromActivityActivities() string {
+	output, err := exec.Command("dumpsys", "activity", "activities").Output()
+	if err != nil {
+		return unknownFocusedWindowJSON()
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "mResumedActivity") || strings.Contains(trimmed, "topResumedActivity") {
+			component := extractFocusedComponent(trimmed)
+			if component != "" {
+				return marshalFocusedWindowWithSource("activity_resumed", component, trimmed)
+			}
+		}
+	}
+	return unknownFocusedWindowJSON()
+}
+
+func marshalFocusedWindowWithSource(source string, component string, raw string) string {
+	packageName := component
+	activityName := ""
+	if slash := strings.Index(component, "/"); slash >= 0 {
+		packageName = component[:slash]
+		activityName = component[slash+1:]
+	}
+	if packageName == "" {
+		packageName = "unknown"
+	}
+	summary := packageName
+	if activityName != "" {
+		summary = packageName + "/" + activityName
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"summary":  summary,
+		"source":   source,
+		"package":  packageName,
+		"activity": activityName,
+		"raw":      raw,
+	})
+	if err != nil {
+		return unknownFocusedWindowJSON()
+	}
+	return string(payload)
+}
+
+func extractFocusedComponent(raw string) string {
+	tokens := strings.Fields(raw)
+	for _, token := range tokens {
+		cleaned := strings.Trim(token, "{}[](),")
+		if strings.Contains(cleaned, "/") && strings.Contains(cleaned, ".") {
+			return cleaned
+		}
+	}
+	return ""
+}
+
+func unknownFocusedWindowJSON() string {
+	return `{"summary":"unknown","source":"","package":"","activity":"","raw":""}`
+}
+
+func isUnknownFocusedWindow(raw string) bool {
+	return raw == "" || raw == unknownFocusedWindowJSON()
+}
+
+func readLoadAverage() (float64, float64, float64) {
+	content, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, 0, 0
+	}
+
+	fields := strings.Fields(string(content))
+	if len(fields) < 3 {
+		return 0, 0, 0
+	}
+
+	load1, _ := strconv.ParseFloat(fields[0], 64)
+	load5, _ := strconv.ParseFloat(fields[1], 64)
+	load15, _ := strconv.ParseFloat(fields[2], 64)
+	return load1, load5, load15
+}
+
+func readMemoryInfo() (int64, int64) {
+	content, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0
+	}
+
+	var memTotalKB int64
+	var memAvailableKB int64
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		value, parseErr := strconv.ParseInt(fields[1], 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		switch fields[0] {
+		case "MemTotal:":
+			memTotalKB = value
+		case "MemAvailable:":
+			memAvailableKB = value
+		}
+	}
+	return memTotalKB, memAvailableKB
+}
+
+func readCurrentProcessMetrics() (int, int64) {
+	pid := os.Getpid()
+	content, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return pid, 0
+	}
+
+	var rssKB int64
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] != "VmRSS:" {
+			continue
+		}
+		value, parseErr := strconv.ParseInt(fields[1], 10, 64)
+		if parseErr == nil {
+			rssKB = value
+		}
+		break
+	}
+	return pid, rssKB
+}
+
+func containsEvent(events []string, event string) bool {
+	for _, item := range events {
+		if item == event {
+			return true
+		}
+	}
+	return false
+}
+
+func copyMap(source map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{}, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func mapsEqual(left map[string]interface{}, right map[string]interface{}) bool {
+	leftJSON, leftErr := json.Marshal(normalizeMapForCompare(left))
+	rightJSON, rightErr := json.Marshal(normalizeMapForCompare(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return string(leftJSON) == string(rightJSON)
+}
+
+func normalizeMapForCompare(source map[string]interface{}) map[string]interface{} {
+	keys := make([]string, 0, len(source))
+	for key := range source {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	result := make(map[string]interface{}, len(source))
+	for _, key := range keys {
+		value := source[key]
+		switch typed := value.(type) {
+		case []string:
+			copied := append([]string(nil), typed...)
+			sort.Strings(copied)
+			result[key] = copied
+		default:
+			result[key] = value
+		}
+	}
+	return result
+}

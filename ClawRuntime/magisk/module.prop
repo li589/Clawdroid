@@ -1,0 +1,6 @@
+id=clawruntime
+name=ClawRuntime
+version=0.1.0
+versionCode=1
+author=Clawdroid
+description=ClawRuntime Magisk module with Root runtime daemon and IPC scaffold

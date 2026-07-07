@@ -1,0 +1,11 @@
+{
+  "module_id": "clawruntime",
+  "status": "bootstrap",
+  "summary": "verify has not run yet",
+  "pass_count": 0,
+  "warning_count": 1,
+  "failure_count": 0,
+  "checks": [
+    { "level": "warn", "message": "waiting for verify.sh output" }
+  ]
+}

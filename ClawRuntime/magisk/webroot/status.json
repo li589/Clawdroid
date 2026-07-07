@@ -1,0 +1,19 @@
+{
+  "module_id": "clawruntime",
+  "runtime_bin": "/data/adb/modules/clawruntime/bin/clawdroid-runtime",
+  "config_path": "/data/adb/modules/clawruntime/config/runtime.yaml",
+  "log_file": "/data/local/tmp/clawdroid/logs/runtime-service.log",
+  "audit_file": "/data/local/tmp/clawdroid/audit/runtime-audit.log",
+  "runtime_state": "bootstrap",
+  "runtime_running": false,
+  "runtime_pid": "",
+  "socket_name": "unknown",
+  "screenshot_enabled": "unknown",
+  "file_bridge_enabled": "unknown",
+  "verify_exit_code": 127,
+  "service_log_size": 0,
+  "audit_log_size": 0,
+  "state_note": "waiting for service.sh to generate live status",
+  "updated_at": "not started",
+  "updated_at_epoch": 0
+}

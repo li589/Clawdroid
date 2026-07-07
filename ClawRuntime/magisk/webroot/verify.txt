@@ -1,0 +1,2 @@
+[WARN] waiting for verify.sh output
+verify has not run yet

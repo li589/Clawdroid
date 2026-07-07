@@ -1,0 +1,5 @@
+# Copy this file to local.properties and adjust sdk.dir to your local Android SDK path.
+# Use double backslashes on Windows.
+sdk.dir=C:\\Users\\<your-user>\\AppData\\Local\\Android\\Sdk
+# Optional: keep App and Magisk runtime auth in sync through the repo root local.properties.
+# clawdroid.runtime.sharedSecret=<64-char-random-secret>

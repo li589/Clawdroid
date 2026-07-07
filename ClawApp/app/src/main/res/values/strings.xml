@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clawdroid App</string>
+    <string name="xposed_description">Clawdroid LSPosed integration module</string>
+    <string name="accessibility_service_label">Clawdroid Accessibility Service</string>
+</resources>

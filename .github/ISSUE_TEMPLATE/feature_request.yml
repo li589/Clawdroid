@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an improvement for Clawdroid
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 背景问题
+      description: 当前痛点或缺口是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案
+      description: 你希望项目如何改进？
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - ClawApp
+        - ClawRuntime
+        - Docs
+        - Build / CI
+        - Security
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 约束与风险
+      description: 是否涉及协议、安全边界、兼容性或发布流程？

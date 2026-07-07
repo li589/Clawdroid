@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClawRuntime WebUI</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111827;
+      color: #f3f4f6;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    .card {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 16px;
+    }
+    h1, h2, h3 {
+      margin: 0 0 12px;
+    }
+    p, li {
+      line-height: 1.6;
+      color: #d1d5db;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    code {
+      display: inline-block;
+      max-width: 100%;
+      background: #111827;
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #93c5fd;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .ok {
+      color: #86efac;
+    }
+    .warn {
+      color: #fcd34d;
+    }
+    .danger {
+      color: #fca5a5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid #4b5563;
+      background: #111827;
+      color: #cbd5e1;
+      margin-right: 8px;
+      margin-top: 8px;
+    }
+    .cmd, .pre {
+      display: block;
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 10px;
+      background: #0b1220;
+      border: 1px solid #374151;
+      color: #bfdbfe;
+      white-space: pre-wrap;
+    }
+    .pre {
+      min-height: 96px;
+      max-height: 280px;
+      overflow: auto;
+      font-family: monospace;
+    }
+    .muted {
+      color: #9ca3af;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 12px;
+    }
+    .btn {
+      border: 1px solid #4b5563;
+      background: #0f172a;
+      color: #e5e7eb;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+    .btn:hover {
+      background: #172033;
+    }
+    .status-line {
+      margin-top: 8px;
+      color: #cbd5e1;
+    }
+    .status-value {
+      font-size: 22px;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+    .tone-ok {
+      color: #86efac;
+    }
+    .tone-warn {
+      color: #fcd34d;
+    }
+    .tone-danger {
+      color: #fca5a5;
+    }
+    .tone-neutral {
+      color: #cbd5e1;
+    }
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .stat-box {
+      border: 1px solid #374151;
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #111827;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .stat-number {
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>ClawRuntime WebUI</h1>
+    <p class="ok">当前页面已升级为动态排查面板，会自动读取模块输出的状态快照、校验结果和最新日志片段。</p>
+
+    <div class="card">
+      <h2>实时状态</h2>
+      <p>状态文件由 <code>service.sh</code> 周期性刷新。默认每 15 秒自动刷新一次，也可以手动刷新。</p>
+      <div class="toolbar">
+        <div>
+          <span class="pill">Magisk Module</span>
+          <span class="pill">Runtime IPC</span>
+          <span class="pill">Screen Capture</span>
+          <span class="pill">Input Inject</span>
+          <span class="pill">Audit Logs</span>
+        </div>
+        <button class="btn" id="refresh-btn" type="button">立即刷新</button>
+      </div>
+      <p class="status-line">上次刷新: <span id="last-refresh" class="muted">尚未刷新</span></p>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Runtime 状态</h3>
+        <div id="runtime-state" class="status-value tone-neutral">加载中</div>
+        <p class="status-line">PID: <span id="runtime-pid" class="muted">-</span></p>
+        <p class="status-line">校验退出码: <span id="verify-exit-code" class="muted">-</span></p>
+        <p class="status-line">说明: <span id="state-note" class="muted">-</span></p>
+        <p class="status-line">状态时间: <span id="updated-at" class="muted">-</span></p>
+      </div>
+      <div class="card">
+        <h3>配置摘要</h3>
+        <p class="status-line">Socket: <span id="socket-name" class="muted">-</span></p>
+        <p class="status-line">截图开关: <span id="screenshot-enabled" class="muted">-</span></p>
+        <p class="status-line">文件桥接: <span id="file-bridge-enabled" class="muted">-</span></p>
+        <p class="status-line">模块 ID: <span id="module-id" class="muted">clawruntime</span></p>
+      </div>
+      <div class="card">
+        <h3>文件摘要</h3>
+        <p class="status-line">二进制: <span id="runtime-bin" class="muted">-</span></p>
+        <p class="status-line">配置文件: <span id="config-path" class="muted">-</span></p>
+        <p class="status-line">服务日志大小: <span id="service-log-size" class="muted">-</span></p>
+        <p class="status-line">审计日志大小: <span id="audit-log-size" class="muted">-</span></p>
+      </div>
+      <div class="card">
+        <h3>联调提示</h3>
+        <p>如果 Runtime 状态不是 <code>running</code>，先看下方 <code>verify</code> 结果与服务日志。</p>
+        <p>如果截图成功但 App 读图失败，优先确认 <code>file_bridge_enabled</code> 是否为 <code>true</code>。</p>
+        <p>如果模块刚更新，建议先重启设备，再回到 App 执行 <code>Ping</code> 和 <code>Runtime Probe</code>。</p>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Verify 结果</h2>
+        <div id="verify-summary" class="status-value tone-neutral">等待加载</div>
+        <div class="stat-row">
+          <div class="stat-box">
+            <div class="stat-label">Pass</div>
+            <div id="verify-pass-count" class="stat-number tone-ok">0</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Warn</div>
+            <div id="verify-warning-count" class="stat-number tone-warn">0</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Fail</div>
+            <div id="verify-failure-count" class="stat-number tone-danger">0</div>
+          </div>
+        </div>
+        <p class="status-line">结构化状态: <span id="verify-status" class="muted">-</span></p>
+        <p class="status-line">文本摘要: <span id="verify-text-meta" class="muted">-</span></p>
+        <pre id="verify-log" class="pre">等待加载 verify.txt</pre>
+      </div>
+      <div class="card">
+        <h2>模块摘要</h2>
+        <p>当前模块 ID 为 <code>clawruntime</code>，运行时入口为 <code>bin/clawdroid-runtime</code>，默认配置文件为 <code>config/runtime.yaml</code>。</p>
+        <p>WebUI 通过读取同目录下的 <code>status.json</code>、<code>verify.json</code>、<code>verify.txt</code> 和日志 tail 文件显示模块实时信息。</p>
+        <h3>关键告警/失败项</h3>
+        <pre id="verify-issues" class="pre">等待加载 verify.json</pre>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Runtime 服务日志</h2>
+        <pre id="service-log" class="pre">等待加载 runtime-service.tail.txt</pre>
+      </div>
+      <div class="card">
+        <h2>Runtime 审计日志</h2>
+        <pre id="audit-log" class="pre">等待加载 runtime-audit.tail.txt</pre>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>关键文件</h2>
+        <ul>
+          <li><code>/data/adb/modules/clawruntime/module.prop</code></li>
+          <li><code>/data/adb/modules/clawruntime/service.sh</code></li>
+          <li><code>/data/adb/modules/clawruntime/bin/clawdroid-runtime</code></li>
+          <li><code>/data/adb/modules/clawruntime/config/runtime.yaml</code></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>关键目录</h2>
+        <ul>
+          <li><code>/data/local/tmp/clawdroid/</code></li>
+          <li><code>/data/local/tmp/clawdroid/logs/</code></li>
+          <li><code>/data/local/tmp/clawdroid/audit/</code></li>
+          <li><code>/data/local/tmp/clawdroid/captures/</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>安装后检查</h2>
+      <ul>
+        <li>确认 <code>/data/adb/modules/clawruntime/bin/clawdroid-runtime</code> 存在且可执行</li>
+        <li>确认 <code>/data/adb/modules/clawruntime/config/runtime.yaml</code> 已落盘且内容正确</li>
+        <li>如果刚更新模块，请先重启设备，再回到 App 执行 Ping / Runtime Probe</li>
+        <li>如果截图成功但无法预览，优先检查 <code>capability.file_bridge_enabled</code> 是否为 <code>true</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>常用命令</h2>
+      <p class="muted">建议通过 <code>adb shell su -c '...'</code> 执行。</p>
+      <code class="cmd">sh /data/adb/modules/clawruntime/verify.sh</code>
+      <code class="cmd">cat /data/adb/modules/clawruntime/module.prop</code>
+      <code class="cmd">ls -l /data/adb/modules/clawruntime/bin</code>
+      <code class="cmd">tail -n 80 /data/local/tmp/clawdroid/logs/runtime-service.log</code>
+      <code class="cmd">tail -n 80 /data/local/tmp/clawdroid/audit/runtime-audit.log</code>
+    </div>
+
+    <div class="card">
+      <h2>App 联调建议</h2>
+      <ul>
+        <li>先在概览页执行 <code>Ping</code>、<code>Version</code>、<code>Health</code>、<code>Capabilities</code></li>
+        <li>再执行 <code>Runtime Probe</code>，确认会话握手与能力同步链路正常</li>
+        <li>截图链路建议连续执行：<code>Capture Screen</code> -> <code>读取并预览最近截图</code></li>
+        <li>聊天页已支持自然语言快捷动作，如 <code>获取能力</code>、<code>截图并预览</code>、<code>点击 540 1200</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>故障提示</h2>
+      <p class="warn">如果 <code>verify.sh</code> 通过但 App 侧仍无法联通，优先检查设备上的 Root、无障碍、LSPosed 注入状态，以及 Runtime Socket 是否被安全策略拦截。</p>
+      <p class="muted">如果模块曾安装过历史版本，请确认旧模块已手动移除，避免配置目录或日志目录被旧状态干扰。</p>
+    </div>
+  </div>
+
+  <script>
+    function setText(id, value) {
+      document.getElementById(id).textContent = value;
+    }
+
+    function formatBytes(bytes) {
+      var value = Number(bytes || 0);
+      if (!isFinite(value) || value <= 0) {
+        return "0 B";
+      }
+      var units = ["B", "KB", "MB", "GB"];
+      var index = 0;
+      while (value >= 1024 && index < units.length - 1) {
+        value = value / 1024;
+        index += 1;
+      }
+      return value.toFixed(index === 0 ? 0 : 1) + " " + units[index];
+    }
+
+    async function fetchText(url) {
+      var response = await fetch(url + "?ts=" + Date.now(), { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+      return await response.text();
+    }
+
+    async function fetchJson(url) {
+      var response = await fetch(url + "?ts=" + Date.now(), { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status);
+      }
+      return await response.json();
+    }
+
+    function applyRuntimeState(status) {
+      var stateEl = document.getElementById("runtime-state");
+      var state = status.runtime_state || "unknown";
+      stateEl.textContent = state;
+      stateEl.className = "status-value " + (
+        state === "running" ? "tone-ok" :
+        state === "stopped" ? "tone-warn" :
+        "tone-neutral"
+      );
+      setText("runtime-pid", status.runtime_pid || "-");
+      setText("verify-exit-code", String(status.verify_exit_code));
+      setText("state-note", status.state_note || "-");
+      setText("updated-at", status.updated_at || "-");
+      setText("module-id", status.module_id || "clawruntime");
+      setText("socket-name", status.socket_name || "unknown");
+      setText("screenshot-enabled", status.screenshot_enabled || "unknown");
+      setText("file-bridge-enabled", status.file_bridge_enabled || "unknown");
+      setText("runtime-bin", status.runtime_bin || "-");
+      setText("config-path", status.config_path || "-");
+      setText("service-log-size", formatBytes(status.service_log_size));
+      setText("audit-log-size", formatBytes(status.audit_log_size));
+    }
+
+    function applyVerifyText(text, exitCode) {
+      var lines = text.trim() ? text.trim().split(/\r?\n/) : ["verify output empty"];
+      setText("verify-text-meta", "exit=" + exitCode + ", lines=" + lines.length);
+      setText("verify-log", text || "verify output empty");
+    }
+
+    function applyVerifyJson(verify) {
+      setText("verify-pass-count", String(verify.pass_count || 0));
+      setText("verify-warning-count", String(verify.warning_count || 0));
+      setText("verify-failure-count", String(verify.failure_count || 0));
+      setText("verify-status", verify.status || "unknown");
+      var checks = Array.isArray(verify.checks) ? verify.checks : [];
+      var issues = checks.filter(function (item) {
+        return item && item.level !== "pass";
+      }).map(function (item) {
+        return "[" + String(item.level || "unknown").toUpperCase() + "] " + String(item.message || "");
+      });
+      if (issues.length === 0) {
+        issues = ["没有告警或失败项"];
+      }
+      setText("verify-issues", issues.slice(0, 12).join("\n"));
+      var summaryEl = document.getElementById("verify-summary");
+      if (verify.summary) {
+        summaryEl.textContent = verify.summary;
+      }
+      summaryEl.className = "status-value " + (
+        verify.status === "passed" ? "tone-ok" :
+        verify.status === "failed" ? "tone-danger" :
+        "tone-warn"
+      );
+    }
+
+    async function refreshPanel() {
+      try {
+        var status = await fetchJson("./status.json");
+        applyRuntimeState(status);
+        setText("last-refresh", new Date().toLocaleString());
+
+        var verifyJson = await fetchJson("./verify.json");
+        applyVerifyJson(verifyJson);
+
+        var verifyText = await fetchText("./verify.txt");
+        applyVerifyText(verifyText, Number(status.verify_exit_code));
+
+        var serviceLog = await fetchText("./runtime-service.tail.txt");
+        setText("service-log", serviceLog || "runtime-service log empty");
+
+        var auditLog = await fetchText("./runtime-audit.tail.txt");
+        setText("audit-log", auditLog || "runtime-audit log empty");
+      } catch (error) {
+        var message = "读取动态面板失败: " + (error && error.message ? error.message : "unknown");
+        document.getElementById("runtime-state").textContent = "unavailable";
+        document.getElementById("runtime-state").className = "status-value tone-danger";
+        setText("state-note", message);
+        setText("verify-summary", "动态文件尚未生成");
+        setText("verify-pass-count", "0");
+        setText("verify-warning-count", "0");
+        setText("verify-failure-count", "0");
+        setText("verify-status", "unavailable");
+        setText("verify-text-meta", "unavailable");
+        setText("verify-issues", message);
+        setText("verify-log", message + "\n请确认模块已完成一次 service.sh 启动。");
+        setText("service-log", message);
+        setText("audit-log", message);
+        setText("last-refresh", new Date().toLocaleString());
+      }
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", refreshPanel);
+    refreshPanel();
+    setInterval(refreshPanel, 15000);
+  </script>
+</body>
+</html>

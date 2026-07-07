@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  runtime-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ClawRuntime/runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ClawRuntime/runtime/go.mod
+      - name: Run Go tests
+        run: go test ./...
+
+  app-compile:
+    runs-on: ubuntu-latest
+    env:
+      CLAWDROID_RUNTIME_SHARED_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    defaults:
+      run:
+        working-directory: ClawApp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Compile debug Kotlin
+        shell: bash
+        run: ./gradlew :app:compileDebugKotlin
+
+  repo-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify required project files
+        shell: bash
+        run: |
+          test -f LICENSE
+          test -f README.md
+          test -f CONTRIBUTING.md
+          test -f CODE_OF_CONDUCT.md
+          test -f SECURITY.md
+          test -f THIRD_PARTY_NOTICES.md
+          test -f Docs/compatibility-matrix.md
+          test -f Docs/release-notes.md
+          test -f ClawRuntime/magisk/config/runtime.yaml
+          test -f ClawRuntime/magisk/config/runtime.yaml.example
