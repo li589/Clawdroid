@@ -226,7 +226,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 
-		if cachedResp, ok := s.idempotencyCache.get(req.Action, req.RequestID); ok {
+		if cachedResp, ok := s.idempotencyCache.get(req.Action, req.RequestID, sess.id); ok {
 			responseCopy := cachedResp
 			responseCopy.Data = mergeData(s.sessionData(sess), cachedResp.Data)
 			s.logAuditRequest(sess, req, loopStartedAt, responseCopy)
@@ -246,7 +246,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 		}
 
 		response := s.handleRequest(sess, req)
-		s.idempotencyCache.put(req.Action, req.RequestID, response)
+		s.idempotencyCache.put(req.Action, req.RequestID, sess.id, response)
 		mergedResp := response
 		mergedResp.Data = mergeData(s.sessionData(sess), response.Data)
 		s.logAuditRequest(sess, req, loopStartedAt, mergedResp)
@@ -375,8 +375,8 @@ func (s *Server) logAuditRequest(sess *session, req ipc.Request, startedAt time.
 }
 
 // ExecuteStep implements task.StepExecutor. It routes the action through the
-// existing handler infrastructure using the first active session.
-func (s *Server) ExecuteStep(ctx context.Context, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
+// task's owning session, ensuring step execution stays within the correct session context.
+func (s *Server) ExecuteStep(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
 	started := time.Now()
 
 	req := ipc.Request{
@@ -386,7 +386,7 @@ func (s *Server) ExecuteStep(ctx context.Context, taskID string, action string, 
 		Version:   s.cfg.ProtocolVersion,
 	}
 
-	sess := s.anyActiveSession()
+	sess := s.getSession(sessionID)
 	if sess == nil {
 		return ipc.CodeErrSessionExpired, ipc.ErrorMessage(ipc.CodeErrSessionExpired), nil, time.Since(started).Milliseconds()
 	}

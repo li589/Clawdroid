@@ -66,7 +66,7 @@ internal object ModelApiClient {
                     val cert = chain.firstOrNull() ?: throw java.security.cert.CertificateException("no server certificate")
                     val md = MessageDigest.getInstance("SHA-256")
                     val digest = md.digest(cert.encoded).joinToString(":") { "%02x".format(it) }
-                    if (pinnedDigests.none { pd -> digest.equals(pd, ignoreCase = true) || certSubjectMatchesPin(cert, pd) }) {
+                    if (pinnedDigests.none { pd -> digest.equals(pd, ignoreCase = true) }) {
                         throw java.security.cert.CertificateException("certificate pin verification failed for $host: $digest")
                     }
                 }
@@ -78,13 +78,6 @@ internal object ModelApiClient {
         } catch (_: Exception) {
             return null
         }
-    }
-
-    private fun certSubjectMatchesPin(cert: X509Certificate, pin: String): Boolean {
-        val subject = cert.subjectX500Principal.name
-        val normalizedPin = pin.replace(":", "").lowercase()
-        val normalizedSubject = subject.replace("=", ":").substringAfter("CN=").substringBefore(",").replace(" ", "").lowercase()
-        return normalizedPin == normalizedSubject.replace("-", "").replace(".", "")
     }
 
     // -------------------------------------------------------------------------
@@ -355,7 +348,10 @@ internal object ModelApiClient {
                 }
             }
             ModelProvider.Local -> {
-                // 本地通常不需要鉴权
+                // 本地模型: 支持用户填写的 API Key (如 Ollama basic-auth)
+                if (settings.apiKey.isNotBlank()) {
+                    headers["Authorization"] = settings.apiKey
+                }
             }
             else -> {
                 if (settings.apiKey.isNotBlank()) {

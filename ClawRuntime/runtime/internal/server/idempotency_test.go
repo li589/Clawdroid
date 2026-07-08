@@ -11,7 +11,7 @@ func TestIdempotencyCacheGetReturnsFalseForNonIdempotentAction(t *testing.T) {
 	t.Parallel()
 
 	c := newIdempotencyCache()
-	_, ok := c.get("inject_tap", "req-001")
+	_, ok := c.get("inject_tap", "req-001", "sess-001")
 	if ok {
 		t.Fatal("expected non-idempotent action to return false")
 	}
@@ -21,7 +21,7 @@ func TestIdempotencyCacheGetReturnsFalseForUnknownAction(t *testing.T) {
 	t.Parallel()
 
 	c := newIdempotencyCache()
-	_, ok := c.get("unknown_action", "req-001")
+	_, ok := c.get("unknown_action", "req-001", "sess-001")
 	if ok {
 		t.Fatal("expected unknown action to return false")
 	}
@@ -39,9 +39,9 @@ func TestIdempotencyCachePutGet(t *testing.T) {
 		Data:      map[string]interface{}{"result": "ok"},
 	}
 
-	c.put("ping", "req-ping-001", resp)
+	c.put("ping", "req-ping-001", "sess-001", resp)
 
-	got, ok := c.get("ping", "req-ping-001")
+	got, ok := c.get("ping", "req-ping-001", "sess-001")
 	if !ok {
 		t.Fatal("expected to retrieve cached response")
 	}
@@ -60,8 +60,8 @@ func TestIdempotencyCacheGetReturnsFalseForUnknownRequestID(t *testing.T) {
 	t.Parallel()
 
 	c := newIdempotencyCache()
-	c.put("ping", "req-ping-001", ipc.Response{RequestID: "req-ping-001", OK: true})
-	_, ok := c.get("ping", "req-ping-999")
+	c.put("ping", "req-ping-001", "sess-001", ipc.Response{RequestID: "req-ping-001", OK: true})
+	_, ok := c.get("ping", "req-ping-999", "sess-001")
 	if ok {
 		t.Fatal("expected unknown request ID to return false")
 	}
@@ -74,22 +74,23 @@ func TestIdempotencyCacheLRUEviction(t *testing.T) {
 	c.maxSize = 3
 
 	for i := 0; i < 3; i++ {
-		c.put("ping", "req-00"+string(rune('1'+i)), ipc.Response{RequestID: "req-00" + string(rune('1'+i))})
+		reqID := "req-00" + string(rune('1'+i))
+		c.put("ping", reqID, "sess-001", ipc.Response{RequestID: reqID})
 	}
 
-	_, ok1 := c.get("ping", "req-001")
+	_, ok1 := c.get("ping", "req-001", "sess-001")
 	if !ok1 {
 		t.Fatal("expected req-001 to still be cached")
 	}
 
-	c.put("ping", "req-004", ipc.Response{RequestID: "req-004"})
+	c.put("ping", "req-004", "sess-001", ipc.Response{RequestID: "req-004"})
 
-	_, ok2 := c.get("ping", "req-001")
+	_, ok2 := c.get("ping", "req-001", "sess-001")
 	if ok2 {
 		t.Fatal("expected req-001 to be evicted after LRU eviction")
 	}
 
-	_, ok3 := c.get("ping", "req-004")
+	_, ok3 := c.get("ping", "req-004", "sess-001")
 	if !ok3 {
 		t.Fatal("expected req-004 to be cached")
 	}
@@ -106,8 +107,8 @@ func TestIdempotencyCacheAllIdempotentActions(t *testing.T) {
 		reqID := "req-" + action + "-all"
 		respCopy := resp
 		respCopy.RequestID = reqID
-		c.put(action, reqID, respCopy)
-		got, ok := c.get(action, reqID)
+		c.put(action, reqID, "sess-001", respCopy)
+		got, ok := c.get(action, reqID, "sess-001")
 		if !ok {
 			t.Fatalf("expected %q to be cached as idempotent action", action)
 		}
@@ -121,8 +122,8 @@ func TestIdempotencyCachePutDoesNothingForNonIdempotentAction(t *testing.T) {
 	t.Parallel()
 
 	c := newIdempotencyCache()
-	c.put("inject_tap", "req-001", ipc.Response{RequestID: "req-001"})
-	_, ok := c.get("inject_tap", "req-001")
+	c.put("inject_tap", "req-001", "sess-001", ipc.Response{RequestID: "req-001"})
+	_, ok := c.get("inject_tap", "req-001", "sess-001")
 	if ok {
 		t.Fatal("expected non-idempotent action to not store anything")
 	}
@@ -132,16 +133,16 @@ func TestIdempotencyCacheDelete(t *testing.T) {
 	t.Parallel()
 
 	c := newIdempotencyCache()
-	c.put("ping", "req-001", ipc.Response{RequestID: "req-001"})
+	c.put("ping", "req-001", "sess-001", ipc.Response{RequestID: "req-001"})
 
-	_, ok := c.get("ping", "req-001")
+	_, ok := c.get("ping", "req-001", "sess-001")
 	if !ok {
 		t.Fatal("expected req-001 to be cached before delete")
 	}
 
-	c.delete("req-001")
+	c.delete("ping:req-001:sess-001")
 
-	_, ok = c.get("ping", "req-001")
+	_, ok = c.get("ping", "req-001", "sess-001")
 	if ok {
 		t.Fatal("expected req-001 to be deleted")
 	}
@@ -154,10 +155,10 @@ func TestIdempotencyCachePutOverwritesExisting(t *testing.T) {
 	resp1 := ipc.Response{RequestID: "req-001", OK: true, Message: "first"}
 	resp2 := ipc.Response{RequestID: "req-001", OK: true, Message: "second"}
 
-	c.put("ping", "req-001", resp1)
-	c.put("ping", "req-001", resp2)
+	c.put("ping", "req-001", "sess-001", resp1)
+	c.put("ping", "req-001", "sess-001", resp2)
 
-	got, ok := c.get("ping", "req-001")
+	got, ok := c.get("ping", "req-001", "sess-001")
 	if !ok {
 		t.Fatal("expected to retrieve cached response")
 	}
@@ -175,9 +176,9 @@ func TestIdempotencyCacheConcurrency(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		go func(idx int) {
 			for j := 0; j < 20; j++ {
-				reqID := "req-concurrent-" + string(rune('a'+idx)) + string(rune('0'+j))
-				c.put("ping", reqID, ipc.Response{RequestID: reqID})
-				c.get("ping", reqID)
+				reqID := "req-" + string(rune('a'+idx)) + string(rune('0'+j))
+				c.put("ping", reqID, "sess-001", ipc.Response{RequestID: reqID})
+				c.get("ping", reqID, "sess-001")
 			}
 			done <- struct{}{}
 		}(i)
@@ -202,8 +203,8 @@ func TestIdempotencyCacheEntryPreservesAllFields(t *testing.T) {
 		},
 	}
 
-	c.put("get_capabilities", "req-cap-001", resp)
-	got, ok := c.get("get_capabilities", "req-cap-001")
+	c.put("get_capabilities", "req-cap-001", "sess-001", resp)
+	got, ok := c.get("get_capabilities", "req-cap-001", "sess-001")
 
 	if !ok {
 		t.Fatal("expected to retrieve cached response")
@@ -233,16 +234,16 @@ func TestIdempotencyCacheRefreshOnAccess(t *testing.T) {
 	c := newIdempotencyCache()
 	c.maxAge = 50 * time.Millisecond
 
-	c.put("ping", "req-001", ipc.Response{RequestID: "req-001"})
+	c.put("ping", "req-001", "sess-001", ipc.Response{RequestID: "req-001"})
 
 	time.Sleep(30 * time.Millisecond)
-	_, ok := c.get("ping", "req-001")
+	_, ok := c.get("ping", "req-001", "sess-001")
 	if !ok {
 		t.Fatal("expected entry to still be valid after short sleep")
 	}
 
 	time.Sleep(30 * time.Millisecond)
-	_, ok = c.get("ping", "req-001")
+	_, ok = c.get("ping", "req-001", "sess-001")
 	if ok {
 		t.Fatal("expected entry to be expired after TTL")
 	}

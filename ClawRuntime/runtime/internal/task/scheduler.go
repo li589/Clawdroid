@@ -11,7 +11,7 @@ import (
 
 // StepExecutor is the interface for executing individual IPC actions.
 type StepExecutor interface {
-	ExecuteStep(ctx context.Context, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64)
+	ExecuteStep(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64)
 }
 
 // StateChangeHandler is called whenever a task transitions state.
@@ -239,7 +239,7 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 
 	for {
 		started := time.Now()
-		code, message, data, latencyMS := s.executor.ExecuteStep(ctx, t.ID, step.Action, step.Args, step.TimeoutMS)
+		code, message, data, latencyMS := s.executor.ExecuteStep(ctx, t.SessionID, t.ID, step.Action, step.Args, step.TimeoutMS)
 		result := StepResult{
 			StepIndex:  t.CurrentStep,
 			Action:     step.Action,
@@ -328,22 +328,28 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 }
 
 func (s *Scheduler) runCompensation(ctx context.Context, t *Task) {
-	for i := len(t.StepResults) - 1; i >= 0; i-- {
-		result := t.StepResults[i]
-		step := t.Steps[result.StepIndex]
+	// Read the latest task snapshot from registry to avoid stale StepResults.
+	curTask, ok := s.registry.Get(t.SessionID, t.ID)
+	if !ok {
+		return
+	}
+	// Iterate in reverse order over the latest results.
+	for i := len(curTask.StepResults) - 1; i >= 0; i-- {
+		result := curTask.StepResults[i]
+		step := curTask.Steps[result.StepIndex]
 		if step.CompensateAction == "" {
 			continue
 		}
 
 		select {
 		case <-ctx.Done():
-			s.transition(t, TaskStateFailed)
+			s.transition(curTask, TaskStateFailed)
 			return
 		case <-time.After(100 * time.Millisecond):
 		}
 
-		_, _, _, _ = s.executor.ExecuteStep(ctx, t.ID, step.CompensateAction, step.CompensateArgs, step.TimeoutMS)
+		_, _, _, _ = s.executor.ExecuteStep(ctx, t.SessionID, t.ID, step.CompensateAction, step.CompensateArgs, step.TimeoutMS)
 	}
 
-	s.transition(t, TaskStateFailed)
+	s.transition(curTask, TaskStateFailed)
 }

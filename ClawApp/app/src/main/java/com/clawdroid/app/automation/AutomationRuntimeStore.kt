@@ -427,7 +427,11 @@ object AutomationRuntimeStore {
 
         for (index in 0 until node.childCount) {
             val child = node.getChild(index) ?: continue
-            traverseNodeTree(child, sink)
+            try {
+                traverseNodeTree(child, sink)
+            } finally {
+                child.recycle()
+            }
             if (sink.size >= maxSemanticNodes) {
                 return
             }
@@ -444,16 +448,20 @@ object AutomationRuntimeStore {
         }
         for (index in 0 until node.childCount) {
             val child = node.getChild(index) ?: continue
-            val direct = firstNonBlank(
-                child.text?.toString(),
-                child.contentDescription?.toString()
-            )
-            if (direct.isNotBlank()) {
-                return direct
-            }
-            val nested = collectDescendantText(child, maxDepth - 1)
-            if (nested.isNotBlank()) {
-                return nested
+            try {
+                val direct = firstNonBlank(
+                    child.text?.toString(),
+                    child.contentDescription?.toString()
+                )
+                if (direct.isNotBlank()) {
+                    return direct
+                }
+                val nested = collectDescendantText(child, maxDepth - 1)
+                if (nested.isNotBlank()) {
+                    return nested
+                }
+            } finally {
+                child.recycle()
             }
         }
         return ""

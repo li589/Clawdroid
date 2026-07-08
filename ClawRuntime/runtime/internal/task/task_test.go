@@ -294,7 +294,7 @@ type fakeExecutor struct {
 	mu       sync.Mutex
 	calls    []fakeCall
 	results  map[string]fakeResult // action -> result
-	stepFunc func(ctx context.Context, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64)
+	stepFunc func(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64)
 }
 
 type fakeCall struct {
@@ -329,14 +329,14 @@ func (f *fakeExecutor) SetBlocking(action string, code int, message string, data
 	f.mu.Unlock()
 }
 
-func (f *fakeExecutor) ExecuteStep(ctx context.Context, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
+func (f *fakeExecutor) ExecuteStep(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakeCall{TaskID: taskID, Action: action, Args: args})
 	result, ok := f.results[action]
 	f.mu.Unlock()
 
 	if f.stepFunc != nil {
-		return f.stepFunc(ctx, taskID, action, args, timeoutMS)
+		return f.stepFunc(ctx, sessionID, taskID, action, args, timeoutMS)
 	}
 
 	if !ok {
@@ -599,7 +599,7 @@ func TestScheduler_RetryWithBackoff(t *testing.T) {
 func TestScheduler_RetrySucceedsOnSecondAttempt(t *testing.T) {
 	exec := newFakeExecutor()
 	callCount := 0
-	exec.stepFunc = func(ctx context.Context, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
+	exec.stepFunc = func(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
 		callCount++
 		if callCount == 1 {
 			return 1, "try again", nil, 10
