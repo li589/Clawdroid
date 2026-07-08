@@ -132,7 +132,7 @@ func (s *Server) verifyAuthResponse(sess *session, frame controlFrame) bool {
 		sess.setAuthFailure(1004, "challenge expired")
 		return false
 	}
-	sess.challengeUsed = true
+	// Verify package name first to avoid wasting resources on disallowed packages.
 	if !s.isAllowedPackage(frame.PackageName) {
 		sess.setAuthFailure(1001, "package not allowed")
 		return false
@@ -148,7 +148,7 @@ func (s *Server) verifyAuthResponse(sess *session, frame controlFrame) bool {
 		sess.setAuthFailure(1004, "timestamp skew exceeded")
 		return false
 	}
-
+	sess.challengeUsed = true
 	expected := authDigest(
 		s.cfg.AuthSharedSecret,
 		sess.challengeNonce,
@@ -209,12 +209,11 @@ func (s *Server) isAllowedSignature(signatureDigest string) bool {
 	if normalized == "" {
 		return false
 	}
-	for _, allowed := range s.cfg.AllowedSignatures {
-		if strings.ToLower(strings.TrimSpace(allowed)) == normalized {
-			return true
-		}
+	if s.signaturePrefixMap == nil {
+		return false
 	}
-	return false
+	_, found := s.signaturePrefixMap[normalized]
+	return found
 }
 
 func (s *Server) withinTimestampSkew(clientTimestamp int64) bool {

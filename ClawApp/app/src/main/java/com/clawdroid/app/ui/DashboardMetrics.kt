@@ -4,6 +4,8 @@ import android.os.Debug
 import android.os.Process
 import com.clawdroid.app.env.AppPermissionManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
@@ -67,83 +69,86 @@ internal object DashboardMetricsCollector {
         sampledAtEpochMs = 0L,
         samples = emptyMap()
     )
+    private val metricsMutex = Mutex()
     private val cpuCoreCount = max(Runtime.getRuntime().availableProcessors(), 1)
     private const val defaultPageSizeBytes = 4096L
     private const val rootSampleIntervalMs = 3_000L
 
     suspend fun sample(rootAvailable: Boolean): DashboardRuntimeMetrics = withContext(Dispatchers.IO) {
-        val directProcFs = runCatching { readProcFsSnapshot() }.getOrNull()
-        val procFs = directProcFs ?: if (rootAvailable) {
-            readRootProcFsSnapshot(Process.myPid())
-        } else {
-            null
-        }
-        val normalizedProcFs = if (
-            rootAvailable &&
-            procFs != null &&
-            procFs.totalCpuTicks <= 0L &&
-            procFs.memTotalBytes <= 0L &&
-            procFs.loadAverage1 <= 0f &&
-            procFs.loadAverage5 <= 0f
-        ) {
-            readRootProcFsSnapshot(Process.myPid()) ?: procFs
-        } else {
-            procFs
-        }
-        val appMemoryInfo = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
-        val currentTotalTicks = normalizedProcFs?.totalCpuTicks ?: 0L
-        val previousTotalTicks = previousTotalCpuTicks
+        metricsMutex.withLock {
+            val directProcFs = runCatching { readProcFsSnapshot() }.getOrNull()
+            val procFs = directProcFs ?: if (rootAvailable) {
+                readRootProcFsSnapshot(Process.myPid())
+            } else {
+                null
+            }
+            val normalizedProcFs = if (
+                rootAvailable &&
+                procFs != null &&
+                procFs.totalCpuTicks <= 0L &&
+                procFs.memTotalBytes <= 0L &&
+                procFs.loadAverage1 <= 0f &&
+                procFs.loadAverage5 <= 0f
+            ) {
+                readRootProcFsSnapshot(Process.myPid()) ?: procFs
+            } else {
+                procFs
+            }
+            val appMemoryInfo = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
+            val currentTotalTicks = normalizedProcFs?.totalCpuTicks ?: 0L
+            val previousTotalTicks = previousTotalCpuTicks
 
-        val appCpuPercent = computeCpuPercent(
-            key = "app:${Process.myPid()}",
-            totalCpuTicks = currentTotalTicks,
-            previousTotalCpuTicks = previousTotalTicks,
-            processCpuTicks = normalizedProcFs?.appCpuTicks ?: 0L
-        )
-
-        val rootSamples = if (rootAvailable) {
-            readCachedRootProcessSamples()
-        } else {
-            emptyMap()
-        }
-
-        val runtimeProcess = buildProcessMetric(
-            label = "ClawRuntime",
-            sample = rootSamples["runtime"],
-            currentTotalCpuTicks = currentTotalTicks,
-            previousTotalCpuTicks = previousTotalTicks
-        )
-        val magiskProcess = buildProcessMetric(
-            label = "Magisk",
-            sample = rootSamples["magisk"],
-            currentTotalCpuTicks = currentTotalTicks,
-            previousTotalCpuTicks = previousTotalTicks
-        )
-
-        previousTotalCpuTicks = currentTotalTicks
-
-        DashboardRuntimeMetrics(
-            sampledAtEpochMs = System.currentTimeMillis(),
-            appCpuPercent = appCpuPercent,
-            appMemoryBytes = appMemoryInfo.totalPss.toLong() * 1024L,
-            appJavaHeapBytes = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory(),
-            appNativeHeapBytes = Debug.getNativeHeapAllocatedSize(),
-            systemMemoryUsedBytes = ((normalizedProcFs?.memTotalBytes ?: 0L) - (normalizedProcFs?.memAvailableBytes ?: 0L))
-                .coerceAtLeast(0L),
-            systemMemoryTotalBytes = normalizedProcFs?.memTotalBytes ?: 0L,
-            loadAverage1 = normalizedProcFs?.loadAverage1 ?: 0f,
-            loadAverage5 = normalizedProcFs?.loadAverage5 ?: 0f,
-            runtimeProcess = runtimeProcess,
-            magiskProcess = magiskProcess,
-            rootBacked = rootAvailable,
-            procFsReadable = normalizedProcFs != null,
-            note = buildSamplingNote(
-                rootAvailable = rootAvailable,
-                procFsReadable = normalizedProcFs != null,
-                runtimeProcess = runtimeProcess,
-                magiskProcess = magiskProcess
+            val appCpuPercent = computeCpuPercent(
+                key = "app:${Process.myPid()}",
+                totalCpuTicks = currentTotalTicks,
+                previousTotalCpuTicks = previousTotalTicks,
+                processCpuTicks = normalizedProcFs?.appCpuTicks ?: 0L
             )
-        )
+
+            val rootSamples = if (rootAvailable) {
+                readCachedRootProcessSamples()
+            } else {
+                emptyMap()
+            }
+
+            val runtimeProcess = buildProcessMetric(
+                label = "ClawRuntime",
+                sample = rootSamples["runtime"],
+                currentTotalCpuTicks = currentTotalTicks,
+                previousTotalCpuTicks = previousTotalTicks
+            )
+            val magiskProcess = buildProcessMetric(
+                label = "Magisk",
+                sample = rootSamples["magisk"],
+                currentTotalCpuTicks = currentTotalTicks,
+                previousTotalCpuTicks = previousTotalTicks
+            )
+
+            previousTotalCpuTicks = currentTotalTicks
+
+            DashboardRuntimeMetrics(
+                sampledAtEpochMs = System.currentTimeMillis(),
+                appCpuPercent = appCpuPercent,
+                appMemoryBytes = appMemoryInfo.totalPss.toLong() * 1024L,
+                appJavaHeapBytes = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory(),
+                appNativeHeapBytes = Debug.getNativeHeapAllocatedSize(),
+                systemMemoryUsedBytes = ((normalizedProcFs?.memTotalBytes ?: 0L) - (normalizedProcFs?.memAvailableBytes ?: 0L))
+                    .coerceAtLeast(0L),
+                systemMemoryTotalBytes = normalizedProcFs?.memTotalBytes ?: 0L,
+                loadAverage1 = normalizedProcFs?.loadAverage1 ?: 0f,
+                loadAverage5 = normalizedProcFs?.loadAverage5 ?: 0f,
+                runtimeProcess = runtimeProcess,
+                magiskProcess = magiskProcess,
+                rootBacked = rootAvailable,
+                procFsReadable = normalizedProcFs != null,
+                note = buildSamplingNote(
+                    rootAvailable = rootAvailable,
+                    procFsReadable = normalizedProcFs != null,
+                    runtimeProcess = runtimeProcess,
+                    magiskProcess = magiskProcess
+                )
+            )
+        }
     }
 
     private fun buildSamplingNote(

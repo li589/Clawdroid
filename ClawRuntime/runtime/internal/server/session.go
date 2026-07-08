@@ -38,6 +38,7 @@ type session struct {
 	authFailureCode        int
 	authFailureMsg         string
 	requestTimes           []time.Time
+	capabilities           []string
 	peerPID                int
 	peerUID                int
 	peerGID                int
@@ -45,14 +46,16 @@ type session struct {
 	peerVerificationMethod string
 	peerPackageBound       bool
 	peerKnownPackages      []string
+	peerCreds              peerCredentials
 }
 
 func newSession() *session {
 	s := &session{
-		id:        randomHex(8),
-		state:     StateDisconnected,
-		authMode:  "hmac-sha256-local-v1",
-		createdAt: time.Now(),
+		id:           randomHex(8),
+		state:        StateDisconnected,
+		authMode:     "hmac-sha256-local-v1",
+		createdAt:    time.Now(),
+		capabilities: []string{},
 	}
 	s.trace = append(s.trace, string(s.state))
 	return s
@@ -97,7 +100,7 @@ func (s *session) allowRequest(limitPerMinute int) bool {
 	}
 	now := time.Now()
 	cutoff := now.Add(-1 * time.Minute)
-	filtered := s.requestTimes[:0]
+	filtered := make([]time.Time, 0, len(s.requestTimes))
 	for _, item := range s.requestTimes {
 		if item.After(cutoff) {
 			filtered = append(filtered, item)
@@ -131,6 +134,7 @@ func (s *Server) verifyPeer(sess *session, conn net.Conn) bool {
 	sess.peerGID = credentials.GID
 	sess.peerVerified = true
 	sess.peerVerificationMethod = credentials.Method
+	sess.peerCreds = credentials
 	sess.transition(StatePeerVerified)
 	return true
 }

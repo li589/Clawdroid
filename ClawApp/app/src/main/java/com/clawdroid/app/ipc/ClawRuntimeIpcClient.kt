@@ -202,6 +202,18 @@ data class ClawRuntimeHandshakeResult(
     val stateTrace: List<ClawRuntimeConnectionState>
 )
 
+private data class ControlFrame(
+    val type: String,
+    val sessionId: String,
+    val nonce: String,
+    val authMode: String,
+    val ok: Boolean,
+    val code: Int,
+    val message: String,
+    val sessionState: String,
+    val stateTrace: List<String>
+)
+
 class ClawRuntimeIpcClient(
     private val socketName: String = "clawdroid_secure_ipc",
     private val packageName: String,
@@ -209,6 +221,8 @@ class ClawRuntimeIpcClient(
     private val signatureDigest: String
 ) {
     private val maxFrameBytes = 262144
+    private val eventMaxReconnectAttempts = 3
+    private val eventReconnectDelayMs = 2000L
 
     @Volatile
     private var activeEventSocket: LocalSocket? = null
@@ -218,6 +232,8 @@ class ClawRuntimeIpcClient(
     fun packageDisplayName(): String = packageName
 
     fun signatureDigestDisplay(): String = signatureDigest
+
+    fun socketDisplayName(): String = socketName
 
     fun buildPingRequest(requestId: String, timestamp: Long): ClawRuntimeRequest {
         return ClawRuntimeRequest(
@@ -527,8 +543,10 @@ class ClawRuntimeIpcClient(
 
         withContext(Dispatchers.IO) {
             val socket = LocalSocket()
+            val connectTimeoutMs = 5000
             try {
-                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
+                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), connectTimeoutMs)
+                socket.setSoTimeout(connectTimeoutMs)
                 val reader = socket.inputStream
                 val writer = socket.outputStream
                 performHandshake(reader, writer)
@@ -587,78 +605,106 @@ class ClawRuntimeIpcClient(
 
         withContext(Dispatchers.IO) {
             stopEventSubscription()
+            var lastClosedReason = "socket_closed"
+            var connected = false
 
-            val socket = LocalSocket()
-            registerActiveEventSocket(socket)
-            try {
-                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
-                val reader = socket.inputStream
-                val writer = socket.outputStream
-                performHandshake(reader, writer)
+            for (attempt in 0 until eventMaxReconnectAttempts) {
+                ensureActive()
+                val socket = LocalSocket()
+                registerActiveEventSocket(socket)
+                val connectTimeoutMs = 5000
+                try {
+                    socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), connectTimeoutMs)
+                    socket.setSoTimeout(connectTimeoutMs)
+                    val reader = socket.inputStream
+                    val writer = socket.outputStream
+                    performHandshake(reader, writer)
 
-                val response = sendOnConnection(
-                    writer = writer,
-                    reader = reader,
-                    request = ClawRuntimeRequest(
-                        requestId = newRequestId(),
-                        timestamp = nowSeconds(),
-                        action = "subscribe_events",
-                        capability = "event.subscribe",
-                        args = mapOf("events" to events)
-                    )
-                )
-                ensureSuccess(response)
-                withContext(Dispatchers.Main) {
-                    onStarted(
-                        ClawRuntimeEventSubscriptionStarted(
-                            subscribed = (response.data["subscribed"] as? List<*>)?.mapNotNull { it?.toString() } ?: events,
-                            streamMode = response.data["stream_mode"]?.toString().orEmpty(),
-                            pollIntervalMs = (response.data["poll_interval_ms"] as? Number)?.toLong() ?: 0L
+                    val response = sendOnConnection(
+                        writer = writer,
+                        reader = reader,
+                        request = ClawRuntimeRequest(
+                            requestId = newRequestId(),
+                            timestamp = nowSeconds(),
+                            action = "subscribe_events",
+                            capability = "event.subscribe",
+                            args = mapOf("events" to events)
                         )
                     )
+                    ensureSuccess(response)
+                    if (!connected) {
+                        withContext(Dispatchers.Main) {
+                            onStarted(
+                                ClawRuntimeEventSubscriptionStarted(
+                                    subscribed = (response.data["subscribed"] as? List<*>)?.mapNotNull { it?.toString() } ?: events,
+                                    streamMode = response.data["stream_mode"]?.toString().orEmpty(),
+                                    pollIntervalMs = (response.data["poll_interval_ms"] as? Number)?.toLong() ?: 0L
+                                )
+                            )
+                        }
+                        connected = true
+                    }
+
+                    while (true) {
+                        ensureActive()
+                        val eventFrame = try {
+                            parseEventFrame(readFramedText(reader))
+                        } catch (_: EOFException) {
+                            lastClosedReason = "socket_closed"
+                            break
+                        }
+                        if (eventFrame.event == "subscription_closed") {
+                            lastClosedReason = eventFrame.data["reason"]?.toString().orEmpty().ifBlank { "stream_closed" }
+                            withContext(Dispatchers.Main) {
+                                onClosed(lastClosedReason)
+                            }
+                            return@withContext
+                        }
+                        withContext(Dispatchers.Main) {
+                            onEvent(eventFrame)
+                        }
+                    }
+                } catch (e: Exception) {
+                    lastClosedReason = "connection_error: ${e.message.orEmpty()}"
+                } finally {
+                    val socketToClose: LocalSocket? = synchronized(eventSocketLock) {
+                        if (activeEventSocket === socket) {
+                            activeEventSocket = null
+                            socket
+                        } else {
+                            null
+                        }
+                    }
+                    socketToClose?.close()
                 }
 
-                while (true) {
-                    ensureActive()
-                    val eventFrame = try {
-                        parseEventFrame(readFramedText(reader))
-                    } catch (_: EOFException) {
-                        break
-                    }
-                    if (eventFrame.event == "subscription_closed") {
-                        val reason = eventFrame.data["reason"]?.toString().orEmpty().ifBlank { "stream_closed" }
-                        withContext(Dispatchers.Main) {
-                            onClosed(reason)
-                        }
-                        return@withContext
-                    }
-                    withContext(Dispatchers.Main) {
-                        onEvent(eventFrame)
-                    }
+                if (attempt < eventMaxReconnectAttempts - 1) {
+                    kotlinx.coroutines.delay(eventReconnectDelayMs)
                 }
-                withContext(Dispatchers.Main) {
-                    onClosed("socket_closed")
-                }
-            } finally {
-                unregisterActiveEventSocket(socket)
-                runCatching { socket.close() }
+            }
+
+            withContext(Dispatchers.Main) {
+                onClosed(lastClosedReason)
             }
         }
     }
 
     fun stopEventSubscription() {
-        synchronized(eventSocketLock) {
+        val socketToClose = synchronized(eventSocketLock) {
             val socket = activeEventSocket ?: return
             activeEventSocket = null
-            runCatching { socket.close() }
+            socket
         }
+        runCatching { socketToClose.close() }
     }
 
     suspend fun probeSession(): Result<ClawRuntimeSessionProbeResult> = runCatching {
         withContext(Dispatchers.IO) {
             val socket = LocalSocket()
+            val connectTimeoutMs = 5000
             try {
-                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
+                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), connectTimeoutMs)
+                socket.setSoTimeout(connectTimeoutMs)
                 val reader = socket.inputStream
                 val writer = socket.outputStream
                 val handshake = performHandshake(reader, writer)
@@ -716,8 +762,6 @@ class ClawRuntimeIpcClient(
             }
         }
     }
-
-    fun socketDisplayName(): String = socketName
 
     private fun registerActiveEventSocket(socket: LocalSocket) {
         synchronized(eventSocketLock) {
@@ -842,6 +886,73 @@ class ClawRuntimeIpcClient(
         )
     }
 
+    private fun parseControlFrame(raw: String): ControlFrame {
+        val payload = JSONObject(raw)
+        return ControlFrame(
+            type = payload.optString("type"),
+            sessionId = payload.optString("session_id"),
+            nonce = payload.optString("nonce"),
+            authMode = payload.optString("auth_mode"),
+            ok = payload.optBoolean("ok"),
+            code = payload.optInt("code"),
+            message = payload.optString("message"),
+            sessionState = payload.optString("session_state"),
+            stateTrace = runCatching {
+                val arr = payload.optJSONArray("state_trace")
+                (0 until arr.length()).map { arr.optString(it) }
+            }.getOrDefault(emptyList())
+        )
+    }
+
+    private fun readFramedText(reader: InputStream): String {
+        val header = ByteArray(4)
+        readFully(reader, header)
+        val frameSize = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN).int
+        require(frameSize in 1..maxFrameBytes) { "invalid frame size: $frameSize" }
+        val payload = ByteArray(frameSize)
+        readFully(reader, payload)
+        return String(payload, Charsets.UTF_8)
+    }
+
+    private fun writeFramedText(writer: OutputStream, text: String) {
+        val payload = text.toByteArray(Charsets.UTF_8)
+        require(payload.size <= maxFrameBytes) { "frame too large: ${payload.size}" }
+        val header = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(payload.size).array()
+        writer.write(header)
+        writer.write(payload)
+        writer.flush()
+    }
+
+    private fun readFully(reader: InputStream, buffer: ByteArray) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val bytesRead = reader.read(buffer, offset, buffer.size - offset)
+            if (bytesRead < 0) {
+                throw EOFException("unexpected end of stream")
+            }
+            offset += bytesRead
+        }
+    }
+
+    private fun parseConnectionState(raw: String): ClawRuntimeConnectionState {
+        return ClawRuntimeConnectionState.entries.firstOrNull { it.name == raw }
+            ?: ClawRuntimeConnectionState.Disconnected
+    }
+
+    private fun authDigest(
+        secret: String,
+        nonce: String,
+        packageName: String,
+        signatureDigest: String,
+        clientTimestamp: Long
+    ): String {
+        val data = "$secret:$nonce:$packageName:$signatureDigest:$clientTimestamp"
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        val digest = mac.doFinal(data.toByteArray(Charsets.UTF_8))
+        return Base64.getEncoder().encodeToString(digest)
+    }
+
     private fun ClawRuntimeRequest.toJson(): JSONObject {
         return JSONObject().apply {
             put("version", version)
@@ -893,91 +1004,13 @@ class ClawRuntimeIpcClient(
         return raw.mapNotNull { it?.toString() }
     }
 
-    private fun parseControlFrame(raw: String): ControlFrame {
-        val payload = JSONObject(raw)
-        return ControlFrame(
-            type = payload.optString("type"),
-            sessionId = payload.optString("session_id"),
-            nonce = payload.optString("nonce"),
-            authMode = payload.optString("auth_mode"),
-            ok = payload.optBoolean("ok"),
-            code = payload.optInt("code"),
-            message = payload.optString("message"),
-            sessionState = payload.optString("session_state"),
-            stateTrace = payload.optJSONArray("state_trace").toStringList()
-        )
-    }
-
-    private fun parseConnectionState(raw: String): ClawRuntimeConnectionState {
-        return ClawRuntimeConnectionState.entries.firstOrNull { it.name == raw } ?: ClawRuntimeConnectionState.Disconnected
-    }
-
-    private fun authDigest(
-        secret: String,
-        nonce: String,
-        packageName: String,
-        signatureDigest: String,
-        clientTimestamp: Long
-    ): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        val key = SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256")
-        mac.init(key)
-        val payload = "$nonce|$packageName|${signatureDigest.lowercase()}|$clientTimestamp"
-        return mac.doFinal(payload.toByteArray(Charsets.UTF_8)).joinToString("") { byte ->
-            "%02x".format(byte)
-        }
-    }
-
-    private fun JSONArray?.toStringList(): List<String> {
-        if (this == null) return emptyList()
-        return buildList {
-            for (index in 0 until length()) {
-                add(optString(index))
-            }
-        }
-    }
-
-    private fun writeFramedText(stream: OutputStream, text: String) {
-        val payload = text.toByteArray(Charsets.UTF_8)
-        require(payload.isNotEmpty()) { "frame payload must not be empty" }
-        require(payload.size <= maxFrameBytes) { "frame payload exceeds limit: ${payload.size}" }
-        val header = ByteBuffer.allocate(4)
-            .order(ByteOrder.BIG_ENDIAN)
-            .putInt(payload.size)
-            .array()
-        stream.write(header)
-        stream.write(payload)
-        stream.flush()
-    }
-
-    private fun readFramedText(stream: InputStream): String {
-        val header = readFully(stream, 4)
-        val size = ByteBuffer.wrap(header)
-            .order(ByteOrder.BIG_ENDIAN)
-            .int
-        require(size in 1..maxFrameBytes) { "invalid frame size: $size" }
-        val payload = readFully(stream, size)
-        return payload.toString(Charsets.UTF_8)
-    }
-
-    private fun readFully(stream: InputStream, size: Int): ByteArray {
-        val buffer = ByteArray(size)
-        var offset = 0
-        while (offset < size) {
-            val read = stream.read(buffer, offset, size - offset)
-            if (read < 0) {
-                throw EOFException("ClawRuntime socket closed while reading frame")
-            }
-            offset += read
-        }
-        return buffer
-    }
-
-    private fun newRequestId(): String = UUID.randomUUID().toString()
-
-    private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
-
     companion object {
+        private var requestCounter = 0L
+
+        private fun newRequestId(): String = "req_${nowSeconds()}_${++requestCounter}"
+
+        private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
         fun resolveSignatureDigest(context: Context, packageName: String): String {
             val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 context.packageManager.getPackageInfo(
@@ -1004,15 +1037,3 @@ class ClawRuntimeIpcClient(
         }
     }
 }
-
-private data class ControlFrame(
-    val type: String,
-    val sessionId: String,
-    val nonce: String,
-    val authMode: String,
-    val ok: Boolean,
-    val code: Int,
-    val message: String,
-    val sessionState: String,
-    val stateTrace: List<String>
-)

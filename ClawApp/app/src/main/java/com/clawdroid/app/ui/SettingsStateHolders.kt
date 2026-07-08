@@ -9,6 +9,10 @@ internal data class SettingsScreenState(
     val modelSettings: ModelSettings,
     val modelTestStatus: String,
     val modelTesting: Boolean,
+    val modelListStatus: String,
+    val modelListLoading: Boolean,
+    val availableModels: List<String>,
+    val showAdvancedSettings: Boolean,
     val runtimeVersionStatus: String,
     val runtimeHealthStatus: String,
     val runtimeLastErrorStatus: String,
@@ -18,7 +22,11 @@ internal data class SettingsScreenState(
 internal data class SettingsScreenActions(
     val onThemeModeSelected: (ThemeMode) -> Unit,
     val onModelSettingsChanged: (ModelSettings) -> Unit,
-    val onTestModelConnection: () -> Unit
+    val onContextSettingsChanged: (ContextSettings) -> Unit,
+    val onTestModelConnection: () -> Unit,
+    val onFetchModelList: () -> Unit,
+    val onSelectModelFromList: (String) -> Unit,
+    val onToggleAdvancedSettings: () -> Unit
 )
 
 internal fun buildSettingsScreenState(
@@ -41,6 +49,10 @@ internal fun buildSettingsScreenState(
         modelSettings = settingsState.modelSettings,
         modelTestStatus = settingsState.modelTestStatus,
         modelTesting = settingsState.modelTesting,
+        modelListStatus = settingsState.modelListStatus,
+        modelListLoading = settingsState.modelListLoading,
+        availableModels = settingsState.availableModels,
+        showAdvancedSettings = settingsState.showAdvancedSettings,
         runtimeVersionStatus = runtimeVersionStatus,
         runtimeHealthStatus = runtimeHealthStatus,
         runtimeLastErrorStatus = runtimeLastErrorStatus,
@@ -52,6 +64,10 @@ internal fun SettingsViewModel.buildSettingsScreenActions(): SettingsScreenActio
     return SettingsScreenActions(
         onThemeModeSelected = ::selectThemeMode,
         onModelSettingsChanged = ::updateModelSettings,
-        onTestModelConnection = ::testModelConnection
+        onContextSettingsChanged = ::updateContextSettings,
+        onTestModelConnection = ::testModelConnection,
+        onFetchModelList = ::fetchModelList,
+        onSelectModelFromList = ::selectModelFromList,
+        onToggleAdvancedSettings = ::toggleAdvancedSettings
     )
 }

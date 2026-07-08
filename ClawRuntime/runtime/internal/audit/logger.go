@@ -10,10 +10,19 @@ type Logger struct {
 	mu          sync.RWMutex
 	lastError   string
 	lastErrorAt time.Time
+	fileLogger  *FileLogger
 }
 
 func NewLogger() *Logger {
 	return &Logger{}
+}
+
+func NewLoggerWithFileLogger(auditDir string) (*Logger, error) {
+	fl, err := NewFileLogger(auditDir)
+	if err != nil {
+		return nil, err
+	}
+	return &Logger{fileLogger: fl}, nil
 }
 
 func (l *Logger) Info(message string) {
@@ -32,4 +41,18 @@ func (l *Logger) LastError() (string, time.Time) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.lastError, l.lastErrorAt
+}
+
+func (l *Logger) Log(entry AuditLogEntry) error {
+	if l.fileLogger == nil {
+		return nil
+	}
+	return l.fileLogger.Log(entry)
+}
+
+func (l *Logger) Close() error {
+	if l.fileLogger == nil {
+		return nil
+	}
+	return l.fileLogger.Close()
 }

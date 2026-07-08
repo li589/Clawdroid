@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-const daemonVersion = "0.2.0"
+const (
+	DaemonVersion   = "0.2.0"
+	DaemonBuildTime = ""
+)
 
 func (s *Server) recordRateLimit(message string) {
 	s.diagMu.Lock()
@@ -42,7 +45,7 @@ func (s *Server) diagnosticsState() map[string]interface{} {
 func (s *Server) versionState() map[string]interface{} {
 	return map[string]interface{}{
 		"daemon_status":     "ok",
-		"version":           daemonVersion,
+		"version": DaemonVersion,
 		"protocol_version":  s.cfg.ProtocolVersion,
 		"socket_name":       s.cfg.SocketName,
 		"log_level":         s.cfg.LogLevel,

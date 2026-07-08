@@ -4,6 +4,8 @@ import com.clawdroid.app.model.ModelApiClient
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.ui.ModelProvider
 import com.clawdroid.app.ui.ModelSettings
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal data class AiRuntimeSnapshot(
     val sessionSummary: String,
@@ -57,15 +59,18 @@ internal object AiAgentOrchestrator {
             return AiAgentPlan.AssistantReply(trimmed)
         }
 
-        val mode = extractStringField(trimmed, "mode").orEmpty().trim().lowercase()
-        val reply = extractStringField(trimmed, "reply").orEmpty().trim()
+        val json = runCatching { JSONObject(trimmed) }.getOrNull()
+            ?: return AiAgentPlan.AssistantReply(trimmed)
+
+        val mode = json.optString("mode", "").trim().lowercase()
+        val reply = json.optString("reply", "").trim()
         if (mode != "tool") {
             return AiAgentPlan.AssistantReply(
                 message = reply.ifBlank { trimmed }
             )
         }
 
-        val toolId = extractStringField(trimmed, "tool").orEmpty().trim()
+        val toolId = json.optString("tool", "").trim()
         val tool = ClawTool.byToolId(toolId)
             ?: return AiAgentPlan.AssistantReply(
                 message = reply.ifBlank { "模型返回了未知工具 `$toolId`，请改用明确指令。" }
@@ -73,11 +78,18 @@ internal object AiAgentOrchestrator {
 
         val arguments = extractArguments(trimmed)
 
+        val validatedArgs = validateToolArguments(tool, arguments)
+        if (validatedArgs == null) {
+            return AiAgentPlan.AssistantReply(
+                message = reply.ifBlank { "工具参数校验失败，请检查参数名和参数值是否符合约束。" }
+            )
+        }
+
         return AiAgentPlan.ToolExecution(
             tool = tool,
-            arguments = arguments,
+            arguments = validatedArgs,
             assistantMessage = reply.ifBlank { defaultAssistantMessage(tool) },
-            reasoning = extractStringField(trimmed, "reason").orEmpty().trim()
+            reasoning = json.optString("reason", "").trim()
         )
     }
 
@@ -146,9 +158,20 @@ internal object AiAgentOrchestrator {
             ModelProvider.OpenAI -> "OpenAI"
             ModelProvider.Gemini -> "Gemini"
             ModelProvider.Anthropic -> "Anthropic"
-            ModelProvider.OpenAICompatible -> "OpenAI-Compatible"
-            ModelProvider.Custom -> "Custom"
-            ModelProvider.Local -> "Local"
+            ModelProvider.Deepseek -> "DeepSeek"
+            ModelProvider.Kimi -> "Kimi"
+            ModelProvider.Qwen -> "Qwen"
+            ModelProvider.Zhipu -> "智谱 GLM"
+            ModelProvider.TencentHunyuan -> "腾讯混元"
+            ModelProvider.Baidu -> "百度文心"
+            ModelProvider.MiniMax -> "MiniMax"
+            ModelProvider.OpenAICompatible -> "OpenAI 兼容"
+            ModelProvider.AnthropicCompatible -> "Anthropic 兼容"
+            ModelProvider.ClaudeCode -> "Claude Code"
+            ModelProvider.Codex -> "Codex"
+            ModelProvider.Custom -> "自定义"
+            ModelProvider.Local -> "本地模型"
+            else -> settings.provider.name
         }
         return if (isConfigured(settings)) {
             "AI 已就绪: $providerLabel，可执行模型决策 + 工具编排"
@@ -209,4 +232,57 @@ internal object AiAgentOrchestrator {
             match.groupValues[1] to match.groupValues[2]
         }
     }
+
+    private fun validateToolArguments(tool: ClawTool, arguments: Map<String, String>): Map<String, String>? {
+        val allowedParams = allowedParameters[tool] ?: return arguments
+        val validArgs = arguments.filter { (key, _) -> key in allowedParams }
+        if (validArgs.size < arguments.size) {
+            return null
+        }
+        for ((key, value) in validArgs) {
+            if (!isValidArgumentValue(key, value)) {
+                return null
+            }
+        }
+        return validArgs
+    }
+
+    private fun isValidArgumentValue(key: String, value: String): Boolean {
+        val len = value.length
+        if (len > 4096) return false
+        return when {
+            key in setOf("x", "y", "x1", "y1", "x2", "y2", "display_id", "duration_ms", "offset", "max_bytes") -> {
+                value.toIntOrNull()?.let { v -> v in -10000..100000 } ?: false
+            }
+            key in setOf("read_after_capture") -> {
+                value.lowercase() in setOf("true", "false")
+            }
+            key in setOf("operation") -> {
+                value.lowercase() in setOf("start", "stop")
+            }
+            key == "command" -> {
+                len > 0 && !DANGEROUS_COMMAND_PATTERN.containsMatchIn(value)
+            }
+            key in setOf("expected_package", "target_package", "package") -> {
+                PACKAGE_NAME_PATTERN.matches(value)
+            }
+            else -> true
+        }
+    }
+
+    private val DANGEROUS_COMMAND_PATTERN = Regex(
+        """.*(?:;\s*|\|\s*|\&\&\s*|>|<|\$\(|`)\s*(?:rm|mv|cp|chmod|chown|wget|curl|nc|bash|sh)\b"""
+    )
+    private val PACKAGE_NAME_PATTERN = Regex("""^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$""")
+
+    private val allowedParameters = mapOf(
+        ClawTool.INJECT_TAP to setOf("x", "y", "display_id"),
+        ClawTool.INJECT_SWIPE to setOf("x1", "y1", "x2", "y2", "duration_ms", "display_id"),
+        ClawTool.EXECUTE_SHELL_LIMITED to setOf("command"),
+        ClawTool.SUBSCRIBE_EVENTS to setOf("operation"),
+        ClawTool.CAPTURE_SCREEN to setOf("read_after_capture", "display_id"),
+        ClawTool.PAGE_CONFIRM to setOf("expected_package", "expected_text", "expected_view_id"),
+        ClawTool.CLICK_PRECHECK to setOf("expected_package", "target_text", "target_view_id"),
+        ClawTool.READ_FILE_LIMITED to setOf("path", "offset", "max_bytes")
+    )
 }

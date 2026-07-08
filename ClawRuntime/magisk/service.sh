@@ -191,6 +191,28 @@ if [ ! -x "$BIN_FILE" ]; then
   exit 0
 fi
 
+BINARY_HASH_FILE="$MODDIR/config/.runtime_sha256"
+if [ -f "$BINARY_HASH_FILE" ]; then
+  EXPECTED_HASH="$(cat "$BINARY_HASH_FILE" 2>/dev/null | tr -d ' \n\r')"
+  if [ -n "$EXPECTED_HASH" ]; then
+    ACTUAL_HASH="$(sha256sum "$BIN_FILE" 2>/dev/null | awk '{print $1}')"
+    if [ -z "$ACTUAL_HASH" ]; then
+      set_state_note "runtime binary hash check failed"
+      update_webui_snapshot
+      echo "[$(date)] clawdroid runtime binary sha256sum failed: $BIN_FILE" >> "$LOG_FILE"
+      exit 0
+    fi
+    if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+      set_state_note "runtime binary integrity check failed"
+      update_webui_snapshot
+      echo "[$(date)] clawdroid runtime binary INTEGRITY CHECK FAILED: $BIN_FILE" >> "$LOG_FILE"
+      echo "[$(date)]   expected: $EXPECTED_HASH" >> "$LOG_FILE"
+      echo "[$(date)]   actual:   $ACTUAL_HASH" >> "$LOG_FILE"
+      exit 0
+    fi
+  fi
+fi
+
 set_state_note "launching runtime service"
 update_webui_snapshot
 start_webui_snapshot_loop

@@ -18,21 +18,36 @@ func Run() {
 	flag.Parse()
 
 	cfg := config.Default()
-	logger := audit.NewLogger()
+
+	var logger *audit.Logger
+	var err error
 
 	if *configPath != "" {
-		loadedCfg, err := config.Load(*configPath)
-		if err != nil {
-			log.Fatalf("failed to load runtime config: %v", err)
-		} else {
-			cfg = loadedCfg
-			logger.Info("runtime config loaded from: " + *configPath)
+		loadedCfg, loadErr := config.Load(*configPath)
+		if loadErr != nil {
+			log.Fatalf("failed to load runtime config: %v", loadErr)
 		}
+		cfg = loadedCfg
 	}
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid runtime config: %v", err)
 	}
+
+	auditDir := cfg.AuditDir
+	if auditDir == "" {
+		auditDir = "/data/local/tmp/clawdroid/audit"
+	}
+
+	logger, err = audit.NewLoggerWithFileLogger(auditDir)
+	if err != nil {
+		log.Fatalf("failed to create audit logger: %v", err)
+	}
+	defer logger.Close()
+
+	audit.SetVersionInfo(server.DaemonVersion, server.DaemonBuildTime)
+	logger.Info("runtime config loaded from: " + *configPath)
+	logger.Info("audit log directory: " + auditDir)
 
 	srv := server.New(cfg, logger)
 

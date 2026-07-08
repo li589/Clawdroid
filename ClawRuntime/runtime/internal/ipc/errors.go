@@ -30,6 +30,11 @@ const (
 	CodeErrSELinuxDenied            = 5001
 	CodeErrDaemonUnhealthy          = 5002
 	CodeErrROMUnsupported           = 5003
+	CodeErrTaskNotFound             = 7001
+	CodeErrTaskStateInvalid         = 7002
+	CodeErrTaskSubmitFailed         = 7003
+	CodeErrTaskCancelFailed         = 7004
+	CodeErrTaskQueueFull            = 7005
 )
 
 func ErrorMessage(code int) string {
@@ -90,6 +95,16 @@ func ErrorMessage(code int) string {
 		return "daemon unhealthy"
 	case CodeErrROMUnsupported:
 		return "rom unsupported"
+	case CodeErrTaskNotFound:
+		return "task not found"
+	case CodeErrTaskStateInvalid:
+		return "invalid task state transition"
+	case CodeErrTaskSubmitFailed:
+		return "task submission failed"
+	case CodeErrTaskCancelFailed:
+		return "task cancellation failed"
+	case CodeErrTaskQueueFull:
+		return "task queue is full"
 	default:
 		return "unknown error"
 	}

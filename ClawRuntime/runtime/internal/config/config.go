@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -229,7 +228,7 @@ func parseMillisecondsAsSeconds(value string, fallback int64) int64 {
 	if err != nil || parsed <= 0 {
 		return fallback
 	}
-	return int64(math.Ceil(float64(parsed) / 1000.0))
+	return int64((parsed + 999) / 1000)
 }
 
 func parseList(value string, fallback []string) []string {

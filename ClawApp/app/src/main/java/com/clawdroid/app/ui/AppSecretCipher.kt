@@ -16,6 +16,10 @@ internal object AppSecretCipher {
     private const val ivSizeBytes = 12
     private const val tagSizeBits = 128
 
+    private val cachedKeyStore: KeyStore by lazy {
+        KeyStore.getInstance(androidKeyStore).apply { load(null) }
+    }
+
     fun encrypt(plainText: String): String {
         if (plainText.isEmpty()) {
             return ""
@@ -52,8 +56,7 @@ internal object AppSecretCipher {
     }
 
     private fun getOrCreateSecretKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(androidKeyStore).apply { load(null) }
-        val existingKey = keyStore.getKey(keyAlias, null) as? SecretKey
+        val existingKey = cachedKeyStore.getKey(keyAlias, null) as? SecretKey
         if (existingKey != null) {
             return existingKey
         }

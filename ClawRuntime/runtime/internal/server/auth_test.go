@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"clawdroid/runtime/internal/audit"
 	"clawdroid/runtime/internal/config"
 )
 
@@ -22,7 +23,7 @@ func TestParseUIDPackageListOutputDeduplicatesPackages(t *testing.T) {
 func TestIsAllowedSignatureAllowsAnyWhenWhitelistEmpty(t *testing.T) {
 	t.Parallel()
 
-	srv := &Server{cfg: config.Config{AllowedSignatures: []string{}}}
+	srv := New(config.Config{AllowedSignatures: []string{}}, audit.NewLogger())
 	if !srv.isAllowedSignature("sha256:anything") {
 		t.Fatal("expected signature to be allowed when whitelist is empty")
 	}
@@ -31,11 +32,9 @@ func TestIsAllowedSignatureAllowsAnyWhenWhitelistEmpty(t *testing.T) {
 func TestIsAllowedSignatureMatchesCaseInsensitiveWhitelist(t *testing.T) {
 	t.Parallel()
 
-	srv := &Server{
-		cfg: config.Config{
-			AllowedSignatures: []string{"sha256:ABCDEF"},
-		},
-	}
+	srv := New(config.Config{
+		AllowedSignatures: []string{"sha256:ABCDEF"},
+	}, audit.NewLogger())
 
 	if !srv.isAllowedSignature("sha256:abcdef") {
 		t.Fatal("expected signature whitelist match to be case insensitive")

@@ -91,7 +91,9 @@ internal class ChatViewModel(
     private var currentTaskJob: Job? = null
 
     init {
-        restoreHistory()
+        viewModelScope.launch {
+            restoreHistory()
+        }
         restoreTaskState()
     }
 
@@ -237,6 +239,10 @@ internal class ChatViewModel(
         if (normalized.isBlank()) {
             return
         }
+        if (normalized.length > MAX_PROMPT_LENGTH) {
+            appendChat(ChatRole.Assistant, "输入内容过长，请控制在 $MAX_PROMPT_LENGTH 字符以内。", state = ChatMessageState.Final)
+            return
+        }
         val attachment = uiState.value.pendingImageLabel
         appendChat(ChatRole.User, normalized, attachment)
         updateState {
@@ -348,7 +354,7 @@ internal class ChatViewModel(
         }
     }
 
-    private fun restoreHistory() {
+    private suspend fun restoreHistory() {
         val restoredMessages = ChatHistoryStore.load(appContext)
         if (restoredMessages.isNotEmpty()) {
             replaceMessages(restoredMessages)
@@ -965,6 +971,7 @@ internal class ChatViewModel(
 
     companion object {
         private const val MAX_TASK_HISTORY_ITEMS = 20
+        private const val MAX_PROMPT_LENGTH = 8192
 
         fun provideFactory(
             appContext: Context,

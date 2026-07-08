@@ -2,17 +2,21 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"sort"
 	"strings"
 	"time"
 
 	"clawdroid/runtime/internal/ipc"
+	"clawdroid/runtime/internal/task"
 )
 
 const (
@@ -24,6 +28,7 @@ const (
 	maxSubscribeEvents               = 16
 	eventStreamPollInterval          = 2 * time.Second
 	eventStreamHeartbeatEvery        = 5
+	eventWriteTimeout               = 5 * time.Second
 )
 
 var allowedSubscribeEvents = map[string]struct{}{
@@ -50,8 +55,38 @@ type eventSnapshot struct {
 	taskState       map[string]interface{}
 }
 
-func (s *Server) handleSubscribeEvents(sess *session, req ipc.Request, conn net.Conn, writer *bufio.Writer) error {
+func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req ipc.Request, conn net.Conn, writer *bufio.Writer) error {
 	s.finalizeCapabilityState(sess)
+
+	// Security: enforce event.subscribe capability
+	if !slices.Contains(sess.capabilities, "event.subscribe") {
+		return writeResponseFrame(writer, ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrCapabilityNotGranted,
+			Message:   "event.subscribe capability not granted",
+			Data:      s.sessionData(sess),
+		})
+	}
+
+	// Security: enforce rate limit on event subscription requests
+	if !sess.allowRequest(s.cfg.RateLimitPerMinute) {
+		message := fmt.Sprintf(
+			"event subscription rate limit exceeded: package=%s session=%s",
+			sess.packageName, sess.id,
+		)
+		s.recordRateLimit(message)
+		return writeResponseFrame(writer, ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrRateLimited,
+			Message:   ipc.ErrorMessage(ipc.CodeErrRateLimited),
+			Data: mergeData(s.sessionData(sess), map[string]interface{}{
+				"rate_limit_per_minute": s.cfg.RateLimitPerMinute,
+				"last_rate_limit":       message,
+			}),
+		})
+	}
 
 	args, err := parseSubscribeEventsArgs(req.Args)
 	if err != nil {
@@ -85,7 +120,7 @@ func (s *Server) handleSubscribeEvents(sess *session, req ipc.Request, conn net.
 
 	currentSnapshot := s.captureEventSnapshot(sess)
 	for _, frame := range buildSnapshotEventFrames(currentSnapshot, args.Events) {
-		if err := writeEventFrame(writer, frame); err != nil {
+		if err := writeEventFrame(conn, writer, frame); err != nil {
 			return err
 		}
 	}
@@ -94,7 +129,12 @@ func (s *Server) handleSubscribeEvents(sess *session, req ipc.Request, conn net.
 	defer ticker.Stop()
 
 	heartbeatCounter := 0
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 		heartbeatCounter++
 		nextSnapshot := s.captureEventSnapshot(sess)
 		changedFrames := diffSnapshotEventFrames(currentSnapshot, nextSnapshot, args.Events)
@@ -107,15 +147,13 @@ func (s *Server) handleSubscribeEvents(sess *session, req ipc.Request, conn net.
 		}
 
 		for _, frame := range changedFrames {
-			if err := writeEventFrame(writer, frame); err != nil {
+			if err := writeEventFrame(conn, writer, frame); err != nil {
 				return err
 			}
 			heartbeatCounter = 0
 		}
 		currentSnapshot = nextSnapshot
 	}
-
-	return nil
 }
 
 func parseSubscribeEventsArgs(args map[string]interface{}) (subscribeEventsArgs, error) {
@@ -159,6 +197,8 @@ func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
 	memTotalKB, memAvailableKB := readMemoryInfo()
 	runtimePID, runtimeRSSKB := readCurrentProcessMetrics()
 
+	taskState := s.taskStateForSession(sess.id)
+
 	return eventSnapshot{
 		daemonStatus: mergeData(s.versionState(), mergeData(mergeData(s.diagnosticsState(), map[string]interface{}{
 			"daemon_status":    "ok",
@@ -182,15 +222,48 @@ func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
 		windowState: map[string]interface{}{
 			"focused_window": detectFocusedWindow(),
 		},
-		taskState: map[string]interface{}{
-			"task_id":       "session:" + sess.id,
-			"state":         string(sess.state),
-			"phase":         "idle",
-			"session_id":    sess.id,
-			"session_state": string(sess.state),
-			"session_trace": sess.traceSnapshot(),
-		},
+		taskState: taskState,
 	}
+}
+
+// taskStateForSession returns the most relevant task state snapshot for a session.
+// Priority: running task > queued task > most recent completed task.
+func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
+	tasks := s.taskScheduler.Registry().List(sessionID)
+	if len(tasks) == 0 {
+		return map[string]interface{}{
+			"session_id": sessionID,
+			"phase":     "idle",
+			"task_count": 0,
+		}
+	}
+
+	// Find running, queued, then most recent.
+	var running, queued, latest *task.Task
+	for _, t := range tasks {
+		if t.State == task.TaskStateRunning {
+			running = t
+		} else if t.State == task.TaskStateQueued {
+			queued = t
+		}
+		if latest == nil || t.CreatedAt.After(latest.CreatedAt) {
+			latest = t
+		}
+	}
+
+	chosen := running
+	if chosen == nil {
+		chosen = queued
+	}
+	if chosen == nil {
+		chosen = latest
+	}
+
+	snapshot := chosen.StateSnapshot()
+	snapshot["phase"] = string(chosen.State)
+	snapshot["session_id"] = sessionID
+	snapshot["task_count"] = len(tasks)
+	return snapshot
 }
 
 func buildSnapshotEventFrames(snapshot eventSnapshot, eventNames []string) []eventFrame {
@@ -237,12 +310,12 @@ func diffSnapshotEventFrames(previous eventSnapshot, current eventSnapshot, even
 	return frames
 }
 
-func writeEventFrame(writer *bufio.Writer, frame eventFrame) error {
+func writeEventFrame(conn net.Conn, writer *bufio.Writer, frame eventFrame) error {
 	payload, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}
-	return writeJSONFrame(writer, payload)
+	return writeJSONFrameWithTimeout(conn, writer, payload)
 }
 
 func detectFocusedWindow() string {
@@ -399,17 +472,23 @@ func isUnknownFocusedWindow(raw string) bool {
 func readLoadAverage() (float64, float64, float64) {
 	content, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
+		slog.Warn("readLoadAverage: failed to read /proc/loadavg", "error", err)
 		return 0, 0, 0
 	}
 
 	fields := strings.Fields(string(content))
 	if len(fields) < 3 {
+		slog.Warn("readLoadAverage: /proc/loadavg has fewer than 3 fields", "fields", fields)
 		return 0, 0, 0
 	}
 
-	load1, _ := strconv.ParseFloat(fields[0], 64)
-	load5, _ := strconv.ParseFloat(fields[1], 64)
-	load15, _ := strconv.ParseFloat(fields[2], 64)
+	load1, err1 := strconv.ParseFloat(fields[0], 64)
+	load5, err2 := strconv.ParseFloat(fields[1], 64)
+	load15, err3 := strconv.ParseFloat(fields[2], 64)
+	if err1 != nil || err2 != nil || err3 != nil {
+		slog.Warn("readLoadAverage: failed to parse load values", "error1", err1, "error2", err2, "error3", err3)
+		return 0, 0, 0
+	}
 	return load1, load5, load15
 }
 

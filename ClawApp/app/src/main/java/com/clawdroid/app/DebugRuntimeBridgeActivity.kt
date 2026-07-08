@@ -41,10 +41,16 @@ class DebugRuntimeBridgeActivity : ComponentActivity() {
                     }
                 }
 
+            if (isFinishing) {
+                return@launch
+            }
             val outputFile = File(filesDir, OUTPUT_FILE_NAME)
             outputFile.writeText(result.toString(2))
             statusView.text = "Debug bridge finished: ${result.optBoolean("ok")}\n${outputFile.absolutePath}"
             delay(500)
+            if (isFinishing) {
+                return@launch
+            }
             finish()
         }
     }

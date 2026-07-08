@@ -1,6 +1,8 @@
 package com.clawdroid.app.ui
 
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -9,12 +11,12 @@ internal object ChatHistoryStore {
     private const val keyMessages = "messages"
     private const val maxMessages = 60
 
-    fun load(context: Context): List<ChatMessage> {
+    suspend fun load(context: Context): List<ChatMessage> = withContext(Dispatchers.IO) {
         val raw = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
             .getString(keyMessages, null)
-            ?: return emptyList()
+            ?: return@withContext emptyList()
 
-        return runCatching {
+        runCatching {
             val array = JSONArray(raw)
             buildList {
                 for (index in 0 until array.length()) {

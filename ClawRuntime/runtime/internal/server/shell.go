@@ -84,6 +84,12 @@ var allowedShellCommands = map[string]shellCommandTemplate{
 	},
 }
 
+var sortedAllowedShellCommands []string
+
+func init() {
+	sortedAllowedShellCommands = allowedShellCommandList()
+}
+
 type execShellArgs struct {
 	Command   string `json:"command"`
 	TimeoutMS int    `json:"timeout_ms"`
@@ -100,6 +106,11 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		}
 	}
 
+	rawCommand := ""
+	if v, ok := req.Args["command"].(string); ok {
+		rawCommand = v
+	}
+
 	args, err := parseExecShellArgs(req.Args, s.cfg.RequestTimeoutMS)
 	if err != nil {
 		return ipc.Response{
@@ -113,14 +124,17 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 
 	template, ok := allowedShellCommands[args.Command]
 	if !ok {
+		// Audit: log rejected shell command attempts for security traceability.
+		s.logger.Info(fmt.Sprintf("exec_shell_limited rejected: session=%s package=%s command=%q not in whitelist",
+			sess.id, sess.packageName, rawCommand))
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
 			Code:      ipc.CodeErrShellDenied,
-			Message:   fmt.Sprintf("command not allowed: %s", args.Command),
+			Message:   fmt.Sprintf("command not allowed: %s", rawCommand),
 			Data: mergeData(s.sessionData(sess), map[string]interface{}{
-				"command":          args.Command,
-				"allowed_commands": allowedShellCommandList(),
+				"command":          rawCommand,
+				"allowed_commands": sortedAllowedShellCommands,
 			}),
 		}
 	}
@@ -137,9 +151,9 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 			Code:      code,
 			Message:   execErr.Error(),
 			Data: mergeData(s.sessionData(sess), map[string]interface{}{
-				"command":            args.Command,
+				"command":            rawCommand,
 				"template_name":      template.Name,
-				"allowed_commands":   allowedShellCommandList(),
+				"allowed_commands":   sortedAllowedShellCommands,
 				"timeout_ms":         args.TimeoutMS,
 				"duration_ms":        result.DurationMS,
 				"exit_code":          result.ExitCode,
@@ -160,9 +174,9 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		Code:      ipc.CodeOK,
 		Message:   ipc.ErrorMessage(ipc.CodeOK),
 		Data: mergeData(s.sessionData(sess), map[string]interface{}{
-			"command":          args.Command,
+			"command":          rawCommand,
 			"template_name":    template.Name,
-			"allowed_commands": allowedShellCommandList(),
+			"allowed_commands": sortedAllowedShellCommands,
 			"timeout_ms":       args.TimeoutMS,
 			"duration_ms":      result.DurationMS,
 			"exit_code":        result.ExitCode,

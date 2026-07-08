@@ -1,6 +1,9 @@
 package com.clawdroid.app.ui
 
 import android.content.Context
+import android.content.SharedPreferences
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal object AppSettingsStore {
     private const val prefsName = "clawdroid_app_settings"
@@ -12,6 +15,28 @@ internal object AppSettingsStore {
     private const val keyModelName = "model_name"
     private const val keyLocalEndpoint = "local_endpoint"
     private const val keyLocalModelName = "local_model_name"
+    private const val keyCustomApiPath = "custom_api_path"
+    private const val keyUrlPathMode = "url_path_mode"
+    private const val keyContextSettings = "context_settings"
+
+    private var registeredListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+
+    @JvmStatic
+    fun registerListener(context: Context, listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        unregisterListener(context)
+        registeredListener = listener
+        context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+            .registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    @JvmStatic
+    fun unregisterListener(context: Context) {
+        registeredListener?.let { listener ->
+            context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+                .unregisterOnSharedPreferenceChangeListener(listener)
+            registeredListener = null
+        }
+    }
 
     fun loadThemeMode(context: Context): ThemeMode {
         val raw = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
@@ -35,19 +60,31 @@ internal object AppSettingsStore {
             .let { raw ->
                 ModelProvider.entries.firstOrNull { it.name == raw } ?: ModelProvider.OpenAI
             }
+        val baseUrl = prefs.getString(keyModelBaseUrl, null).orEmpty()
+            .takeIf { it.isNotBlank() }
+            ?: defaultBaseUrlFor(provider)
+        val urlPathMode = prefs.getString(keyUrlPathMode, null).orEmpty()
+            .let { raw ->
+                UrlPathMode.entries.firstOrNull { it.name == raw } ?: UrlPathMode.AutoAppend
+            }
+        val contextSettings = loadContextSettings(prefs)
+
         return ModelSettings(
             provider = provider,
-            baseUrl = prefs.getString(keyModelBaseUrl, defaultBaseUrlFor(provider)).orEmpty(),
+            baseUrl = baseUrl,
             apiKey = apiKey,
             modelName = prefs.getString(keyModelName, "").orEmpty(),
             localEndpoint = prefs.getString(keyLocalEndpoint, "http://127.0.0.1:11434/v1").orEmpty(),
-            localModelName = prefs.getString(keyLocalModelName, "").orEmpty()
+            localModelName = prefs.getString(keyLocalModelName, "").orEmpty(),
+            customApiPath = prefs.getString(keyCustomApiPath, "/chat/completions").orEmpty(),
+            urlPathMode = urlPathMode,
+            contextSettings = contextSettings
         )
     }
 
     fun saveModelSettings(context: Context, settings: ModelSettings) {
-        context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-            .edit()
+        val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        prefs.edit()
             .putString(keyModelProvider, settings.provider.name)
             .putString(keyModelBaseUrl, settings.baseUrl)
             .putString(keyModelApiKeyEncrypted, AppSecretCipher.encrypt(settings.apiKey))
@@ -55,10 +92,48 @@ internal object AppSettingsStore {
             .putString(keyModelName, settings.modelName)
             .putString(keyLocalEndpoint, settings.localEndpoint)
             .putString(keyLocalModelName, settings.localModelName)
+            .putString(keyCustomApiPath, settings.customApiPath)
+            .putString(keyUrlPathMode, settings.urlPathMode.name)
+            .putString(keyContextSettings, serializeContextSettings(settings.contextSettings))
             .apply()
     }
 
-    private fun loadApiKey(prefs: android.content.SharedPreferences): String {
+    private fun loadContextSettings(prefs: SharedPreferences): ContextSettings {
+        val json = prefs.getString(keyContextSettings, null).orEmpty()
+        if (json.isBlank()) return ContextSettings()
+        return try {
+            val obj = JSONObject(json)
+            ContextSettings(
+                systemPrompt = obj.optString("systemPrompt", ""),
+                maxTokens = obj.optInt("maxTokens", 4096),
+                temperature = obj.optDouble("temperature", 0.7).toFloat(),
+                topP = obj.optDouble("topP", 1.0).toFloat(),
+                topK = if (obj.has("topK") && !obj.isNull("topK")) obj.getInt("topK") else null,
+                stopSequences = obj.optJSONArray("stopSequences")?.let { arr ->
+                    (0 until arr.length()).map { arr.getString(it) }
+                } ?: emptyList(),
+                thinkingBudget = if (obj.has("thinkingBudget") && !obj.isNull("thinkingBudget")) obj.getInt("thinkingBudget") else null
+            )
+        } catch (_: Exception) {
+            ContextSettings()
+        }
+    }
+
+    private fun serializeContextSettings(cs: ContextSettings): String {
+        return JSONObject().apply {
+            put("systemPrompt", cs.systemPrompt)
+            put("maxTokens", cs.maxTokens)
+            put("temperature", cs.temperature.toDouble())
+            put("topP", cs.topP.toDouble())
+            cs.topK?.let { put("topK", it) }
+            if (cs.stopSequences.isNotEmpty()) {
+                put("stopSequences", JSONArray(cs.stopSequences))
+            }
+            cs.thinkingBudget?.let { put("thinkingBudget", it) }
+        }.toString()
+    }
+
+    private fun loadApiKey(prefs: SharedPreferences): String {
         val encrypted = prefs.getString(keyModelApiKeyEncrypted, "").orEmpty()
         if (encrypted.isNotBlank()) {
             return runCatching { AppSecretCipher.decrypt(encrypted) }.getOrDefault("")

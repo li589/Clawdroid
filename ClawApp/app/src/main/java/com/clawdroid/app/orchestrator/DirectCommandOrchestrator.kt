@@ -26,6 +26,11 @@ object DirectCommandOrchestrator {
             return ParsedIntent.None
         }
 
+        // 以 / 开头的输入执行严格前缀匹配，降低 prompt 注入风险
+        if (normalized.startsWith("/")) {
+            return matchDirectCommand(normalized)
+        }
+
         // ========== 本地感知工具 ==========
         if (matchAny(normalized, listOf("确认页面", "确认当前页面", "页面确认"))) {
             return ParsedIntent.ToolCall(ClawTool.PAGE_CONFIRM)
@@ -92,6 +97,54 @@ object DirectCommandOrchestrator {
     private fun matchAny(text: String, keywords: List<String>): Boolean {
         val lower = text.lowercase()
         return keywords.any { kw -> lower.contains(kw.lowercase()) }
+    }
+
+    /**
+     * 对以 / 开头的命令执行严格前缀匹配。
+     * 关键词必须从命令起始处（跳过 /）开始匹配，避免 prompt 注入绕过。
+     */
+    private fun matchDirectCommand(text: String): ParsedIntent {
+        val stripped = text.removePrefix("/").trim().lowercase()
+        return when {
+            stripped.startsWith("确认") || stripped.startsWith("page confirm") ->
+                ParsedIntent.ToolCall(ClawTool.PAGE_CONFIRM)
+            stripped.startsWith("点击前检查") || stripped.startsWith("检查点击") ->
+                ParsedIntent.ToolCall(ClawTool.CLICK_PRECHECK)
+            stripped.startsWith("安全点击") ->
+                ParsedIntent.RawText("安全点击")
+            stripped.startsWith("ping") || stripped.startsWith("连通") || stripped.startsWith("连接测试") ->
+                ParsedIntent.ToolCall(ClawTool.RUNTIME_PING)
+            stripped.startsWith("版本") ->
+                ParsedIntent.ToolCall(ClawTool.GET_VERSION)
+            stripped.startsWith("健康") ->
+                ParsedIntent.ToolCall(ClawTool.GET_HEALTH)
+            stripped.startsWith("最近错误") || stripped.startsWith("last error") ->
+                ParsedIntent.ToolCall(ClawTool.GET_LAST_ERROR)
+            stripped.startsWith("获取能力") || stripped.startsWith("capabilities") ->
+                ParsedIntent.ToolCall(ClawTool.GET_CAPABILITIES)
+            stripped.startsWith("probe") || stripped.startsWith("会话探测") ->
+                ParsedIntent.ToolCall(ClawTool.PROBE_SESSION)
+            stripped.startsWith("截图并预览") || stripped.startsWith("截屏并预览") ->
+                ParsedIntent.ToolCall(
+                    ClawTool.CAPTURE_SCREEN,
+                    arguments = mapOf("read_after_capture" to "true")
+                )
+            stripped.startsWith("截图") || stripped.startsWith("截屏") || stripped.startsWith("capture") ->
+                ParsedIntent.ToolCall(ClawTool.CAPTURE_SCREEN)
+            stripped.startsWith("读取最近截图") || stripped.startsWith("预览最近截图") ->
+                ParsedIntent.ToolCall(ClawTool.READ_LATEST_CAPTURE)
+            stripped.startsWith("读取文件") || stripped.startsWith("read file") ->
+                ParsedIntent.ToolCall(ClawTool.READ_FILE_LIMITED)
+            stripped.startsWith("点击") || stripped.startsWith("tap") ->
+                parseTapIntent(text)
+            stripped.startsWith("滑动") || stripped.startsWith("swipe") ->
+                parseSwipeIntent(text)
+            stripped.startsWith("执行 shell") || stripped.startsWith("执行命令") || stripped.startsWith("shell") ->
+                ParsedIntent.ToolCall(ClawTool.EXECUTE_SHELL_LIMITED)
+            stripped.startsWith("订阅事件") || stripped.startsWith("开始订阅") ->
+                ParsedIntent.ToolCall(ClawTool.SUBSCRIBE_EVENTS)
+            else -> ParsedIntent.RawText(text)
+        }
     }
 
     private fun parseTapIntent(text: String): ParsedIntent.ToolCall {

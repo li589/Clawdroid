@@ -33,6 +33,7 @@ data class MagiskModuleStatus(
 
 object AppPermissionManager {
     private const val ROOT_COMMAND_TIMEOUT_SECONDS = 20L
+    private const val ROOT_OUTPUT_MAX_BYTES = 65536
 
     fun notificationPermissionGranted(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -130,18 +131,34 @@ object AppPermissionManager {
                 )
             }
 
-            val output = BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                reader.readText().trim()
-            }
+            val output = readBoundedOutput(process.inputStream, ROOT_OUTPUT_MAX_BYTES)
             return@withContext if (process.exitValue() == 0) {
-                RootActionResult(true, output)
+                RootActionResult(true, output.trim())
             } else {
-                RootActionResult(false, output.ifBlank { "Root 命令执行失败，exit=${process.exitValue()}" })
+                RootActionResult(false, output.trim().ifBlank { "Root 命令执行失败，exit=${process.exitValue()}" })
             }
         } catch (error: Exception) {
             RootActionResult(false, "Root 命令执行异常: ${error.message}")
         } finally {
             process.destroy()
+        }
+    }
+
+    private fun readBoundedOutput(inputStream: java.io.InputStream, maxBytes: Int): String {
+        val buffer = ByteArray(maxBytes + 1)
+        var totalRead = 0
+        var singleRead: Int
+        while (totalRead < maxBytes) {
+            singleRead = inputStream.read(buffer, totalRead, maxBytes - totalRead)
+            if (singleRead < 0) break
+            totalRead += singleRead
+        }
+        val truncated = totalRead >= maxBytes
+        val result = String(buffer, 0, totalRead, Charsets.UTF_8)
+        return if (truncated) {
+            result + " [...output truncated at ${maxBytes} bytes...]"
+        } else {
+            result
         }
     }
 
@@ -358,16 +375,14 @@ object AppPermissionManager {
                     )
                 }
 
-                val output = BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                    reader.readText().trim()
-                }
+                val output = readBoundedOutput(process.inputStream, ROOT_OUTPUT_MAX_BYTES)
                 if (process.exitValue() != 0) {
                     return@withContext MagiskModuleStatus(
                         modulePath = modulePath,
-                        rawOutput = output
+                        rawOutput = output.trim()
                     )
                 }
-                return@withContext parseMagiskModuleStatus(output)
+                return@withContext parseMagiskModuleStatus(output.trim())
             } catch (error: Exception) {
                 return@withContext MagiskModuleStatus(
                     modulePath = modulePath,

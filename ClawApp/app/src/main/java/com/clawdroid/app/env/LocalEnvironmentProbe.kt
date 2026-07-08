@@ -1,8 +1,10 @@
 package com.clawdroid.app.env
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import com.clawdroid.app.service.ClawAccessibilityService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -203,12 +205,26 @@ object LocalEnvironmentProbe {
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         )
 
-        return hasAccessibilityServiceEnabled(
+        val settingsCheck = hasAccessibilityServiceEnabled(
             enabledFlag = enabledFlag,
             enabledServices = services,
             fullComponentName = component.flattenToString(),
             shortComponentName = component.flattenToShortString()
         )
+        if (settingsCheck) return true
+
+        // Cross-verify with AccessibilityService API.
+        val a11yManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+        val a11yServices = a11yManager?.getEnabledAccessibilityServiceList(
+            AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        )
+        return a11yServices?.any { svc ->
+            svc.id == component.flattenToShortString() ||
+                svc.resolveInfo.serviceInfo.let { info ->
+                    info.packageName == component.packageName &&
+                        info.name == component.className.substringAfterLast('.')
+                }
+        } == true
     }
 
     private fun detectLsposedManagerInstalled(context: Context): Boolean {
