@@ -35,7 +35,8 @@ func Default() Config {
 		LogLevel:           "info",
 		ProtocolVersion:    1,
 		RequestTimeoutMS:   8000,
-		MaxPayloadBytes:    262144,
+		// Must fit base64(file chunk) + JSON wrapper for read_file_limited responses.
+		MaxPayloadBytes:    2 * 1024 * 1024,
 		RateLimitPerMinute: 120,
 		AuthSharedSecret:   "",
 		AllowedPackages:    []string{"com.clawdroid.app", "com.clawdroid.app.debug"},

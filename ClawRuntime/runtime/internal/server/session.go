@@ -147,6 +147,7 @@ func (s *Server) issueChallenge(sess *session) {
 }
 
 func (s *Server) finalizeCapabilityState(sess *session) {
+	sess.capabilities = s.capabilityList()
 	sess.transition(StateCapabilitySynced)
 
 	if s.cfg.InputInjectEnabled || s.cfg.ScreenshotEnabled || s.cfg.ShellEnabled || s.cfg.FileBridgeEnabled {

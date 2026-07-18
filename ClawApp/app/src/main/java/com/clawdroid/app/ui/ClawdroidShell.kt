@@ -13,19 +13,47 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clawdroid.app.BuildConfig
 import com.clawdroid.app.env.AppPermissionManager
+import com.clawdroid.app.mcp.McpJsonRpcHandler
+import com.clawdroid.app.mcp.McpServerController
+import com.clawdroid.app.mcp.assist.AssistMcpController
 import com.clawdroid.app.runtime.ClawRuntimeClient
+import com.clawdroid.app.focus.XposedFocusRuntimeReporter
+import com.clawdroid.app.focus.XposedViewRuntimeReporter
+import com.clawdroid.app.runtime.RuntimeEventService
+import com.clawdroid.app.ai.AiAgentOrchestrator
+import com.clawdroid.app.skills.ClawSkillCatalog
+import com.clawdroid.app.tools.CapabilityProbe
+import com.clawdroid.app.tools.ClawToolCallResult
+import com.clawdroid.app.tools.ClawToolDispatcher
 import com.clawdroid.app.tools.ClawToolExecutor
+import com.clawdroid.app.tools.LiveToolCapabilityStore
+import com.clawdroid.app.tools.ToolPermissionGate
+import com.clawdroid.app.tools.ToolServiceRegistry
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 
 private val floatingNavReservedHeight = 108.dp
+private const val EVENT_BRIDGE_TIMEOUT_MS = 15_000L
 
 @Composable
 internal fun ClawdroidShell(
@@ -36,17 +64,188 @@ internal fun ClawdroidShell(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val overviewController = rememberOverviewController(context, runtimeClient, toolExecutor, previewLimitBytes)
+    val eventScope = remember {
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    }
+    DisposableEffect(eventScope) {
+        onDispose { eventScope.cancel() }
+    }
+    val runtimeEventService = remember(runtimeClient, eventScope) {
+        RuntimeEventService(runtimeClient, eventScope)
+    }
+    DisposableEffect(runtimeEventService) {
+        onDispose { runtimeEventService.shutdown() }
+    }
+    val xposedFocusReporter = remember(runtimeClient, eventScope) {
+        XposedFocusRuntimeReporter(runtimeClient, eventScope)
+    }
+    DisposableEffect(xposedFocusReporter) {
+        xposedFocusReporter.start()
+        onDispose { xposedFocusReporter.stop() }
+    }
+    val xposedViewReporter = remember(runtimeClient, eventScope) {
+        XposedViewRuntimeReporter(runtimeClient, eventScope)
+    }
+    DisposableEffect(xposedViewReporter) {
+        xposedViewReporter.start()
+        onDispose { xposedViewReporter.stop() }
+    }
+    val overviewController = rememberOverviewController(
+        context = context,
+        runtimeClient = runtimeClient,
+        toolExecutor = toolExecutor,
+        previewLimitBytes = previewLimitBytes,
+        eventService = runtimeEventService
+    )
     val overviewUiState by overviewController.uiState.collectAsStateWithLifecycle()
     val overviewDashboardMetrics by overviewController.dashboardMetrics.collectAsStateWithLifecycle()
     val overviewCapturePreview by overviewController.latestCapturePreview.collectAsStateWithLifecycle()
     val automationUiState by overviewController.automationController.state.collectAsStateWithLifecycle()
-    val chatViewModel = rememberChatViewModel(context, overviewController)
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    val assistController = remember(context) {
+        AssistMcpController(context.applicationContext)
+    }
+    val toolServices = remember(context, runtimeClient, assistController) {
+        ToolServiceRegistry.create(
+            context = context.applicationContext,
+            runtimeClient = runtimeClient,
+            assist = assistController
+        )
+    }
+    LaunchedEffect(toolExecutor) {
+        runCatching { CapabilityProbe(toolExecutor).refreshIfStale() }
+    }
+    LaunchedEffect(context) {
+        ClawSkillCatalog.bindContext(context.applicationContext)
+        AiAgentOrchestrator.bindContext(context.applicationContext)
+    }
+    val toolDispatcher = remember(
+        toolExecutor,
+        runtimeEventService,
+        previewLimitBytes,
+        toolServices
+    ) {
+        ClawToolDispatcher(
+            executor = toolExecutor,
+            previewLimitBytes = previewLimitBytes,
+            permissionGate = ToolPermissionGate(
+                context = context.applicationContext,
+                assistEnabled = { assistController.isEnabled() },
+                knownCapabilities = { LiveToolCapabilityStore.snapshot() }
+            ),
+            appContext = context.applicationContext,
+            services = toolServices,
+            eventBridge = ClawToolDispatcher.EventBridge { operation ->
+                try {
+                    withTimeout(EVENT_BRIDGE_TIMEOUT_MS) {
+                        suspendCancellableCoroutine { continuation ->
+                            when (operation.lowercase()) {
+                                "stop" -> runtimeEventService.stop {
+                                    if (continuation.isActive) {
+                                        continuation.resume(
+                                            ClawToolCallResult(success = true, output = "事件流已停止")
+                                        )
+                                    }
+                                }
+                                else -> runtimeEventService.start(
+                                    onStarted = { message ->
+                                        if (continuation.isActive) {
+                                            continuation.resume(
+                                                ClawToolCallResult(success = true, output = message)
+                                            )
+                                        }
+                                    },
+                                    onClosed = { reason ->
+                                        if (continuation.isActive) {
+                                            continuation.resume(
+                                                ClawToolCallResult(
+                                                    success = false,
+                                                    output = "事件流已关闭：$reason",
+                                                    error = reason
+                                                )
+                                            )
+                                        }
+                                    },
+                                    onFailure = { message ->
+                                        if (continuation.isActive) {
+                                            continuation.resume(
+                                                ClawToolCallResult(
+                                                    success = false,
+                                                    output = "事件订阅失败：$message",
+                                                    error = message
+                                                )
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                } catch (_: TimeoutCancellationException) {
+                    ClawToolCallResult(
+                        success = false,
+                        output = "事件桥接超时（${EVENT_BRIDGE_TIMEOUT_MS}ms）",
+                        error = "event_bridge_timeout"
+                    )
+                }
+            }
+        )
+    }
+    DisposableEffect(overviewController, toolDispatcher) {
+        overviewController.setCaptureArtifactListener { artifact ->
+            toolDispatcher.rememberCapture(artifact)
+        }
+        onDispose {
+            overviewController.setCaptureArtifactListener(null)
+        }
+    }
+    val chatViewModel = rememberChatViewModel(context, overviewController, toolDispatcher)
+    DisposableEffect(overviewController, chatViewModel) {
+        overviewController.setRuntimeTaskEventListener { snapshot ->
+            chatViewModel.onRuntimeTaskEvent(snapshot)
+        }
+        onDispose {
+            overviewController.setRuntimeTaskEventListener(null)
+        }
+    }
     val chatUiState by chatViewModel.uiState.collectAsStateWithLifecycle()
     val settingsViewModel = rememberSettingsViewModel(context)
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
     val navigationViewModel = rememberNavigationViewModel()
     val navigationUiState by navigationViewModel.uiState.collectAsStateWithLifecycle()
+
+    val mcpController = remember(context, toolDispatcher) {
+        McpServerController(
+            appContext = context.applicationContext,
+            handlerFactory = {
+                McpJsonRpcHandler(
+                    dispatcher = toolDispatcher,
+                    appContext = context.applicationContext,
+                    capabilityProbe = CapabilityProbe(toolExecutor)
+                )
+            }
+        )
+    }
+    val mcpUiState by mcpController.state.collectAsStateWithLifecycle()
+    val assistUiState by assistController.state.collectAsStateWithLifecycle()
+
+    DisposableEffect(mcpController) {
+        mcpController.restoreIfEnabled()
+        onDispose { mcpController.pause() }
+    }
+
+    DisposableEffect(lifecycleOwner, overviewController) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                overviewController.onHostStarted()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -129,9 +328,19 @@ internal fun ClawdroidShell(
         runtimeHealthStatus = overviewRuntimeState.healthStatus,
         runtimeLastErrorStatus = overviewRuntimeState.lastErrorStatus,
         runtimeConfigSummary = overviewRuntimeState.runtimeConfigSummary,
-        settingsState = settingsUiState
+        settingsState = settingsUiState,
+        mcpState = mcpUiState,
+        assistState = assistUiState
     )
-    val settingsScreenActions = settingsViewModel.buildSettingsScreenActions()
+    val settingsScreenActions = settingsViewModel.buildSettingsScreenActions(
+        onMcpEnabledChanged = mcpController::setEnabled,
+        onMcpPortChanged = mcpController::updatePort,
+        onMcpRegenerateToken = mcpController::regenerateToken,
+        onAssistEnabledChanged = assistController::setEnabled,
+        onAssistHostUrlChanged = assistController::updateHostUrl,
+        onAssistTokenChanged = assistController::updateToken,
+        onAssistProbe = assistController::probe
+    )
     val chatConsoleState = buildChatConsoleState(
         chatState = chatUiState,
         modelSettings = settingsUiState.modelSettings,
@@ -194,6 +403,14 @@ internal fun ClawdroidShell(
                                 runtimeActions = overviewRuntimeActions,
                                 eventState = overviewEventState,
                                 eventActions = overviewEventActions,
+                                assistMcpStatus = AssistMcpOverviewStatus(
+                                    phoneServerRunning = mcpUiState.running,
+                                    phoneServerStatus = mcpUiState.statusText,
+                                    assistClientEnabled = assistUiState.enabled,
+                                    assistClientStatus = assistUiState.statusText,
+                                    assistLastError = assistUiState.lastError,
+                                    liveCapabilityCount = LiveToolCapabilityStore.snapshot().size
+                                ),
                                 debugHighlightLongContent = BuildConfig.DEBUG && debugSeedLongOverview
                             )
                         }

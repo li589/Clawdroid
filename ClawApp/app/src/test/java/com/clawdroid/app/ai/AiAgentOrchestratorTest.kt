@@ -24,6 +24,29 @@ class AiAgentOrchestratorTest {
     }
 
     @Test
+    fun parseAgentPlanRejectsUnknownArgsForSchemaTools() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """
+            {"mode":"tool","reply":"tap","tool":"inject_tap","arguments":{"x":"10","y":"20","evil":"1"},"reason":"bad"}
+            """.trimIndent()
+        )
+        assertTrue(plan is AiAgentPlan.AssistantReply)
+    }
+
+    @Test
+    fun parseAgentPlanAcceptsSchemaArgsForInjectTap() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """
+            {"mode":"tool","reply":"tap","tool":"inject_tap","arguments":{"x":"10","y":"20","display_id":"0"},"reason":"ok"}
+            """.trimIndent()
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.INJECT_TAP, plan.tool)
+        assertEquals("10", plan.arguments["x"])
+    }
+
+    @Test
     fun parseAgentPlanFallsBackToAssistantReplyForPlainText() {
         val plan = AiAgentOrchestrator.parseAgentPlan("这是普通回复")
 
@@ -44,7 +67,7 @@ class AiAgentOrchestratorTest {
         )
 
         assertTrue(summary.contains("AI 已就绪"))
-        assertTrue(summary.contains("Local"))
+        assertTrue(summary.contains("本地模型"))
     }
 
     @Test
@@ -67,5 +90,58 @@ class AiAgentOrchestratorTest {
         assertTrue(prompt.contains("get_capabilities / 读取能力列表"))
         assertTrue(prompt.contains("source=ai"))
         assertTrue(prompt.contains("成功: root=true, accessibility=true"))
+    }
+
+    @Test
+    fun buildContinueUserPromptIncludesPriorStepsAndRemainingTurns() {
+        val prompt = AiAgentOrchestrator.buildContinueUserPrompt(
+            originalPrompt = "先探测再看能力",
+            steps = listOf(
+                AiToolStepRecord(
+                    tool = ClawTool.PROBE_SESSION,
+                    arguments = emptyMap(),
+                    success = true,
+                    output = "probe-ok"
+                )
+            ),
+            remainingTurns = 2
+        )
+
+        assertTrue(prompt.contains("先探测再看能力"))
+        assertTrue(prompt.contains("tool=probe_session success=true"))
+        assertTrue(prompt.contains("probe-ok"))
+        assertTrue(prompt.contains("剩余可继续工具轮次: 2"))
+    }
+
+    @Test
+    fun buildContinueSystemPromptMentionsRemainingTurns() {
+        val prompt = AiAgentOrchestrator.buildContinueSystemPrompt(
+            runtimeSnapshot = AiRuntimeSnapshot(
+                sessionSummary = "ready",
+                capabilityStatus = "loaded",
+                eventStreaming = false
+            ),
+            remainingTurns = 3
+        )
+        assertTrue(prompt.contains("剩余可继续工具轮次：3"))
+        assertTrue(prompt.contains("mode=tool"))
+        assertTrue(prompt.contains("mode=chat"))
+    }
+
+    @Test
+    fun truncateStepOutputKeepsShortTextAndCutsLongText() {
+        assertEquals("short", AiAgentOrchestrator.truncateStepOutput("short"))
+        val long = "x".repeat(2500)
+        val truncated = AiAgentOrchestrator.truncateStepOutput(long)
+        assertTrue(truncated.contains("...(truncated)"))
+        assertTrue(truncated.length < long.length)
+    }
+
+    @Test
+    fun parseAgentPlanCanEndLoopWithChatMode() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """{"mode":"chat","reply":"探测与能力均已完成。","tool":"","arguments":{},"reason":"done"}"""
+        )
+        assertEquals(AiAgentPlan.AssistantReply("探测与能力均已完成。"), plan)
     }
 }

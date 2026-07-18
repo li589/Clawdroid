@@ -40,6 +40,16 @@ type Server struct {
 	lastRateLimitAt      time.Time
 	lastRateLimitMessage string
 	rateLimitHits        int
+
+	focusMu           sync.RWMutex
+	latestXposedFocus map[string]interface{}
+	latestXposedView  map[string]interface{}
+
+	// Per-subscriber wake channels. Each subscribe_events loop registers its
+	// own buffered channel so a single report_xposed_* wakes every subscriber,
+	// not just one of them.
+	eventSubsMu sync.Mutex
+	eventSubs   map[chan struct{}]struct{}
 }
 
 func New(cfg config.Config, logger *audit.Logger) *Server {
@@ -56,9 +66,50 @@ func New(cfg config.Config, logger *audit.Logger) *Server {
 		signaturePrefixMap: sigMap,
 		idempotencyCache:   newIdempotencyCache(),
 		startedAt:          time.Now(),
+		eventSubs:          make(map[chan struct{}]struct{}),
 	}
 	s.taskScheduler = task.NewScheduler(s, s.onTaskStateChange)
 	return s
+}
+
+// registerEventSub adds a subscriber's wake channel to the broadcast set.
+func (s *Server) registerEventSub(ch chan struct{}) {
+	if s == nil {
+		return
+	}
+	s.eventSubsMu.Lock()
+	if s.eventSubs == nil {
+		s.eventSubs = make(map[chan struct{}]struct{})
+	}
+	s.eventSubs[ch] = struct{}{}
+	s.eventSubsMu.Unlock()
+}
+
+// unregisterEventSub removes a subscriber's wake channel.
+func (s *Server) unregisterEventSub(ch chan struct{}) {
+	if s == nil {
+		return
+	}
+	s.eventSubsMu.Lock()
+	delete(s.eventSubs, ch)
+	s.eventSubsMu.Unlock()
+}
+
+// notifyEventWake non-blockingly signals every registered subscriber. Each
+// channel has capacity 1, so a subscriber that is already pending a wake
+// simply keeps the earlier signal.
+func (s *Server) notifyEventWake() {
+	if s == nil {
+		return
+	}
+	s.eventSubsMu.Lock()
+	defer s.eventSubsMu.Unlock()
+	for ch := range s.eventSubs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -174,7 +225,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 			sess.transition(StateClosed)
 			return nil
 		}
-		if req.RequestID == "" || req.Action == "" || req.Args == nil || len(req.Args) == 0 {
+		if req.RequestID == "" || req.Action == "" {
 			s.logAudit(sess, req, loopStartedAt, ipc.CodeErrInvalidRequest, ipc.ErrorMessage(ipc.CodeErrInvalidRequest), "", audit.AuditLevelLow)
 			_ = writeResponseFrame(writer, ipc.Response{
 				RequestID: req.RequestID,
@@ -184,6 +235,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 				Data:      s.sessionData(sess),
 			})
 			continue
+		}
+		// ping / get_capabilities / get_runtime_status / task_list may legitimately send {}.
+		if req.Args == nil {
+			req.Args = map[string]interface{}{}
 		}
 		if sess.sessionExpired(s.cfg.SessionTTLSec) {
 			sess.setAuthFailure(1004, "session expired")
@@ -295,7 +350,7 @@ func (s *Server) resolveSocketAddress() (string, func(), error) {
 
 func readJSONFrame(reader *bufio.Reader, maxPayloadBytes int) ([]byte, error) {
 	if maxPayloadBytes <= 0 {
-		maxPayloadBytes = 262144
+		maxPayloadBytes = 2 * 1024 * 1024
 	}
 
 	header := make([]byte, 4)

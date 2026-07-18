@@ -4,6 +4,8 @@ import com.clawdroid.app.automation.AccessibilitySnapshot
 import com.clawdroid.app.automation.AutomationRuntimeStore
 import com.clawdroid.app.automation.AutomationTaskSnapshot
 import com.clawdroid.app.automation.AutomationTaskState
+import com.clawdroid.app.tools.ClawTool
+import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolExecutor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +13,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -23,7 +26,7 @@ internal class AutomationController(
     private val formState = MutableStateFlow(AutomationFormState())
 
     val state: StateFlow<OverviewAutomationState> = combine(
-        AutomationRuntimeStore.accessibilitySnapshot,
+        AutomationRuntimeStore.accessibilitySnapshot.debounce(400L),
         AutomationRuntimeStore.taskSnapshot,
         formState.asStateFlow()
     ) { accessibilitySnapshot, taskSnapshot, currentFormState ->
@@ -121,6 +124,57 @@ internal class AutomationController(
         val result = toolExecutor.safeTapUsingResolvedTarget()
         formState.update { it.copy(safeTapStatus = result.output) }
         return result.output
+    }
+
+    /**
+     * Sync automation form status after a tool was executed via [com.clawdroid.app.tools.ClawToolDispatcher].
+     */
+    fun applyDispatchedToolEffects(
+        tool: ClawTool,
+        arguments: Map<String, String>,
+        result: ClawToolCallResult
+    ) {
+        when (tool) {
+            ClawTool.PAGE_CONFIRM -> {
+                formState.update {
+                    it.copy(
+                        pageConfirmPackage = arguments["expected_package"]
+                            ?.takeIf { value -> value.isNotBlank() }
+                            ?: it.pageConfirmPackage,
+                        pageConfirmText = arguments["expected_text"]
+                            ?.takeIf { value -> value.isNotBlank() }
+                            ?: it.pageConfirmText,
+                        pageConfirmViewId = arguments["expected_view_id"]
+                            ?.takeIf { value -> value.isNotBlank() }
+                            ?: it.pageConfirmViewId,
+                        pageConfirmStatus = result.output
+                    )
+                }
+            }
+
+            ClawTool.CLICK_PRECHECK -> {
+                formState.update {
+                    it.copy(
+                        clickPrecheckPackage = arguments["expected_package"]
+                            ?.takeIf { value -> value.isNotBlank() }
+                            ?: it.clickPrecheckPackage,
+                        clickPrecheckText = arguments["target_text"]
+                            ?.takeIf { value -> value.isNotBlank() }
+                            ?: it.clickPrecheckText,
+                        clickPrecheckViewId = arguments["target_view_id"]
+                            ?.takeIf { value -> value.isNotBlank() }
+                            ?: it.clickPrecheckViewId,
+                        clickPrecheckStatus = result.output
+                    )
+                }
+            }
+
+            ClawTool.SAFE_TAP -> {
+                formState.update { it.copy(safeTapStatus = result.output) }
+            }
+
+            else -> Unit
+        }
     }
 }
 

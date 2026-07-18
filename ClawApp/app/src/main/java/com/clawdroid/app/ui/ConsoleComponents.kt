@@ -31,6 +31,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.clawdroid.app.automation.AutomationTaskState
 import com.clawdroid.app.env.LocalEnvironmentStatus
+import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.runtime.ClawRuntimeConnectionState
 
 private enum class StatusTone {
@@ -458,9 +460,10 @@ internal fun ChatWorkspaceCard(
                         )
                         FilledTonalButton(
                             onClick = onSend,
+                            enabled = !isBusy,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(text = "发送")
+                            Text(text = if (isBusy) "处理中" else "发送")
                         }
                     }
                 }
@@ -478,8 +481,11 @@ internal fun QuickActionCard(
     onCapture: () -> Unit,
     onShell: () -> Unit,
     onSafeTapTask: () -> Unit = {},
+    onHealthSweepTask: () -> Unit = {},
+    onSwipeCaptureTask: () -> Unit = {},
     onEvents: () -> Unit,
-    eventStreaming: Boolean
+    eventStreaming: Boolean,
+    actionsEnabled: Boolean = true
 ) {
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
@@ -498,14 +504,17 @@ internal fun QuickActionCard(
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
                 verticalArrangement = Arrangement.spacedBy(vSpacing)
             ) {
-                AssistChip(onClick = onPing, label = { Text("Ping") })
-                AssistChip(onClick = onRuntimeCheck, label = { Text("运行时检查") })
-                AssistChip(onClick = onCapabilities, label = { Text("Capabilities") })
-                AssistChip(onClick = onCapture, label = { Text("截图") })
-                AssistChip(onClick = onShell, label = { Text("wm size") })
-                AssistChip(onClick = onSafeTapTask, label = { Text("确认后点击") })
+                AssistChip(onClick = onPing, enabled = actionsEnabled, label = { Text("Ping") })
+                AssistChip(onClick = onRuntimeCheck, enabled = actionsEnabled, label = { Text("运行时检查") })
+                AssistChip(onClick = onHealthSweepTask, enabled = actionsEnabled, label = { Text("运行时体检") })
+                AssistChip(onClick = onCapabilities, enabled = actionsEnabled, label = { Text("Capabilities") })
+                AssistChip(onClick = onCapture, enabled = actionsEnabled, label = { Text("截图并预览") })
+                AssistChip(onClick = onSwipeCaptureTask, enabled = actionsEnabled, label = { Text("滑动后截图") })
+                AssistChip(onClick = onShell, enabled = actionsEnabled, label = { Text("wm size") })
+                AssistChip(onClick = onSafeTapTask, enabled = actionsEnabled, label = { Text("确认后点击") })
                 AssistChip(
                     onClick = onEvents,
+                    enabled = actionsEnabled,
                     label = { Text(if (eventStreaming) "停止事件流" else "开始事件流") }
                 )
             }
@@ -627,6 +636,7 @@ internal fun ChatTaskExecutionCard(
                         )
                     }
                 }
+                TaskProgressBar(task = taskExecution)
                 ResultPanel(
                     text = buildTaskOverviewText(taskExecution)
                 )
@@ -764,6 +774,136 @@ internal fun ChatReadinessCard(
     }
 }
 
+@Composable
+private fun TaskProgressBar(task: ChatTaskExecutionState) {
+    val total = task.steps.size.coerceAtLeast(1)
+    val finished = task.steps.count {
+        it.status == ChatTaskProgressState.Succeeded ||
+            it.status == ChatTaskProgressState.Failed ||
+            it.status == ChatTaskProgressState.Cancelled
+    }
+    val running = task.steps.count { it.status == ChatTaskProgressState.Running }
+    val progress = when (task.status) {
+        ChatTaskProgressState.Succeeded -> 1f
+        ChatTaskProgressState.Failed,
+        ChatTaskProgressState.Cancelled -> (finished.toFloat() / total).coerceIn(0f, 1f)
+        else -> ((finished + running * 0.5f) / total).coerceIn(0f, 1f)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = buildString {
+                append("进度 ${finished}/${total}")
+                if (running > 0) {
+                    append(" · 执行中 $running")
+                }
+                task.runtimeTaskId?.takeIf { it.isNotBlank() }?.let {
+                    append(" · Runtime $it")
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun RuntimeTasksCard(
+    tasks: List<ClawRuntimeTaskSnapshot>,
+    status: String,
+    eventStreaming: Boolean,
+    onRefresh: () -> Unit,
+    onCancel: (String) -> Unit
+) {
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    val hSpacing = responsiveFlowHSpacing()
+    val vSpacing = responsiveFlowVSpacing()
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(text = "Runtime 任务", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = if (eventStreaming) {
+                            "事件流已开启，状态会自动刷新"
+                        } else {
+                            "建议开启事件流以实时更新；也可手动刷新"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                AssistChip(
+                    onClick = onRefresh,
+                    label = { Text("刷新") }
+                )
+            }
+            ResultPanel(text = status)
+            if (tasks.isEmpty()) {
+                Text(
+                    text = "暂无 Runtime 任务。可在聊天中使用 /task_submit demo ping 或 task_list。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                tasks.forEach { task ->
+                    val cancellable = task.state.equals("Running", ignoreCase = true) ||
+                        task.state.equals("Queued", ignoreCase = true) ||
+                        task.state.equals("Retrying", ignoreCase = true) ||
+                        task.state.equals("WaitingSignal", ignoreCase = true)
+                    StatusCard(
+                        title = task.name.ifBlank { task.taskId }.ifBlank { "未命名任务" },
+                        content = task.summaryLine(),
+                        maxContentLines = 4
+                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(hSpacing),
+                        verticalArrangement = Arrangement.spacedBy(vSpacing)
+                    ) {
+                        StatusChip(
+                            label = task.state.ifBlank { "Unknown" },
+                            tone = toneForRuntimeTaskState(task.state)
+                        )
+                        if (cancellable && task.taskId.isNotBlank()) {
+                            AssistChip(
+                                onClick = { onCancel(task.taskId) },
+                                label = { Text("取消") }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun toneForRuntimeTaskState(state: String): StatusTone {
+    return when (state.lowercase()) {
+        "succeeded" -> StatusTone.Success
+        "failed" -> StatusTone.Danger
+        "cancelled" -> StatusTone.Warning
+        "running", "queued", "retrying", "waitingsignal", "compensating" -> StatusTone.Active
+        else -> StatusTone.Neutral
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TaskDetailPanel(
@@ -896,6 +1036,9 @@ private fun buildTaskOverviewText(task: ChatTaskExecutionState): String {
         if (task.taskAction != null) {
             appendLine("任务类型: ${taskActionLabel(task.taskAction)}")
         }
+        task.runtimeTaskId?.takeIf { it.isNotBlank() }?.let {
+            appendLine("Runtime 任务: $it")
+        }
         if (task.retryCount > 0) {
             appendLine("重试次数: 第 ${task.retryCount} 次")
         }
@@ -949,6 +1092,9 @@ private fun taskActionLabel(action: com.clawdroid.app.chat.ChatTaskAction): Stri
     return when (action) {
         com.clawdroid.app.chat.ChatTaskAction.ConfirmThenSafeTap -> "页面确认后安全点击"
         com.clawdroid.app.chat.ChatTaskAction.ProbeThenCapabilities -> "运行时状态检查"
+        com.clawdroid.app.chat.ChatTaskAction.CaptureThenPreview -> "截图并预览"
+        com.clawdroid.app.chat.ChatTaskAction.RuntimeHealthSweep -> "运行时体检"
+        com.clawdroid.app.chat.ChatTaskAction.SwipeThenCapture -> "滑动后截图"
     }
 }
 

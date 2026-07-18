@@ -169,6 +169,7 @@ internal object ChatTaskHistoryStore {
                 ?.let { actionName ->
                     com.clawdroid.app.chat.ChatTaskAction.entries.firstOrNull { it.name == actionName }
                 },
+            runtimeTaskId = item.optString("runtime_task_id").takeIf { it.isNotBlank() },
             failureReason = item.optString("failure_reason").takeIf { it.isNotBlank() },
             originPrompt = item.optString("origin_prompt"),
             retryCount = item.optInt("retry_count", 0),
@@ -218,6 +219,7 @@ internal object ChatTaskHistoryStore {
             put("started_at_epoch_ms", task.startedAtEpochMs)
             put("finished_at_epoch_ms", task.finishedAtEpochMs)
             put("task_action", task.taskAction?.name ?: "")
+            put("runtime_task_id", task.runtimeTaskId ?: "")
             put("failure_reason", task.failureReason ?: "")
             task.failure?.let {
                 put(

@@ -98,7 +98,7 @@ func (s *Server) performHandshake(sess *session, reader *bufio.Reader, writer *b
 
 func readControlFrame(reader *bufio.Reader) (controlFrame, error) {
 	var frame controlFrame
-	payload, err := readJSONFrame(reader, 262144)
+	payload, err := readJSONFrame(reader, 2*1024*1024)
 	if err != nil {
 		return frame, err
 	}

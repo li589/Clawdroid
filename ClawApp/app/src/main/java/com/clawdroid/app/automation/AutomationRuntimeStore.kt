@@ -71,6 +71,8 @@ data class ResolvedTapTarget(
 object AutomationRuntimeStore {
     private const val staleSnapshotThresholdMs = 15_000L
     private const val maxSemanticNodes = 24
+    /** Cap UI/tree walks so Overview does not recompose on every a11y flood. */
+    private const val minPublishIntervalMs = 750L
 
     private val _accessibilitySnapshot = MutableStateFlow(AccessibilitySnapshot())
     val accessibilitySnapshot: StateFlow<AccessibilitySnapshot> = _accessibilitySnapshot.asStateFlow()
@@ -78,6 +80,10 @@ object AutomationRuntimeStore {
     private val _taskSnapshot = MutableStateFlow(AutomationTaskSnapshot())
     val taskSnapshot: StateFlow<AutomationTaskSnapshot> = _taskSnapshot.asStateFlow()
     private var latestNodeSemantics: List<NodeSemantic> = emptyList()
+    @Volatile
+    private var lastPublishAtMs: Long = 0L
+    @Volatile
+    private var suppressedEventCount: Int = 0
 
     fun onAccessibilityServiceConnected() {
         _accessibilitySnapshot.value = _accessibilitySnapshot.value.copy(
@@ -98,6 +104,16 @@ object AutomationRuntimeStore {
     }
 
     fun publishAccessibilityEvent(event: AccessibilityEvent, rootNode: AccessibilityNodeInfo?) {
+        val now = System.currentTimeMillis()
+        val highPriority = isHighPriorityAccessibilityEvent(event.eventType)
+        if (!highPriority && now - lastPublishAtMs < minPublishIntervalMs) {
+            suppressedEventCount += 1
+            return
+        }
+        lastPublishAtMs = now
+        val skipped = suppressedEventCount
+        suppressedEventCount = 0
+
         val textSummary = event.text
             .mapNotNull { it?.toString()?.trim() }
             .filter { it.isNotEmpty() }
@@ -108,7 +124,7 @@ object AutomationRuntimeStore {
 
         _accessibilitySnapshot.value = AccessibilitySnapshot(
             serviceConnected = true,
-            eventCount = _accessibilitySnapshot.value.eventCount + 1,
+            eventCount = _accessibilitySnapshot.value.eventCount + 1 + skipped,
             eventName = eventTypeName(event.eventType),
             nodeCount = semantics.nodes.size,
             clickableNodeCount = semantics.nodes.count { it.clickable && it.enabled },
@@ -122,7 +138,7 @@ object AutomationRuntimeStore {
             lastResolvedTapLabel = "",
             lastResolvedTapX = null,
             lastResolvedTapY = null,
-            updatedAtEpochMs = System.currentTimeMillis()
+            updatedAtEpochMs = now
         )
     }
 
@@ -341,6 +357,17 @@ object AutomationRuntimeStore {
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "view_text_changed"
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "windows_changed"
             else -> "event_$eventType"
+        }
+    }
+
+    private fun isHighPriorityAccessibilityEvent(eventType: Int): Boolean {
+        return when (eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> true
+            else -> false
         }
     }
 

@@ -128,10 +128,50 @@ class ClawToolExecutor(
     suspend fun getHealth(): ClawToolCallResult {
         return runtimeClient.getHealth().fold(
             onSuccess = { result ->
+                if (result.capabilities.isNotEmpty()) {
+                    LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities)
+                }
                 ClawToolCallResult(
                     success = true,
                     output = "成功: uptime=${result.uptimeSeconds}s, root=${result.root}, accessibility=${result.accessibility}, lsposed=${result.lsposed}, runtime=${result.lsposedRuntimeLoaded}, rate_limit=${result.rateLimitPerMinute}/min, whitelist=${result.readonlyWhitelist.joinToString()}",
                     runtimeConfigSummary = "Audit Dir: ${result.auditDir}\nRequest Timeout: ${result.requestTimeoutMs}ms\nRate Limit: ${result.rateLimitPerMinute}/min\nReadonly Whitelist: ${result.readonlyWhitelist.joinToString()}\nProtocol: ${result.protocolVersion}\nCapabilities: ${result.capabilities.joinToString()}"
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
+    suspend fun getRuntimeStatus(): ClawToolCallResult {
+        return runtimeClient.getRuntimeStatus().fold(
+            onSuccess = { result ->
+                val module = result.module
+                LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities)
+                ClawToolCallResult(
+                    success = true,
+                    output = buildString {
+                        appendLine("成功: version=${result.daemonVersion}, uptime=${result.uptimeSeconds}s")
+                        appendLine("module=${module.moduleId}, installed=${module.installed}, enabled=${module.enabled}, state=${module.runtimeState}, pid=${module.runtimePid}")
+                        appendLine("verify=${module.verifyStatus}: ${module.verifySummary.ifBlank { "n/a" }}")
+                        appendLine("root=${result.root}, accessibility=${result.accessibility}, lsposed=${result.lsposed}, runtime_loaded=${result.lsposedRuntimeLoaded}")
+                        appendLine("actions=${result.actions.size}, shell=${result.allowedShellCommands.size}, keys=${result.allowedKeyevents.size}")
+                        appendLine("capabilities=[${result.capabilities.joinToString()}]")
+                        append("degraded=${result.degradedReason.ifBlank { "none" }}")
+                    },
+                    runtimeConfigSummary = buildString {
+                        appendLine("Module Path: ${module.modulePath}")
+                        appendLine("Audit Dir: ${result.auditDir}")
+                        appendLine("Readonly Whitelist: ${result.readonlyWhitelist.joinToString()}")
+                        appendLine("Capabilities: ${result.capabilities.joinToString()}")
+                        appendLine("Actions: ${result.actions.joinToString()}")
+                        append("Allowed Keys: ${result.allowedKeyevents.joinToString()}")
+                    },
+                    allowedShellCommands = result.allowedShellCommands
                 )
             },
             onFailure = { error ->
@@ -166,10 +206,11 @@ class ClawToolExecutor(
     suspend fun probeSession(): ClawToolCallResult {
         return runtimeClient.probeSession().fold(
             onSuccess = { result ->
+                LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities.capabilities)
                 val degraded = result.capabilities.degradedReason.ifBlank { "none" }
                 ClawToolCallResult(
                     success = true,
-                    output = "Runtime Probe 成功\nsession=${result.sessionId}\nfinal=${result.finalState}\ntrace=${result.stateTrace.joinToString(" -> ")}\nauth=${result.authMode}\nping=${result.ping.daemonStatus}/${result.ping.daemonVersion}\nruntime_loaded=${result.capabilities.lsposedRuntimeLoaded}, runtime_process=${result.capabilities.lsposedRuntimeProcess.ifBlank { "unknown" }}, runtime_at=${formatEpochMillis(result.capabilities.lsposedRuntimeLoadedAt)}\ncapabilities=${result.capabilities.capabilities.joinToString()}\ndegraded=$degraded",
+                    output = "Runtime Probe 成功\nsession=${result.sessionId}\nfinal=${result.finalState}\ntrace=${result.stateTrace.joinToString(" -> ")}\nauth=${result.authMode}\nping=${result.ping.daemonStatus}/${result.ping.daemonVersion}\nruntime_loaded=${result.capabilities.lsposedRuntimeLoaded}, runtime_process=${result.capabilities.lsposedRuntimeProcess.ifBlank { "unknown" }}, runtime_at=${formatEpochMillis(result.capabilities.lsposedRuntimeLoadedAt)}\ncapabilities=[${result.capabilities.capabilities.joinToString()}]\ndegraded=$degraded",
                     sessionSnapshot = ClawSessionSnapshot(
                         sessionState = result.finalState,
                         sessionTrace = result.stateTrace.joinToString(" -> "),
@@ -199,6 +240,7 @@ class ClawToolExecutor(
     suspend fun getCapabilities(): ClawToolCallResult {
         return runtimeClient.getCapabilities().fold(
             onSuccess = { result ->
+                LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities)
                 val capabilityList = result.capabilities.joinToString()
                 ClawToolCallResult(
                     success = true,
@@ -341,6 +383,28 @@ class ClawToolExecutor(
         )
     }
 
+    suspend fun injectKeyevent(
+        key: String? = null,
+        keyCode: Int? = null,
+        displayId: Int = 0
+    ): ClawToolCallResult {
+        return runtimeClient.injectKeyevent(key = key, keyCode = keyCode, displayId = displayId).fold(
+            onSuccess = { result ->
+                ClawToolCallResult(
+                    success = result.accepted,
+                    output = "成功: accepted=${result.accepted}, key=${result.key}, keycode=${result.keyCode}, display=${result.displayId}"
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
     suspend fun injectSwipe(
         x1: Int,
         y1: Int,
@@ -361,6 +425,36 @@ class ClawToolExecutor(
                 ClawToolCallResult(
                     success = result.accepted,
                     output = "成功: accepted=${result.accepted}, display=${result.displayId}, duration=${result.durationMs}ms"
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
+    suspend fun readFileLimited(
+        path: String,
+        offset: Long = 0,
+        maxBytes: Int = 65536
+    ): ClawToolCallResult {
+        return runtimeClient.readFileLimited(
+            path = path,
+            offset = offset,
+            maxBytes = maxBytes
+        ).fold(
+            onSuccess = { result ->
+                ClawToolCallResult(
+                    success = true,
+                    output = buildString {
+                        appendLine("成功: path=${result.path}")
+                        appendLine("offset=${result.offset}, read_bytes=${result.readBytes}, total_size=${result.totalSize}, eof=${result.eof}")
+                        append("content_base64_chars=${result.contentBase64.length}")
+                    }
                 )
             },
             onFailure = { error ->
@@ -415,6 +509,102 @@ class ClawToolExecutor(
         )
     }
 
+    suspend fun taskSubmit(task: Map<String, Any?>): ClawToolCallResult {
+        return runtimeClient.taskSubmit(task).fold(
+            onSuccess = { result ->
+                val totalSteps = countRuntimeTaskSteps(task)
+                ClawToolCallResult(
+                    success = true,
+                    output = "成功: task_id=${result.taskId}, state=${result.state}" +
+                        if (totalSteps > 0) ", steps=$totalSteps" else "",
+                    runtimeTaskId = result.taskId,
+                    taskSnapshot = com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot(
+                        taskId = result.taskId,
+                        state = result.state,
+                        name = task["name"]?.toString().orEmpty(),
+                        totalSteps = totalSteps,
+                        currentStep = 0,
+                        completedSteps = 0
+                    )
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
+    suspend fun taskGet(taskId: String): ClawToolCallResult {
+        return runtimeClient.taskGet(taskId).fold(
+            onSuccess = { snapshot ->
+                ClawToolCallResult(
+                    success = true,
+                    output = "成功: ${snapshot.summaryLine()}",
+                    runtimeTaskId = snapshot.taskId,
+                    taskSnapshot = snapshot
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
+    suspend fun taskList(): ClawToolCallResult {
+        return runtimeClient.taskList().fold(
+            onSuccess = { result ->
+                val body = if (result.tasks.isEmpty()) {
+                    "(empty)"
+                } else {
+                    result.tasks.joinToString("\n") { "- ${it.summaryLine()}" }
+                }
+                ClawToolCallResult(
+                    success = true,
+                    output = "成功: total=${result.totalCount}\n$body",
+                    taskSnapshots = result.tasks
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
+    suspend fun taskCancel(taskId: String): ClawToolCallResult {
+        return runtimeClient.taskCancel(taskId).fold(
+            onSuccess = { result ->
+                ClawToolCallResult(
+                    success = result.cancelled,
+                    output = "成功: task_id=${result.taskId}, cancelled=${result.cancelled}",
+                    runtimeTaskId = result.taskId,
+                    taskSnapshot = com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot(
+                        taskId = result.taskId,
+                        state = if (result.cancelled) "Cancelled" else "Unknown"
+                    )
+                )
+            },
+            onFailure = { error ->
+                ClawToolCallResult(
+                    success = false,
+                    output = "失败: ${error.message ?: error::class.java.simpleName}",
+                    error = error.message
+                )
+            }
+        )
+    }
+
     private fun formatEpochMillis(value: Long): String {
         if (value <= 0L) {
             return "unknown"
@@ -453,4 +643,20 @@ class ClawToolExecutor(
 
 private fun Enum<*>.isSucceeded(): Boolean {
     return name.equals("Succeeded", ignoreCase = true)
+}
+
+/** Counts steps from a Runtime task_submit payload (list or JSON array string). */
+internal fun countRuntimeTaskSteps(task: Map<String, Any?>): Int {
+    return when (val steps = task["steps"]) {
+        is List<*> -> steps.size
+        is String -> {
+            val trimmed = steps.trim()
+            if (!trimmed.startsWith("[")) {
+                0
+            } else {
+                runCatching { org.json.JSONArray(trimmed).length() }.getOrDefault(0)
+            }
+        }
+        else -> 0
+    }
 }

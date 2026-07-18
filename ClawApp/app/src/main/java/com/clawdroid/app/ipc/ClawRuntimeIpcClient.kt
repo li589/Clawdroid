@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Build
+import com.clawdroid.app.runtime.RuntimeActionCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -124,6 +125,36 @@ data class ReadFileLimitedResult(
     }
 }
 
+data class WriteFileLimitedResult(
+    val path: String,
+    val writtenBytes: Int,
+    val append: Boolean
+)
+
+data class StatFileLimitedResult(
+    val path: String,
+    val size: Long,
+    val mtimeMs: Long,
+    val sha256: String,
+    val isDir: Boolean = false
+)
+
+data class ReportXposedFocusResult(
+    val accepted: Boolean,
+    val packageName: String,
+    val activityClass: String,
+    val updatedAtEpochMs: Long
+)
+
+data class ReportXposedViewResult(
+    val accepted: Boolean,
+    val packageName: String,
+    val activityClass: String,
+    val nodeCount: Int,
+    val composeSurface: Boolean,
+    val updatedAtEpochMs: Long
+)
+
 data class InjectTapResult(
     val accepted: Boolean,
     val displayId: Int,
@@ -139,6 +170,117 @@ data class InjectSwipeResult(
     val x2: Int,
     val y2: Int,
     val durationMs: Int
+)
+
+data class InjectKeyeventResult(
+    val accepted: Boolean,
+    val displayId: Int,
+    val keyCode: Int,
+    val key: String
+)
+
+data class ClawRuntimeModuleStatus(
+    val moduleId: String,
+    val modulePath: String,
+    val installed: Boolean,
+    val enabled: Boolean,
+    val disableMarked: Boolean,
+    val removeMarked: Boolean,
+    val runtimeBinExists: Boolean,
+    val configExists: Boolean,
+    val webrootExists: Boolean,
+    val statusJsonExists: Boolean,
+    val verifyJsonExists: Boolean,
+    val runtimeState: String,
+    val runtimePid: Int,
+    val verifyStatus: String,
+    val verifySummary: String
+)
+
+data class ClawRuntimeStatusResult(
+    val daemonStatus: String,
+    val daemonVersion: String,
+    val protocolVersion: Int,
+    val uptimeSeconds: Long,
+    val root: Boolean,
+    val accessibility: Boolean,
+    val lsposed: Boolean,
+    val lsposedRuntimeLoaded: Boolean,
+    val capabilities: List<String>,
+    val actions: List<String>,
+    val allowedShellCommands: List<String>,
+    val allowedKeyevents: List<String>,
+    val readonlyWhitelist: List<String>,
+    val module: ClawRuntimeModuleStatus,
+    val lastError: String,
+    val lastErrorAt: Long,
+    val rateLimitHits: Int,
+    val rateLimitPerMinute: Int,
+    val auditDir: String,
+    val requestTimeoutMs: Int,
+    val degradedReason: String = ""
+)
+
+data class ClawRuntimeTaskSnapshot(
+    val taskId: String,
+    val sessionId: String = "",
+    val state: String = "",
+    val currentStep: Int = 0,
+    val totalSteps: Int = 0,
+    val completedSteps: Int = 0,
+    val createdAt: Long = 0L,
+    val queuedAt: Long = 0L,
+    val startedAt: Long = 0L,
+    val endedAt: Long = 0L,
+    val error: String = "",
+    val errorCode: Int = 0,
+    val name: String = ""
+) {
+    fun summaryLine(): String {
+        val progress = if (totalSteps > 0) {
+            "step=${currentStep + 1}/$totalSteps completed=$completedSteps"
+        } else {
+            "steps=n/a"
+        }
+        val errorPart = if (error.isNotBlank()) " error=$error" else ""
+        val namePart = if (name.isNotBlank()) " name=$name" else ""
+        return "task_id=$taskId state=$state $progress$namePart$errorPart"
+    }
+
+    companion object {
+        fun fromData(data: Map<String, Any?>): ClawRuntimeTaskSnapshot {
+            return ClawRuntimeTaskSnapshot(
+                taskId = data["task_id"]?.toString().orEmpty(),
+                sessionId = data["session_id"]?.toString().orEmpty(),
+                state = data["state"]?.toString().orEmpty(),
+                currentStep = (data["current_step"] as? Number)?.toInt() ?: 0,
+                totalSteps = (data["total_steps"] as? Number)?.toInt() ?: 0,
+                completedSteps = (data["completed_steps"] as? Number)?.toInt() ?: 0,
+                createdAt = (data["created_at"] as? Number)?.toLong() ?: 0L,
+                queuedAt = (data["queued_at"] as? Number)?.toLong() ?: 0L,
+                startedAt = (data["started_at"] as? Number)?.toLong() ?: 0L,
+                endedAt = (data["ended_at"] as? Number)?.toLong() ?: 0L,
+                error = data["error"]?.toString().orEmpty(),
+                errorCode = (data["error_code"] as? Number)?.toInt() ?: 0,
+                name = data["name"]?.toString().orEmpty()
+            )
+        }
+    }
+}
+
+data class ClawRuntimeTaskSubmitResult(
+    val taskId: String,
+    val state: String
+)
+
+data class ClawRuntimeTaskListResult(
+    val tasks: List<ClawRuntimeTaskSnapshot>,
+    val totalCount: Int
+)
+
+data class ClawRuntimeTaskCancelResult(
+    val taskId: String,
+    val cancelled: Boolean
 )
 
 data class ExecShellLimitedResult(
@@ -220,7 +362,7 @@ class ClawRuntimeIpcClient(
     private val sharedSecret: String,
     private val signatureDigest: String
 ) {
-    private val maxFrameBytes = 262144
+    private val maxFrameBytes = 2 * 1024 * 1024
     private val eventMaxReconnectAttempts = 3
     private val eventReconnectDelayMs = 2000L
 
@@ -236,17 +378,16 @@ class ClawRuntimeIpcClient(
     fun socketDisplayName(): String = socketName
 
     fun buildPingRequest(requestId: String, timestamp: Long): ClawRuntimeRequest {
-        return ClawRuntimeRequest(
+        return catalogRequest(
             requestId = requestId,
             timestamp = timestamp,
-            action = "ping",
-            capability = "system.ping"
+            action = RuntimeActionCatalog.PING
         )
     }
 
     suspend fun ping(): Result<ClawRuntimePingResult> = runCatching {
         val response = send(buildPingRequest(newRequestId(), nowSeconds()))
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.PING)
 
         ClawRuntimePingResult(
             daemonStatus = response.data["daemon_status"]?.toString().orEmpty(),
@@ -255,9 +396,47 @@ class ClawRuntimeIpcClient(
         )
     }
 
+    suspend fun reportXposedFocus(focusJson: String): Result<ReportXposedFocusResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.REPORT_XPOSED_FOCUS,
+                args = mapOf("focus_json" to focusJson)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.REPORT_XPOSED_FOCUS)
+        ReportXposedFocusResult(
+            accepted = response.data["accepted"] as? Boolean ?: true,
+            packageName = response.data["package_name"]?.toString().orEmpty(),
+            activityClass = response.data["activity_class"]?.toString().orEmpty(),
+            updatedAtEpochMs = (response.data["updated_at_epoch_ms"] as? Number)?.toLong() ?: 0L
+        )
+    }
+
+    suspend fun reportXposedView(viewJson: String): Result<ReportXposedViewResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.REPORT_XPOSED_VIEW,
+                args = mapOf("view_json" to viewJson)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.REPORT_XPOSED_VIEW)
+        ReportXposedViewResult(
+            accepted = response.data["accepted"] as? Boolean ?: true,
+            packageName = response.data["package_name"]?.toString().orEmpty(),
+            activityClass = response.data["activity_class"]?.toString().orEmpty(),
+            nodeCount = (response.data["node_count"] as? Number)?.toInt() ?: 0,
+            composeSurface = response.data["compose_surface"] as? Boolean ?: false,
+            updatedAtEpochMs = (response.data["updated_at_epoch_ms"] as? Number)?.toLong() ?: 0L
+        )
+    }
+
     suspend fun getVersion(): Result<ClawRuntimeVersionResult> = runCatching {
         val response = send(buildPingRequest(newRequestId(), nowSeconds()))
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.PING)
 
         ClawRuntimeVersionResult(
             daemonStatus = response.data["daemon_status"]?.toString().orEmpty(),
@@ -270,7 +449,7 @@ class ClawRuntimeIpcClient(
 
     suspend fun getHealth(): Result<ClawRuntimeHealthResult> = runCatching {
         val response = requestCapabilitiesResponse()
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.GET_CAPABILITIES)
 
         ClawRuntimeHealthResult(
             daemonStatus = response.data["daemon_status"]?.toString().orEmpty(),
@@ -294,7 +473,7 @@ class ClawRuntimeIpcClient(
 
     suspend fun getLastError(): Result<ClawRuntimeLastErrorResult> = runCatching {
         val response = requestCapabilitiesResponse()
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.GET_CAPABILITIES)
 
         ClawRuntimeLastErrorResult(
             lastError = response.data["last_error"]?.toString().orEmpty(),
@@ -309,7 +488,7 @@ class ClawRuntimeIpcClient(
 
     suspend fun getCapabilities(): Result<ClawRuntimeCapabilities> = runCatching {
         val response = requestCapabilitiesResponse()
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.GET_CAPABILITIES)
 
         ClawRuntimeCapabilities(
             root = response.data["root"] as? Boolean ?: false,
@@ -328,6 +507,131 @@ class ClawRuntimeIpcClient(
         )
     }
 
+    suspend fun taskSubmit(task: Map<String, Any?>): Result<ClawRuntimeTaskSubmitResult> = runCatching {
+        require(task["task_id"]?.toString().orEmpty().isNotBlank()) {
+            "task.task_id is required"
+        }
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.TASK_SUBMIT,
+                args = mapOf("task" to task)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.TASK_SUBMIT)
+        ClawRuntimeTaskSubmitResult(
+            taskId = response.data["task_id"]?.toString().orEmpty(),
+            state = response.data["state"]?.toString().orEmpty()
+        )
+    }
+
+    suspend fun taskGet(taskId: String): Result<ClawRuntimeTaskSnapshot> = runCatching {
+        val normalizedId = taskId.trim()
+        require(normalizedId.isNotEmpty()) { "task_id is required" }
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.TASK_GET,
+                args = mapOf("task_id" to normalizedId)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.TASK_GET)
+        ClawRuntimeTaskSnapshot.fromData(response.data)
+    }
+
+    suspend fun taskList(): Result<ClawRuntimeTaskListResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.TASK_LIST
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.TASK_LIST)
+        val rawTasks = response.data["tasks"] as? List<*> ?: emptyList<Any?>()
+        val tasks = rawTasks.mapNotNull { item ->
+            val map = item as? Map<*, *> ?: return@mapNotNull null
+            ClawRuntimeTaskSnapshot.fromData(
+                map.entries.associate { (key, value) -> key.toString() to value }
+            )
+        }
+        ClawRuntimeTaskListResult(
+            tasks = tasks,
+            totalCount = (response.data["total_count"] as? Number)?.toInt() ?: tasks.size
+        )
+    }
+
+    suspend fun taskCancel(taskId: String): Result<ClawRuntimeTaskCancelResult> = runCatching {
+        val normalizedId = taskId.trim()
+        require(normalizedId.isNotEmpty()) { "task_id is required" }
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.TASK_CANCEL,
+                args = mapOf("task_id" to normalizedId)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.TASK_CANCEL)
+        ClawRuntimeTaskCancelResult(
+            taskId = response.data["task_id"]?.toString().orEmpty().ifBlank { normalizedId },
+            cancelled = response.data["cancelled"] as? Boolean ?: true
+        )
+    }
+
+    suspend fun getRuntimeStatus(): Result<ClawRuntimeStatusResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.GET_RUNTIME_STATUS
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.GET_RUNTIME_STATUS)
+        val moduleMap = response.data["module"] as? Map<*, *> ?: emptyMap<Any, Any>()
+        ClawRuntimeStatusResult(
+            daemonStatus = response.data["daemon_status"]?.toString().orEmpty(),
+            daemonVersion = response.data["version"]?.toString().orEmpty(),
+            protocolVersion = (response.data["protocol_version"] as? Number)?.toInt() ?: 0,
+            uptimeSeconds = (response.data["uptime_seconds"] as? Number)?.toLong() ?: 0L,
+            root = response.data["root"] as? Boolean ?: false,
+            accessibility = response.data["accessibility"] as? Boolean ?: false,
+            lsposed = response.data["lsposed"] as? Boolean ?: false,
+            lsposedRuntimeLoaded = response.data["lsposed_runtime_loaded"] as? Boolean ?: false,
+            capabilities = response.data.stringList("capabilities"),
+            actions = response.data.stringList("actions"),
+            allowedShellCommands = response.data.stringList("allowed_shell_commands"),
+            allowedKeyevents = response.data.stringList("allowed_keyevents"),
+            readonlyWhitelist = response.data.stringList("readonly_whitelist"),
+            module = ClawRuntimeModuleStatus(
+                moduleId = moduleMap["module_id"]?.toString().orEmpty(),
+                modulePath = moduleMap["module_path"]?.toString().orEmpty(),
+                installed = moduleMap["installed"] as? Boolean ?: false,
+                enabled = moduleMap["enabled"] as? Boolean ?: false,
+                disableMarked = moduleMap["disable_marked"] as? Boolean ?: false,
+                removeMarked = moduleMap["remove_marked"] as? Boolean ?: false,
+                runtimeBinExists = moduleMap["runtime_bin_exists"] as? Boolean ?: false,
+                configExists = moduleMap["config_exists"] as? Boolean ?: false,
+                webrootExists = moduleMap["webroot_exists"] as? Boolean ?: false,
+                statusJsonExists = moduleMap["status_json_exists"] as? Boolean ?: false,
+                verifyJsonExists = moduleMap["verify_json_exists"] as? Boolean ?: false,
+                runtimeState = moduleMap["runtime_state"]?.toString().orEmpty(),
+                runtimePid = (moduleMap["runtime_pid"] as? Number)?.toInt() ?: 0,
+                verifyStatus = moduleMap["verify_status"]?.toString().orEmpty(),
+                verifySummary = moduleMap["verify_summary"]?.toString().orEmpty()
+            ),
+            lastError = response.data["last_error"]?.toString().orEmpty(),
+            lastErrorAt = (response.data["last_error_at"] as? Number)?.toLong() ?: 0L,
+            rateLimitHits = (response.data["rate_limit_hits"] as? Number)?.toInt() ?: 0,
+            rateLimitPerMinute = (response.data["rate_limit_per_minute"] as? Number)?.toInt() ?: 0,
+            auditDir = response.data["audit_dir"]?.toString().orEmpty(),
+            requestTimeoutMs = (response.data["request_timeout_ms"] as? Number)?.toInt() ?: 0,
+            degradedReason = response.data["degraded_reason"]?.toString().orEmpty()
+        )
+    }
+
     suspend fun captureScreen(
         displayId: Int = 0,
         format: String = "png",
@@ -336,11 +640,10 @@ class ClawRuntimeIpcClient(
         maxHeight: Int = 3200
     ): Result<CaptureScreenResult> = runCatching {
         val response = send(
-            ClawRuntimeRequest(
+            catalogRequest(
                 requestId = newRequestId(),
                 timestamp = nowSeconds(),
-                action = "capture_screen",
-                capability = "screen.capture",
+                action = RuntimeActionCatalog.CAPTURE_SCREEN,
                 args = mapOf(
                     "display_id" to displayId,
                     "format" to format,
@@ -350,7 +653,7 @@ class ClawRuntimeIpcClient(
                 )
             )
         )
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.CAPTURE_SCREEN)
 
         CaptureScreenResult(
             displayId = (response.data["display_id"] as? Number)?.toInt() ?: displayId,
@@ -371,11 +674,10 @@ class ClawRuntimeIpcClient(
         maxBytes: Int = 65536
     ): Result<ReadFileLimitedResult> = runCatching {
         val response = send(
-            ClawRuntimeRequest(
+            catalogRequest(
                 requestId = newRequestId(),
                 timestamp = nowSeconds(),
-                action = "read_file_limited",
-                capability = "file.read.limited",
+                action = RuntimeActionCatalog.READ_FILE_LIMITED,
                 args = mapOf(
                     "path" to path,
                     "offset" to offset,
@@ -383,7 +685,7 @@ class ClawRuntimeIpcClient(
                 )
             )
         )
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.READ_FILE_LIMITED)
 
         ReadFileLimitedResult(
             path = response.data["path"]?.toString().orEmpty(),
@@ -395,17 +697,66 @@ class ClawRuntimeIpcClient(
         )
     }
 
+    suspend fun writeFileLimited(
+        path: String,
+        content: String,
+        append: Boolean = false
+    ): Result<WriteFileLimitedResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.WRITE_FILE_LIMITED,
+                args = mapOf(
+                    "path" to path,
+                    "content" to content,
+                    "append" to append
+                )
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.WRITE_FILE_LIMITED)
+        WriteFileLimitedResult(
+            path = response.data["path"]?.toString().orEmpty(),
+            writtenBytes = (response.data["written_bytes"] as? Number)?.toInt() ?: content.toByteArray().size,
+            append = response.data["append"] as? Boolean ?: append
+        )
+    }
+
+    suspend fun statFileLimited(
+        path: String,
+        computeHash: Boolean = true
+    ): Result<StatFileLimitedResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.STAT_FILE_LIMITED,
+                args = mapOf(
+                    "path" to path,
+                    "compute_hash" to computeHash
+                )
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.STAT_FILE_LIMITED)
+        StatFileLimitedResult(
+            path = response.data["path"]?.toString().orEmpty(),
+            size = (response.data["size"] as? Number)?.toLong() ?: 0L,
+            mtimeMs = (response.data["mtime_ms"] as? Number)?.toLong() ?: 0L,
+            sha256 = response.data["sha256"]?.toString().orEmpty(),
+            isDir = response.data["is_dir"] as? Boolean ?: false
+        )
+    }
+
     suspend fun injectTap(
         x: Int,
         y: Int,
         displayId: Int = 0
     ): Result<InjectTapResult> = runCatching {
         val response = send(
-            ClawRuntimeRequest(
+            catalogRequest(
                 requestId = newRequestId(),
                 timestamp = nowSeconds(),
-                action = "inject_tap",
-                capability = "input.inject",
+                action = RuntimeActionCatalog.INJECT_TAP,
                 args = mapOf(
                     "x" to x,
                     "y" to y,
@@ -413,13 +764,43 @@ class ClawRuntimeIpcClient(
                 )
             )
         )
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.INJECT_TAP)
 
         InjectTapResult(
             accepted = response.data["accepted"] as? Boolean ?: false,
             displayId = (response.data["display_id"] as? Number)?.toInt() ?: displayId,
             x = (response.data["x"] as? Number)?.toInt() ?: x,
             y = (response.data["y"] as? Number)?.toInt() ?: y
+        )
+    }
+
+    suspend fun injectKeyevent(
+        key: String? = null,
+        keyCode: Int? = null,
+        displayId: Int = 0
+    ): Result<InjectKeyeventResult> = runCatching {
+        require(key != null || keyCode != null) { "key or keyCode is required" }
+        val args = linkedMapOf<String, Any?>("display_id" to displayId)
+        if (!key.isNullOrBlank()) {
+            args["key"] = key
+        }
+        if (keyCode != null) {
+            args["keycode"] = keyCode
+        }
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.INJECT_KEYEVENT,
+                args = args
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.INJECT_KEYEVENT)
+        InjectKeyeventResult(
+            accepted = response.data["accepted"] as? Boolean ?: false,
+            displayId = (response.data["display_id"] as? Number)?.toInt() ?: displayId,
+            keyCode = (response.data["keycode"] as? Number)?.toInt() ?: (keyCode ?: -1),
+            key = response.data["key"]?.toString().orEmpty()
         )
     }
 
@@ -432,11 +813,10 @@ class ClawRuntimeIpcClient(
         displayId: Int = 0
     ): Result<InjectSwipeResult> = runCatching {
         val response = send(
-            ClawRuntimeRequest(
+            catalogRequest(
                 requestId = newRequestId(),
                 timestamp = nowSeconds(),
-                action = "inject_swipe",
-                capability = "input.inject",
+                action = RuntimeActionCatalog.INJECT_SWIPE,
                 args = mapOf(
                     "x1" to x1,
                     "y1" to y1,
@@ -447,7 +827,7 @@ class ClawRuntimeIpcClient(
                 )
             )
         )
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.INJECT_SWIPE)
 
         InjectSwipeResult(
             accepted = response.data["accepted"] as? Boolean ?: false,
@@ -462,11 +842,12 @@ class ClawRuntimeIpcClient(
 
     suspend fun readFileFullyLimited(
         path: String,
-        chunkSize: Int = 262144,
+        chunkSize: Int = SAFE_FILE_CHUNK_BYTES,
         maxTotalBytes: Int = 8388608
     ): Result<ByteArray> = runCatching {
         require(chunkSize in 1..1048576) { "chunkSize must be between 1 and 1048576" }
-        require(maxTotalBytes >= chunkSize) { "maxTotalBytes must be >= chunkSize" }
+        require(maxTotalBytes >= 1) { "maxTotalBytes must be >= 1" }
+        val effectiveChunkSize = minOf(chunkSize, maxTotalBytes, SAFE_FILE_CHUNK_BYTES)
 
         var offset = 0L
         val chunks = mutableListOf<ByteArray>()
@@ -474,7 +855,7 @@ class ClawRuntimeIpcClient(
         var expectedTotalSize: Long? = null
 
         while (totalRead < maxTotalBytes) {
-            val nextChunkSize = minOf(chunkSize, maxTotalBytes - totalRead)
+            val nextChunkSize = minOf(effectiveChunkSize, maxTotalBytes - totalRead)
             val result = readFileLimited(path = path, offset = offset, maxBytes = nextChunkSize).getOrThrow()
             if (expectedTotalSize == null && result.totalSize > 0) {
                 expectedTotalSize = result.totalSize
@@ -508,18 +889,17 @@ class ClawRuntimeIpcClient(
         timeoutMs: Int = 3000
     ): Result<ExecShellLimitedResult> = runCatching {
         val response = send(
-            ClawRuntimeRequest(
+            catalogRequest(
                 requestId = newRequestId(),
                 timestamp = nowSeconds(),
-                action = "exec_shell_limited",
-                capability = "shell.exec.limited",
+                action = RuntimeActionCatalog.EXEC_SHELL_LIMITED,
                 args = mapOf(
                     "command" to command,
                     "timeout_ms" to timeoutMs
                 )
             )
         )
-        ensureSuccess(response)
+        ensureSuccess(response, RuntimeActionCatalog.EXEC_SHELL_LIMITED)
 
         ExecShellLimitedResult(
             command = response.data["command"]?.toString().orEmpty().ifBlank { command },
@@ -554,15 +934,14 @@ class ClawRuntimeIpcClient(
                 val response = sendOnConnection(
                     writer = writer,
                     reader = reader,
-                    request = ClawRuntimeRequest(
+                    request = catalogRequest(
                         requestId = newRequestId(),
                         timestamp = nowSeconds(),
-                        action = "subscribe_events",
-                        capability = "event.subscribe",
+                        action = RuntimeActionCatalog.SUBSCRIBE_EVENTS,
                         args = mapOf("events" to events)
                     )
                 )
-                ensureSuccess(response)
+                ensureSuccess(response, RuntimeActionCatalog.SUBSCRIBE_EVENTS)
 
                 val frames = mutableListOf<ClawRuntimeEventFrame>()
                 var closedReason = "stream_ended"
@@ -623,15 +1002,14 @@ class ClawRuntimeIpcClient(
                     val response = sendOnConnection(
                         writer = writer,
                         reader = reader,
-                        request = ClawRuntimeRequest(
+                        request = catalogRequest(
                             requestId = newRequestId(),
                             timestamp = nowSeconds(),
-                            action = "subscribe_events",
-                            capability = "event.subscribe",
+                            action = RuntimeActionCatalog.SUBSCRIBE_EVENTS,
                             args = mapOf("events" to events)
                         )
                     )
-                    ensureSuccess(response)
+                    ensureSuccess(response, RuntimeActionCatalog.SUBSCRIBE_EVENTS)
                     if (!connected) {
                         withContext(Dispatchers.Main) {
                             onStarted(
@@ -714,19 +1092,18 @@ class ClawRuntimeIpcClient(
                     reader = reader,
                     request = buildPingRequest(newRequestId(), nowSeconds())
                 )
-                ensureSuccess(pingResponse)
+                ensureSuccess(pingResponse, RuntimeActionCatalog.PING)
 
                 val capabilitiesResponse = sendOnConnection(
                     writer = writer,
                     reader = reader,
-                    request = ClawRuntimeRequest(
+                    request = catalogRequest(
                         requestId = newRequestId(),
                         timestamp = nowSeconds(),
-                        action = "get_capabilities",
-                        capability = "system.inspect"
+                        action = RuntimeActionCatalog.GET_CAPABILITIES
                     )
                 )
-                ensureSuccess(capabilitiesResponse)
+                ensureSuccess(capabilitiesResponse, RuntimeActionCatalog.GET_CAPABILITIES)
 
                 val pingResult = ClawRuntimePingResult(
                     daemonStatus = pingResponse.data["daemon_status"]?.toString().orEmpty(),
@@ -792,12 +1169,34 @@ class ClawRuntimeIpcClient(
 
     private suspend fun requestCapabilitiesResponse(): ClawRuntimeResponse {
         return send(
-            ClawRuntimeRequest(
+            catalogRequest(
                 requestId = newRequestId(),
                 timestamp = nowSeconds(),
-                action = "get_capabilities",
-                capability = "system.inspect"
+                action = RuntimeActionCatalog.GET_CAPABILITIES
             )
+        )
+    }
+
+    private fun catalogRequest(
+        requestId: String,
+        timestamp: Long,
+        action: String,
+        args: Map<String, Any?> = emptyMap()
+    ): ClawRuntimeRequest {
+        val capability = RuntimeActionCatalog.capabilityFor(action)
+            ?: error("unknown runtime action: $action")
+        // Older Magisk modules reject empty args maps as invalid request (code 2).
+        val effectiveArgs = if (args.isEmpty()) {
+            mapOf("ack" to true)
+        } else {
+            args
+        }
+        return ClawRuntimeRequest(
+            requestId = requestId,
+            timestamp = timestamp,
+            action = action,
+            capability = capability,
+            args = effectiveArgs
         )
     }
 
@@ -858,10 +1257,18 @@ class ClawRuntimeIpcClient(
         )
     }
 
-    private fun ensureSuccess(response: ClawRuntimeResponse) {
-        if (!response.ok) {
-            throw IllegalStateException("ClawRuntime request failed: ${response.code} ${response.message}")
+    private fun ensureSuccess(response: ClawRuntimeResponse, action: String = "") {
+        if (response.ok) {
+            return
         }
+        if (response.code == 7) {
+            val actionLabel = action.ifBlank { "unknown" }
+            throw IllegalStateException(
+                "ClawRuntime request failed: [7] action not allowed ($actionLabel). " +
+                    "当前 Magisk 模块/ClawRuntime 版本可能过旧，缺少该动作；请升级并重装 ClawRuntime 模块后重试。"
+            )
+        }
+        throw IllegalStateException("ClawRuntime request failed: [${response.code}] ${response.message}")
     }
 
     private fun parseResponse(raw: String): ClawRuntimeResponse {
@@ -945,13 +1352,7 @@ class ClawRuntimeIpcClient(
         packageName: String,
         signatureDigest: String,
         clientTimestamp: Long
-    ): String {
-        val data = "$secret:$nonce:$packageName:$signatureDigest:$clientTimestamp"
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        val digest = mac.doFinal(data.toByteArray(Charsets.UTF_8))
-        return Base64.getEncoder().encodeToString(digest)
-    }
+    ): String = computeAuthDigest(secret, nonce, packageName, signatureDigest, clientTimestamp)
 
     private fun ClawRuntimeRequest.toJson(): JSONObject {
         return JSONObject().apply {
@@ -1005,11 +1406,33 @@ class ClawRuntimeIpcClient(
     }
 
     companion object {
+        /** Raw bytes per read_file_limited chunk that stay under legacy 256KiB IPC frames after base64. */
+        const val SAFE_FILE_CHUNK_BYTES = 96 * 1024
+
         private var requestCounter = 0L
 
         private fun newRequestId(): String = "req_${nowSeconds()}_${++requestCounter}"
 
         private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
+        /**
+         * Must stay byte-identical to ClawRuntime `authDigest` in auth.go:
+         * HMAC-SHA256(secret, nonce + "|" + package + "|" + lower(signature) + "|" + timestamp) → hex.
+         */
+        fun computeAuthDigest(
+            secret: String,
+            nonce: String,
+            packageName: String,
+            signatureDigest: String,
+            clientTimestamp: Long
+        ): String {
+            val payload =
+                "$nonce|$packageName|${signatureDigest.lowercase()}|$clientTimestamp"
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+            val digest = mac.doFinal(payload.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { byte -> "%02x".format(byte) }
+        }
 
         fun resolveSignatureDigest(context: Context, packageName: String): String {
             val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "tools": {
+    "file_read": {
+      "summary": "读取文件（字节/行模式）；沙箱路径 Basic，白名单路径 Root/Runtime",
+      "callNotes": "mode=lines 时使用 line_start/line_limit（1-based）"
+    },
+    "assist_call_tool": {
+      "summary": "调用电脑协助 MCP 工具；需 adb reverse 与协助端点启用"
+    },
+    "notification_list": {
+      "summary": "列出通知监听缓存；需系统通知使用权"
+    },
+    "web_preview": {
+      "summary": "拉取网页提取 title/text/images（无 WebView）"
+    },
+    "web_search": {
+      "summary": "关键词搜索（Wikipedia / DuckDuckGo）；返回 title/url/snippet"
+    },
+    "sandbox_shell": {
+      "summary": "应用 filesDir/sandbox 白名单短命令（无 Root/Shizuku）"
+    },
+    "camera_capture": {
+      "summary": "Camera2 静帧 JPEG；需 CAMERA 权限；facing=back|front"
+    },
+    "camera_record": {
+      "summary": "静音短 MP4 + 首帧 JPEG 预览；需 CAMERA；无实时预览 UI"
+    },
+    "sensor_read": {
+      "summary": "列出传感器或短采样（accel/gyro/light/proximity/magnetic）"
+    },
+    "ftp_transfer": {
+      "summary": "FTP/SFTP list/get/put；本地路径限应用沙箱；SFTP 密码认证"
+    },
+    "gpu_npu_probe": {
+      "summary": "只读 GLES/Vulkan/NNAPI 探测（无算力调用）"
+    },
+    "shizuku_status": {
+      "summary": "探测 Shizuku Manager / Binder / 授权"
+    },
+    "shizuku_exec": {
+      "summary": "经 Shizuku 执行白名单短命令"
+    }
+  },
+  "planned": {}
+}

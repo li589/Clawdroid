@@ -7,12 +7,18 @@ import com.clawdroid.app.orchestrator.DirectCommandOrchestrator
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.ui.ModelSettings
 
+internal data class ChatHistoryTurn(
+    val role: String,
+    val content: String
+)
+
 internal data class ChatPlannerContext(
     val prompt: String,
     val modelSettings: ModelSettings,
     val sessionSummary: String,
     val capabilityStatus: String,
-    val eventStreaming: Boolean
+    val eventStreaming: Boolean,
+    val recentChat: List<ChatHistoryTurn> = emptyList()
 )
 
 internal enum class ChatLocalAction {
@@ -22,7 +28,10 @@ internal enum class ChatLocalAction {
 
 internal enum class ChatTaskAction {
     ConfirmThenSafeTap,
-    ProbeThenCapabilities
+    ProbeThenCapabilities,
+    CaptureThenPreview,
+    RuntimeHealthSweep,
+    SwipeThenCapture
 }
 
 internal sealed interface ChatPromptPlan {
@@ -90,6 +99,30 @@ internal object ChatPromptPlanner {
                     aiStatus = "规则任务: 运行时状态检查"
                 )
             }
+
+            shouldCaptureThenPreview(normalizedPrompt) -> {
+                return ChatPromptPlan.TaskExecution(
+                    action = ChatTaskAction.CaptureThenPreview,
+                    assistantMessage = "正在按“截图 -> 预览”执行任务...",
+                    aiStatus = "规则任务: 截图并预览"
+                )
+            }
+
+            shouldRuntimeHealthSweep(normalizedPrompt) -> {
+                return ChatPromptPlan.TaskExecution(
+                    action = ChatTaskAction.RuntimeHealthSweep,
+                    assistantMessage = "正在按“Ping -> Runtime Status -> 获取能力”执行任务...",
+                    aiStatus = "规则任务: 运行时体检"
+                )
+            }
+
+            shouldSwipeThenCapture(normalizedPrompt) -> {
+                return ChatPromptPlan.TaskExecution(
+                    action = ChatTaskAction.SwipeThenCapture,
+                    assistantMessage = "正在按“滑动 -> 截图 -> 预览”执行任务...",
+                    aiStatus = "规则任务: 滑动后截图"
+                )
+            }
         }
 
         return when (val intent = DirectCommandOrchestrator.parse(normalizedPrompt)) {
@@ -131,7 +164,7 @@ internal object ChatPromptPlanner {
                     else -> {
                         aiPlanner(
                             context.modelSettings,
-                            normalizedPrompt,
+                            buildAiPromptWithHistory(normalizedPrompt, context.recentChat),
                             AiRuntimeSnapshot(
                                 sessionSummary = context.sessionSummary,
                                 capabilityStatus = context.capabilityStatus,
@@ -171,6 +204,29 @@ internal object ChatPromptPlanner {
         }
     }
 
+    internal fun buildAiPromptWithHistory(
+        currentPrompt: String,
+        recentChat: List<ChatHistoryTurn>,
+        maxTurns: Int = 6,
+        maxCharsPerTurn: Int = 400
+    ): String {
+        if (recentChat.isEmpty()) {
+            return currentPrompt
+        }
+        return buildString {
+            appendLine("最近对话（供理解指代，不要复述）：")
+            recentChat.takeLast(maxTurns).forEach { turn ->
+                val clipped = turn.content.trim().take(maxCharsPerTurn)
+                if (clipped.isNotBlank()) {
+                    appendLine("- ${turn.role}: $clipped")
+                }
+            }
+            appendLine()
+            appendLine("当前用户请求：")
+            append(currentPrompt.trim())
+        }
+    }
+
     private fun shouldConfirmThenSafeTap(prompt: String): Boolean {
         return prompt.contains("确认页面后安全点击") ||
             (prompt.contains("确认页面") && prompt.contains("安全点击"))
@@ -183,5 +239,28 @@ internal object ChatPromptPlanner {
             prompt.contains("探测并获取能力") ||
             prompt.contains("probe后获取能力") ||
             prompt.contains("probe 后获取能力")
+    }
+
+    private fun shouldCaptureThenPreview(prompt: String): Boolean {
+        return prompt.contains("截图并预览") ||
+            prompt.contains("截屏并预览") ||
+            prompt.contains("截图预览") ||
+            prompt.contains("截图后预览") ||
+            prompt.contains("截图并读取")
+    }
+
+    private fun shouldRuntimeHealthSweep(prompt: String): Boolean {
+        return prompt.contains("完整运行时体检") ||
+            prompt.contains("运行时体检") ||
+            prompt.contains("Runtime 体检") ||
+            prompt.contains("runtime体检") ||
+            (prompt.contains("ping") && prompt.contains("健康") && prompt.contains("能力"))
+    }
+
+    private fun shouldSwipeThenCapture(prompt: String): Boolean {
+        return prompt.contains("滑动后截图") ||
+            prompt.contains("滑动并截图") ||
+            prompt.contains("滑动后截屏") ||
+            (prompt.contains("滑动") && prompt.contains("截图"))
     }
 }

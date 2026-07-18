@@ -27,6 +27,8 @@ internal data class ChatConsoleActions(
     val onQuickCapture: () -> Unit,
     val onQuickShell: () -> Unit,
     val onQuickSafeTapTask: () -> Unit,
+    val onQuickHealthSweepTask: () -> Unit,
+    val onQuickSwipeCaptureTask: () -> Unit,
     val onQuickToggleEvents: () -> Unit,
     val onClearHistory: () -> Unit,
     val onCancelTaskExecution: () -> Unit,
@@ -75,6 +77,8 @@ internal fun ChatViewModel.buildChatConsoleActions(
         onQuickCapture = { submitPrompt("截图并预览", modelSettings, onModelCallSuccess) },
         onQuickShell = { submitPrompt("/shell wm size", modelSettings, onModelCallSuccess) },
         onQuickSafeTapTask = { submitPrompt("确认页面后安全点击", modelSettings, onModelCallSuccess) },
+        onQuickHealthSweepTask = { submitPrompt("运行时体检", modelSettings, onModelCallSuccess) },
+        onQuickSwipeCaptureTask = { submitPrompt("滑动后截图", modelSettings, onModelCallSuccess) },
         onQuickToggleEvents = {
             submitPrompt(
                 if (eventStreaming) "停止事件订阅" else "开始事件订阅",

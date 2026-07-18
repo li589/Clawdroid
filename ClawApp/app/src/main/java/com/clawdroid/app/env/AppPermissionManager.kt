@@ -45,6 +45,13 @@ object AppPermissionManager {
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
+    fun cameraPermissionGranted(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
     fun writeSettingsGranted(context: Context): Boolean = Settings.System.canWrite(context)
 
     fun allFilesAccessGranted(): Boolean {

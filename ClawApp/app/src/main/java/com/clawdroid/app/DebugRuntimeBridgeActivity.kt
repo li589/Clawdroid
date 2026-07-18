@@ -58,7 +58,7 @@ class DebugRuntimeBridgeActivity : ComponentActivity() {
     private suspend fun executeOperation(operation: String): JSONObject {
         val runtimeClient = ClawRuntimeClient(
             packageName = packageName,
-            sharedSecret = BuildConfig.CLAW_RUNTIME_SHARED_SECRET,
+            sharedSecret = com.clawdroid.app.runtime.RuntimeSecretStore.resolve(this),
             signatureDigest = ClawRuntimeClient.resolveSignatureDigest(this, packageName)
         )
         val toolExecutor = ClawToolExecutor(runtimeClient)
@@ -139,6 +139,43 @@ class DebugRuntimeBridgeActivity : ComponentActivity() {
                 onFailure = { failureJson(operation, it) }
             )
 
+            "runtime_status" -> runtimeClient.getRuntimeStatus().fold(
+                onSuccess = { status ->
+                    JSONObject(bridgeMetadata.toString()).apply {
+                        put("operation", operation)
+                        put("ok", true)
+                        put("daemonStatus", status.daemonStatus)
+                        put("daemonVersion", status.daemonVersion)
+                        put("protocolVersion", status.protocolVersion)
+                        put("uptimeSeconds", status.uptimeSeconds)
+                        put("root", status.root)
+                        put("accessibility", status.accessibility)
+                        put("lsposed", status.lsposed)
+                        put("lsposedRuntimeLoaded", status.lsposedRuntimeLoaded)
+                        put("capabilities", JSONArray(status.capabilities))
+                        put("actions", JSONArray(status.actions))
+                        put("allowedShellCommands", JSONArray(status.allowedShellCommands))
+                        put("allowedKeyevents", JSONArray(status.allowedKeyevents))
+                        put("readonlyWhitelist", JSONArray(status.readonlyWhitelist))
+                        put("degradedReason", status.degradedReason)
+                        put(
+                            "module",
+                            JSONObject().apply {
+                                put("moduleId", status.module.moduleId)
+                                put("modulePath", status.module.modulePath)
+                                put("installed", status.module.installed)
+                                put("enabled", status.module.enabled)
+                                put("runtimeState", status.module.runtimeState)
+                                put("runtimePid", status.module.runtimePid)
+                                put("verifyStatus", status.module.verifyStatus)
+                                put("verifySummary", status.module.verifySummary)
+                            }
+                        )
+                    }
+                },
+                onFailure = { failureJson(operation, it) }
+            )
+
             "capture_and_read" -> runtimeClient.captureScreen().fold(
                 onSuccess = { capture ->
                     runtimeClient.readFileLimited(path = capture.imagePath, maxBytes = 4096).fold(
@@ -182,6 +219,20 @@ class DebugRuntimeBridgeActivity : ComponentActivity() {
                         put("displayId", tap.displayId)
                         put("x", tap.x)
                         put("y", tap.y)
+                    }
+                },
+                onFailure = { failureJson(operation, it) }
+            )
+
+            "keyevent" -> runtimeClient.injectKeyevent(key = "BACK").fold(
+                onSuccess = { keyevent ->
+                    JSONObject(bridgeMetadata.toString()).apply {
+                        put("operation", operation)
+                        put("ok", true)
+                        put("accepted", keyevent.accepted)
+                        put("displayId", keyevent.displayId)
+                        put("key", keyevent.key)
+                        put("keyCode", keyevent.keyCode)
                     }
                 },
                 onFailure = { failureJson(operation, it) }

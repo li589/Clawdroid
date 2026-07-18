@@ -496,6 +496,12 @@ Clawdroid 至少跨越以下关键边界：
 2. **认证实现**
    - 不得仅依赖 UID；必须同时实现凭证校验、包名校验、挑战应答和会话控制。
    - 签名校验在开发联调阶段允许配置为空，但发布版和对外测试包必须启用非空 `auth.allowed_signatures`。
+   - **共享密钥（HMAC 材料）**
+     - Magisk `runtime.yaml` 的 `auth.shared_secret` 与 App 侧解析结果必须一致。
+     - App 解析顺序：设备覆盖（`RuntimeSecretStore` SharedPreferences）→ 编译期 `BuildConfig.CLAW_RUNTIME_SHARED_SECRET`。
+     - **接受风险：** BuildConfig 回退意味着 APK 逆向可提取默认密钥；仅适用于开发/同源构建联调。
+     - **生产要求：** 在 Magisk 模块写入独立 `shared_secret`，并在设置页写入相同设备覆盖；改密后重启 App 以重建 IPC 客户端，并重装/同步模块配置。
+     - 设置页可「清除覆盖」以回退编译期密钥（仅开发场景）。
 
 3. **执行实现**
    - `inject_tap`、`inject_swipe`、`exec_shell_limited`、`read_file_limited` 必须做参数范围和授权检查。
@@ -546,6 +552,20 @@ Clawdroid 至少跨越以下关键边界：
 - 是否为所有高危动作接入了审计日志
 - 是否为 LSPosed 适配模块配置了白名单与熔断
 - 是否完成了最小兼容矩阵上的安全回归测试
+
+## 16.1 目标适配威胁面：`wechat_detail`
+
+| 项 | 说明 |
+| --- | --- |
+| 目标包 | `com.tencent.mm`（`wechat_packages` 可覆盖） |
+| 默认状态 | **关闭**；须在 `enabled_adapters` 显式启用 |
+| 收集面 | Activity 类名 → `wechat_page` / `wechat_activity`；chrome 控件角色 `wechat_ctrl_*`（id/desc/bounds，非消息正文）；浅层 View 元数据（depth/node 封顶；`chat`/`moments` 脱敏 `text`） |
+| 明确不收集 | 聊天正文、通讯录 bulk、支付凭证、红包金额自动化；支付页不写控件角色 |
+| 控制 | 包白名单、可选 `adapter_version_gates`、`fuse_after_failures`、失败关闭 |
+| 回退 | 熔断后跳过 install（进程重启清零）；编排应降级到无障碍观测或人工确认 |
+| 剩余风险 | 目标进程可干扰注入代码；页面类名随版本变化导致标签漂移 |
+
+启用前须确认：用户知情、设备为受信调试机、已配置版本门与熔断阈值。契约见 [xposed-adapters.md](xposed-adapters.md)。
 
 ## 17. 文档维护规则
 

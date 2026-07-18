@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"clawdroid/runtime/internal/ipc"
 )
+
+var androidPackageRegex = regexp.MustCompile(`^[A-Za-z]\w*(\.[A-Za-z]\w*)+$`)
 
 const (
 	defaultShellTimeoutMS = 3000
@@ -66,6 +69,22 @@ var allowedShellCommands = map[string]shellCommandTemplate{
 		Name:        "id",
 		CommandArgs: []string{"id"},
 	},
+	"ls /data/adb/modules/clawruntime": {
+		Name:        "ls /data/adb/modules/clawruntime",
+		CommandArgs: []string{"ls", "/data/adb/modules/clawruntime"},
+	},
+	"cat /data/adb/modules/clawruntime/webroot/status.json": {
+		Name:        "cat /data/adb/modules/clawruntime/webroot/status.json",
+		CommandArgs: []string{"cat", "/data/adb/modules/clawruntime/webroot/status.json"},
+	},
+	"cat /data/adb/modules/clawruntime/webroot/verify.json": {
+		Name:        "cat /data/adb/modules/clawruntime/webroot/verify.json",
+		CommandArgs: []string{"cat", "/data/adb/modules/clawruntime/webroot/verify.json"},
+	},
+	"pidof clawdroid-runtime": {
+		Name:        "pidof clawdroid-runtime",
+		CommandArgs: []string{"pidof", "clawdroid-runtime"},
+	},
 	"settings get secure accessibility_enabled": {
 		Name:        "settings get secure accessibility_enabled",
 		CommandArgs: []string{"settings", "get", "secure", "accessibility_enabled"},
@@ -81,6 +100,26 @@ var allowedShellCommands = map[string]shellCommandTemplate{
 	"wm size": {
 		Name:        "wm size",
 		CommandArgs: []string{"wm", "size"},
+	},
+	"dumpsys activity activities": {
+		Name:        "dumpsys activity activities",
+		CommandArgs: []string{"dumpsys", "activity", "activities"},
+	},
+	"dumpsys notification": {
+		Name:        "dumpsys notification",
+		CommandArgs: []string{"dumpsys", "notification"},
+	},
+	"cat /proc/uptime": {
+		Name:        "cat /proc/uptime",
+		CommandArgs: []string{"cat", "/proc/uptime"},
+	},
+	"df /data": {
+		Name:        "df /data",
+		CommandArgs: []string{"df", "/data"},
+	},
+	"pm list packages -3": {
+		Name:        "pm list packages -3",
+		CommandArgs: []string{"pm", "list", "packages", "-3"},
 	},
 }
 
@@ -122,7 +161,7 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		}
 	}
 
-	template, ok := allowedShellCommands[args.Command]
+	template, ok := resolveShellTemplate(args.Command)
 	if !ok {
 		// Audit: log rejected shell command attempts for security traceability.
 		s.logger.Info(fmt.Sprintf("exec_shell_limited rejected: session=%s package=%s command=%q not in whitelist",
@@ -133,8 +172,13 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 			Code:      ipc.CodeErrShellDenied,
 			Message:   fmt.Sprintf("command not allowed: %s", rawCommand),
 			Data: mergeData(s.sessionData(sess), map[string]interface{}{
-				"command":          rawCommand,
-				"allowed_commands": sortedAllowedShellCommands,
+				"command": rawCommand,
+				"allowed_commands": append(append([]string(nil), sortedAllowedShellCommands...),
+					"am force-stop <package>",
+					"pm path <package>",
+					"dumpsys package <package>",
+					"pidof <name>",
+				),
 			}),
 		}
 	}
@@ -187,6 +231,87 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 			"timed_out":        result.TimedOut,
 		}),
 	}
+}
+
+func resolveShellTemplate(command string) (shellCommandTemplate, bool) {
+	if template, ok := allowedShellCommands[command]; ok {
+		return template, true
+	}
+	if template, ok := resolveParameterizedShell(command); ok {
+		return template, true
+	}
+	return shellCommandTemplate{}, false
+}
+
+func resolveParameterizedShell(command string) (shellCommandTemplate, bool) {
+	type prefixSpec struct {
+		prefix string
+		name   string
+		args   func(rest string) ([]string, bool)
+	}
+	specs := []prefixSpec{
+		{
+			prefix: "am force-stop ",
+			name:   "am force-stop",
+			args: func(rest string) ([]string, bool) {
+				pkg := strings.TrimSpace(rest)
+				if !androidPackageRegex.MatchString(pkg) {
+					return nil, false
+				}
+				return []string{"am", "force-stop", pkg}, true
+			},
+		},
+		{
+			prefix: "pm path ",
+			name:   "pm path",
+			args: func(rest string) ([]string, bool) {
+				pkg := strings.TrimSpace(rest)
+				if !androidPackageRegex.MatchString(pkg) {
+					return nil, false
+				}
+				return []string{"pm", "path", pkg}, true
+			},
+		},
+		{
+			prefix: "dumpsys package ",
+			name:   "dumpsys package",
+			args: func(rest string) ([]string, bool) {
+				pkg := strings.TrimSpace(rest)
+				if !androidPackageRegex.MatchString(pkg) {
+					return nil, false
+				}
+				return []string{"dumpsys", "package", pkg}, true
+			},
+		},
+		{
+			prefix: "pidof ",
+			name:   "pidof",
+			args: func(rest string) ([]string, bool) {
+				name := strings.TrimSpace(rest)
+				// Reject empty, leading-dash (pidof flag injection like "-x"),
+				// and any shell-relevant metacharacters. exec.Command does not
+				// invoke a shell, so this is defense-in-depth + input hygiene
+				// consistent with the androidPackageRegex checks above.
+				if name == "" ||
+					strings.HasPrefix(name, "-") ||
+					strings.ContainsAny(name, " \t\n\r;&|<>()${}`\\") {
+					return nil, false
+				}
+				return []string{"pidof", name}, true
+			},
+		},
+	}
+	for _, spec := range specs {
+		if strings.HasPrefix(command, spec.prefix) {
+			rest := strings.TrimPrefix(command, spec.prefix)
+			args, ok := spec.args(rest)
+			if !ok {
+				return shellCommandTemplate{}, false
+			}
+			return shellCommandTemplate{Name: spec.name, CommandArgs: args}, true
+		}
+	}
+	return shellCommandTemplate{}, false
 }
 
 func parseExecShellArgs(args map[string]interface{}, fallbackTimeoutMS int) (execShellArgs, error) {

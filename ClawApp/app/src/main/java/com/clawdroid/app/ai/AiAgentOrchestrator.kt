@@ -1,7 +1,10 @@
 package com.clawdroid.app.ai
 
+import android.content.Context
 import com.clawdroid.app.model.ModelApiClient
+import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.tools.ClawTool
+import com.clawdroid.app.tools.ClawToolCatalog
 import com.clawdroid.app.ui.ModelProvider
 import com.clawdroid.app.ui.ModelSettings
 import org.json.JSONArray
@@ -21,6 +24,13 @@ internal data class AiToolReflectionInput(
     val runtimeSnapshot: AiRuntimeSnapshot
 )
 
+internal data class AiToolStepRecord(
+    val tool: ClawTool,
+    val arguments: Map<String, String>,
+    val success: Boolean,
+    val output: String
+)
+
 internal sealed interface AiAgentPlan {
     data class ToolExecution(
         val tool: ClawTool,
@@ -35,6 +45,16 @@ internal sealed interface AiAgentPlan {
 }
 
 internal object AiAgentOrchestrator {
+    const val MAX_TOOL_LOOP_TURNS = 4
+    private const val MAX_STEP_OUTPUT_CHARS = 1800
+
+    @Volatile
+    private var appContext: Context? = null
+
+    fun bindContext(context: Context) {
+        appContext = context.applicationContext
+    }
+
     suspend fun plan(
         settings: ModelSettings,
         prompt: String,
@@ -48,6 +68,30 @@ internal object AiAgentOrchestrator {
             settings = settings,
             prompt = normalizedPrompt,
             systemPrompt = buildSystemPrompt(runtimeSnapshot)
+        ).map { rawReply ->
+            parseAgentPlan(rawReply)
+        }
+    }
+
+    suspend fun continueAfterTool(
+        settings: ModelSettings,
+        originalPrompt: String,
+        steps: List<AiToolStepRecord>,
+        runtimeSnapshot: AiRuntimeSnapshot,
+        remainingTurns: Int
+    ): Result<AiAgentPlan> {
+        if (steps.isEmpty()) {
+            return Result.success(AiAgentPlan.AssistantReply("没有可继续的工具步骤。"))
+        }
+        if (!isConfigured(settings)) {
+            return Result.success(
+                AiAgentPlan.AssistantReply(steps.last().output.trim().ifBlank { "工具已执行，但模型未配置。" })
+            )
+        }
+        return ModelApiClient.generateReply(
+            settings = settings,
+            prompt = buildContinueUserPrompt(originalPrompt, steps, remainingTurns),
+            systemPrompt = buildContinueSystemPrompt(runtimeSnapshot, remainingTurns)
         ).map { rawReply ->
             parseAgentPlan(rawReply)
         }
@@ -102,22 +146,100 @@ internal object AiAgentOrchestrator {
             appendLine("只有在用户明确要求执行动作、查询运行时、截图、读取能力、操作事件流或执行受限命令时，才返回 mode=tool。")
             appendLine("如果用户是在闲聊、询问解释、或者缺少执行前提，则返回 mode=chat。")
             appendLine("reply 必须是自然、简洁的中文。")
-            appendLine("如要调工具，只能从下列 tool_id 中选择：")
+            appendLine("如要调工具，只能从下列 tool_id 中选择（unavailable 表示当前能力不足，勿强行调用）：")
             appendLine(toolCatalog())
+            val usage = ClawAssetPromptStore.toolUsagePrompt(appContext)
+            if (usage.isNotBlank()) {
+                appendLine("--- tool-usage ---")
+                appendLine(usage.take(1200))
+            }
+            val assist = ClawAssetPromptStore.assistPrompt(appContext)
+            if (assist.isNotBlank()) {
+                appendLine("--- assist-mcp ---")
+                appendLine(assist.take(1200))
+            }
+            appendLine("多步任务优先使用 run_agent（先 list_agents）；也可在后续轮次继续 mode=tool 串联单个工具。")
+            appendLine("Skill 指导可用 list_skills / get_skill；工具目录可用 list_tools / get_tool。")
+            appendLine("本机工具优先；需要电脑侧能力时用 assist_ping / assist_list_tools / assist_call_tool。")
             appendLine("参数约定：")
             appendLine("""- inject_tap: {"x":"540","y":"1200","display_id":"0"}""")
             appendLine("""- inject_swipe: {"x1":"540","y1":"1800","x2":"540","y2":"400","duration_ms":"350","display_id":"0"}""")
             appendLine("""- execute_shell_limited: {"command":"wm size"}""")
             appendLine("""- subscribe_events: {"operation":"start|stop"}""")
             appendLine("""- capture_screen: {"read_after_capture":"true|false"}""")
+            appendLine("""- get_skill: {"skill_id":"assist-mcp-bridge"}""")
+            appendLine("""- run_agent: {"agent_id":"runtime_health_sweep"}""")
+            appendLine("""- file_read: {"path":"...","mode":"lines","line_start":"1","line_limit":"50"}""")
+            appendLine("""- app_launch: {"package":"com.android.settings"}""")
+            appendLine("""- download_start: {"url":"https://...","resume":"true"}""")
+            appendLine("""- web_search: {"query":"...","provider":"auto","max_results":"5"}""")
+            appendLine("""- sandbox_shell: {"command":"ls"}""")
+            appendLine("""- assist_call_tool: {"name":"tool_name","arguments_json":"{}"}""")
+            appendLine("""- task_submit: {"task_id":"t1","steps_json":"[{\"action\":\"ping\",\"args\":{}}]"}""")
+            appendLine("""- task_get / task_cancel: {"task_id":"..."}""")
             appendLine("已知运行时上下文：")
             appendLine("session_summary=${runtimeSnapshot.sessionSummary}")
             appendLine("capability_status=${runtimeSnapshot.capabilityStatus}")
             appendLine("event_streaming=${runtimeSnapshot.eventStreaming}")
-            appendLine("若上下文显示运行时尚未连接，优先建议 probe_session、runtime_ping 或 get_capabilities，不要臆造执行成功。")
-            appendLine("若用户要求'帮我看看当前能力/状态/连通性'，优先选择 get_capabilities、get_health、probe_session。")
-            appendLine("若用户要求'截图并看看'，优先 capture_screen，并将 read_after_capture 设为 true。")
+            appendLine("若上下文显示运行时尚未连接，优先建议 probe_session、runtime_ping、run_agent(runtime_health_sweep) 或 get_capabilities，不要臆造执行成功。")
+            appendLine("若用户要求'帮我看看当前能力/状态/连通性/模块'，优先 run_agent(runtime_health_sweep) 或 get_runtime_status / get_capabilities / probe_session。")
+            appendLine("若用户要求'截图并看看'，优先 run_agent(capture_then_preview) 或 capture_screen(read_after_capture=true)。")
+            appendLine("若用户要求确认页面后点击，优先 run_agent(confirm_then_safe_tap)。")
+            appendLine("若用户要求调用电脑 MCP，优先 assist_status / assist_ping，再 assist_call_tool。")
         }
+    }
+
+    internal fun buildContinueSystemPrompt(
+        runtimeSnapshot: AiRuntimeSnapshot,
+        remainingTurns: Int
+    ): String {
+        return buildString {
+            appendLine("你是 Clawdroid 的本地 AI 编排器，正在继续多步工具循环。")
+            appendLine("你必须输出 JSON，且只能输出一个 JSON 对象，不要输出 Markdown。")
+            appendLine("""JSON 结构：{"mode":"tool|chat","reply":"给用户看的简短中文回复","tool":"tool_id","arguments":{"key":"value"},"reason":"简短原因"}""")
+            appendLine("若用户目标尚未完成且仍需调用工具，返回 mode=tool。")
+            appendLine("若目标已完成、无法继续、或剩余轮次不足，返回 mode=chat，并在 reply 中基于真实工具输出做简短总结。")
+            appendLine("不要重复调用刚刚失败且参数相同的工具；不要臆造成功。")
+            appendLine("剩余可继续工具轮次：$remainingTurns")
+            appendLine("可选 tool_id：")
+            appendLine(toolCatalog())
+            appendLine("多步固定流程优先 run_agent。")
+            appendLine("当前运行时上下文：")
+            appendLine("session_summary=${runtimeSnapshot.sessionSummary}")
+            appendLine("capability_status=${runtimeSnapshot.capabilityStatus}")
+            appendLine("event_streaming=${runtimeSnapshot.eventStreaming}")
+        }
+    }
+
+    internal fun buildContinueUserPrompt(
+        originalPrompt: String,
+        steps: List<AiToolStepRecord>,
+        remainingTurns: Int
+    ): String {
+        return buildString {
+            appendLine("用户原始请求:")
+            appendLine(originalPrompt.trim())
+            appendLine()
+            appendLine("已执行步骤（从早到晚）:")
+            steps.forEachIndexed { index, step ->
+                val args = step.arguments.entries.joinToString { "${it.key}=${it.value}" }
+                    .ifBlank { "none" }
+                appendLine("${index + 1}. tool=${step.tool.toolId} success=${step.success} args={$args}")
+                appendLine("output:")
+                appendLine(truncateStepOutput(step.output))
+                appendLine()
+            }
+            appendLine("剩余可继续工具轮次: $remainingTurns")
+            appendLine("请决定下一步：继续 mode=tool，或结束 mode=chat。")
+        }
+    }
+
+    internal fun truncateStepOutput(output: String): String {
+        val trimmed = output.trim()
+        if (trimmed.length <= MAX_STEP_OUTPUT_CHARS) {
+            return trimmed
+        }
+        return trimmed.take(MAX_STEP_OUTPUT_CHARS) + "\n...(truncated)"
     }
 
     suspend fun reflectToolResult(
@@ -135,8 +257,11 @@ internal object AiAgentOrchestrator {
     }
 
     private fun toolCatalog(): String {
-        return ClawTool.entries.joinToString(separator = "\n") { tool ->
-            "- ${tool.toolId}: ${tool.displayName}，${tool.description}"
+        val lines = ClawToolCatalog.aiCatalogLines(appContext)
+        return lines.ifBlank {
+            ClawTool.entries.joinToString(separator = "\n") { tool ->
+                "- ${tool.toolId}: ${tool.displayName}，${tool.description}"
+            }
         }
     }
 
@@ -149,30 +274,21 @@ internal object AiAgentOrchestrator {
             ClawTool.READ_LATEST_CAPTURE -> "我先读取最近截图预览。"
             ClawTool.SUBSCRIBE_EVENTS -> "我来处理事件流状态。"
             ClawTool.EXECUTE_SHELL_LIMITED -> "我先执行受限 Shell 命令。"
+            ClawTool.SAFE_TAP -> "我先执行安全点击。"
+            ClawTool.LIST_SKILLS -> "我先列出可用 Skills。"
+            ClawTool.GET_SKILL -> "我先读取 Skill 说明。"
+            ClawTool.LIST_AGENTS -> "我先列出可用 Agents。"
+            ClawTool.RUN_AGENT -> "我先运行多步 Agent。"
+            ClawTool.TASK_SUBMIT -> "我先向 Runtime 提交任务。"
+            ClawTool.TASK_GET -> "我先查询 Runtime 任务状态。"
+            ClawTool.TASK_LIST -> "我先列出 Runtime 任务。"
+            ClawTool.TASK_CANCEL -> "我先取消 Runtime 任务。"
             else -> "我先尝试执行这个动作。"
         }
     }
 
     internal fun readinessSummary(settings: ModelSettings): String {
-        val providerLabel = when (settings.provider) {
-            ModelProvider.OpenAI -> "OpenAI"
-            ModelProvider.Gemini -> "Gemini"
-            ModelProvider.Anthropic -> "Anthropic"
-            ModelProvider.Deepseek -> "DeepSeek"
-            ModelProvider.Kimi -> "Kimi"
-            ModelProvider.Qwen -> "Qwen"
-            ModelProvider.Zhipu -> "智谱 GLM"
-            ModelProvider.TencentHunyuan -> "腾讯混元"
-            ModelProvider.Baidu -> "百度文心"
-            ModelProvider.MiniMax -> "MiniMax"
-            ModelProvider.OpenAICompatible -> "OpenAI 兼容"
-            ModelProvider.AnthropicCompatible -> "Anthropic 兼容"
-            ModelProvider.ClaudeCode -> "Claude Code"
-            ModelProvider.Codex -> "Codex"
-            ModelProvider.Custom -> "自定义"
-            ModelProvider.Local -> "本地模型"
-            else -> settings.provider.name
-        }
+        val providerLabel = settings.provider.displayName
         return if (isConfigured(settings)) {
             "AI 已就绪: $providerLabel，可执行模型决策 + 工具编排"
         } else {
@@ -234,7 +350,7 @@ internal object AiAgentOrchestrator {
     }
 
     private fun validateToolArguments(tool: ClawTool, arguments: Map<String, String>): Map<String, String>? {
-        val allowedParams = allowedParameters[tool] ?: return arguments
+        val allowedParams = ClawToolCatalog.allowedArgumentKeys(tool) ?: return arguments
         val validArgs = arguments.filter { (key, _) -> key in allowedParams }
         if (validArgs.size < arguments.size) {
             return null
@@ -251,10 +367,17 @@ internal object AiAgentOrchestrator {
         val len = value.length
         if (len > 4096) return false
         return when {
-            key in setOf("x", "y", "x1", "y1", "x2", "y2", "display_id", "duration_ms", "offset", "max_bytes") -> {
+            key in setOf(
+                "x", "y", "x1", "y1", "x2", "y2", "display_id", "duration_ms",
+                "offset", "max_bytes", "line_start", "line_limit", "line_end",
+                "column", "limit", "threads", "port"
+            ) -> {
                 value.toIntOrNull()?.let { v -> v in -10000..100000 } ?: false
             }
-            key in setOf("read_after_capture") -> {
+            key in setOf(
+                "read_after_capture", "append", "regex", "resume", "compute_hash",
+                "include_images", "include_planned"
+            ) -> {
                 value.lowercase() in setOf("true", "false")
             }
             key in setOf("operation") -> {
@@ -263,8 +386,11 @@ internal object AiAgentOrchestrator {
             key == "command" -> {
                 len > 0 && !DANGEROUS_COMMAND_PATTERN.containsMatchIn(value)
             }
-            key in setOf("expected_package", "target_package", "package") -> {
-                PACKAGE_NAME_PATTERN.matches(value)
+            key in setOf("expected_package", "target_package", "package", "package_name") -> {
+                value.isBlank() || PACKAGE_NAME_PATTERN.matches(value)
+            }
+            key in setOf("skill_id", "agent_id", "agent", "id", "name", "tool_id", "task_id", "download_id") -> {
+                value.isNotBlank() && value.length <= 128 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' }
             }
             else -> true
         }
@@ -274,15 +400,4 @@ internal object AiAgentOrchestrator {
         """.*(?:;\s*|\|\s*|\&\&\s*|>|<|\$\(|`)\s*(?:rm|mv|cp|chmod|chown|wget|curl|nc|bash|sh)\b"""
     )
     private val PACKAGE_NAME_PATTERN = Regex("""^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$""")
-
-    private val allowedParameters = mapOf(
-        ClawTool.INJECT_TAP to setOf("x", "y", "display_id"),
-        ClawTool.INJECT_SWIPE to setOf("x1", "y1", "x2", "y2", "duration_ms", "display_id"),
-        ClawTool.EXECUTE_SHELL_LIMITED to setOf("command"),
-        ClawTool.SUBSCRIBE_EVENTS to setOf("operation"),
-        ClawTool.CAPTURE_SCREEN to setOf("read_after_capture", "display_id"),
-        ClawTool.PAGE_CONFIRM to setOf("expected_package", "expected_text", "expected_view_id"),
-        ClawTool.CLICK_PRECHECK to setOf("expected_package", "target_text", "target_view_id"),
-        ClawTool.READ_FILE_LIMITED to setOf("path", "offset", "max_bytes")
-    )
 }

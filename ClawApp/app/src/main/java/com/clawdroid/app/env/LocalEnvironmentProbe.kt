@@ -26,7 +26,14 @@ data class LocalEnvironmentStatus(
     val lsposedManagerInstalled: Boolean,
     val xposedInjected: Boolean,
     val xposedProcessName: String = "",
-    val xposedLoadedAtEpochMs: Long = 0L
+    val xposedLoadedAtEpochMs: Long = 0L,
+    val xposedFocusSummary: String = "",
+    val xposedViewSummary: String = "",
+    val xposedAdapterConfigSummary: String = "",
+    val shizukuManagerInstalled: Boolean = false,
+    val shizukuBinderAlive: Boolean = false,
+    val shizukuPermissionGranted: Boolean = false,
+    val notificationListenerEnabled: Boolean = false
 )
 
 internal data class LocalEnvironmentDiagnosis(
@@ -124,7 +131,19 @@ object LocalEnvironmentProbe {
             MagiskModuleStatus()
         }
 
+        if (includeRootCheck && rootGranted == true) {
+            seedXposedAdapterConfigIfNeeded()
+        }
+
         val persistedMarker = LocalRuntimeStatus.readPersistedMarker(context)
+        val injectedInProcess = LocalRuntimeStatus.isXposedInjected()
+        val markerFresh = isPersistedMarkerFresh(persistedMarker.xposedLoadedAtEpochMs)
+        val xposedInjected = injectedInProcess || (persistedMarker.xposedInjected && markerFresh)
+        val xposedSource = when {
+            injectedInProcess -> "process"
+            persistedMarker.xposedInjected && markerFresh -> "marker"
+            else -> "none"
+        }
         val writeSettingsGranted = AppPermissionManager.writeSettingsGranted(context) || (
             includeRootCheck && rootGranted == true &&
                 detectAppOpAllowed(
@@ -150,17 +169,73 @@ object LocalEnvironmentProbe {
             magiskModuleEnabled = magiskModuleStatus.moduleEnabled,
             runtimeDaemonRunning = magiskModuleStatus.runtimeDaemonRunning,
             lsposedManagerInstalled = detectLsposedManagerInstalled(context),
-            xposedInjected = LocalRuntimeStatus.isXposedInjected(),
+            xposedInjected = xposedInjected,
             xposedProcessName = resolveXposedProcessName(
-                LocalRuntimeStatus.isXposedInjected(),
+                xposedInjected,
                 LocalRuntimeStatus.currentProcessName(),
                 persistedMarker.xposedProcessName
             ),
             xposedLoadedAtEpochMs = resolveXposedLoadedAtEpochMs(
-                LocalRuntimeStatus.isXposedInjected(),
+                xposedInjected,
                 LocalRuntimeStatus.loadedAtEpochMs(),
                 persistedMarker.xposedLoadedAtEpochMs
-            )
+            ),
+            shizukuManagerInstalled = ShizukuSupport.isManagerInstalled(context),
+            shizukuBinderAlive = ShizukuSupport.isBinderAlive(),
+            shizukuPermissionGranted = ShizukuSupport.permissionGranted(),
+            notificationListenerEnabled = detectNotificationListenerEnabled(context),
+            xposedFocusSummary = resolveXposedFocusSummary(),
+            xposedViewSummary = resolveXposedViewSummary(),
+            xposedAdapterConfigSummary = buildString {
+                append(com.clawdroid.app.xposed.XposedAdapterConfig.summaryForProbe())
+                append("; injected_source=")
+                append(xposedSource)
+            }
+        )
+    }
+
+    private fun resolveXposedViewSummary(): String {
+        val live = com.clawdroid.app.focus.LiveXposedViewStore
+        if (live.hasLive()) {
+            val summary = live.summaryForProbe()
+            if (summary.isNotBlank()) {
+                return summary
+            }
+        }
+        return com.clawdroid.app.xposed.XposedViewSnapshotStore.summaryForProbe()
+    }
+
+    private fun resolveXposedFocusSummary(): String {
+        val live = com.clawdroid.app.focus.LiveXposedFocusStore
+        if (live.hasLive()) {
+            val summary = live.summaryForProbe()
+            if (summary.isNotBlank()) {
+                return summary
+            }
+        }
+        return com.clawdroid.app.xposed.XposedFocusSnapshotStore.summaryForProbe()
+    }
+
+    private fun isPersistedMarkerFresh(loadedAtEpochMs: Long, maxAgeMs: Long = 24L * 60L * 60L * 1000L): Boolean {
+        if (loadedAtEpochMs <= 0L) return false
+        return System.currentTimeMillis() - loadedAtEpochMs <= maxAgeMs
+    }
+
+    private suspend fun seedXposedAdapterConfigIfNeeded() {
+        val alreadyPresentOrDirect = withContext(Dispatchers.IO) {
+            com.clawdroid.app.xposed.XposedAdapterConfig.ensureDefaultsSeeded(rootCommand = null)
+        }
+        if (alreadyPresentOrDirect) {
+            return
+        }
+        val readable = withContext(Dispatchers.IO) {
+            com.clawdroid.app.xposed.XposedAdapterConfig.hasReadableConfig()
+        }
+        if (readable) {
+            return
+        }
+        AppPermissionManager.runRawRootCommand(
+            com.clawdroid.app.xposed.XposedAdapterConfig.buildSeedRootCommand()
         )
     }
 
@@ -234,6 +309,15 @@ object LocalEnvironmentProbe {
                 packageManager.getPackageInfo(packageName, 0)
             }.isSuccess
         }
+    }
+
+    private fun detectNotificationListenerEnabled(context: Context): Boolean {
+        val flat = Settings.Secure.getString(
+            context.contentResolver,
+            "enabled_notification_listeners"
+        ).orEmpty()
+        val expected = "${context.packageName}/"
+        return flat.split(':').any { it.contains(expected, ignoreCase = true) }
     }
 
     private suspend fun detectAppOpAllowed(packageName: String, operationNames: List<String>): Boolean =

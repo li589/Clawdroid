@@ -102,7 +102,13 @@ func TestIdempotencyCacheAllIdempotentActions(t *testing.T) {
 	c := newIdempotencyCache()
 	resp := ipc.Response{RequestID: "req-001", OK: true}
 
-	actions := []string{"ping", "get_capabilities", "read_file_limited", "subscribe_events"}
+	actions := []string{
+		ipc.ActionPing,
+		ipc.ActionGetCapabilities,
+		ipc.ActionGetRuntimeStatus,
+		ipc.ActionReadFileLimited,
+		ipc.ActionSubscribeEvents,
+	}
 	for _, action := range actions {
 		reqID := "req-" + action + "-all"
 		respCopy := resp

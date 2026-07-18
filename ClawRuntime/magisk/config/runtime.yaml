@@ -21,4 +21,4 @@ capability:
   file_bridge_enabled: true
 
 paths:
-  readonly_whitelist: "/sdcard/Pictures,/sdcard/Download"
+  readonly_whitelist: "/sdcard/Pictures,/sdcard/Download,/data/local/tmp/clawdroid,/data/adb/modules/clawruntime"

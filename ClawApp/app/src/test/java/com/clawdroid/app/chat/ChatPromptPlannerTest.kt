@@ -80,6 +80,60 @@ class ChatPromptPlannerTest {
     }
 
     @Test
+    fun planReturnsTaskExecutionForCaptureThenPreviewPrompt() = runBlocking {
+        val plan = ChatPromptPlanner.plan(
+            context = plannerContext("帮我截图并预览")
+        ) { _, _, _ ->
+            error("task execution should not call AI planner")
+        }
+
+        assertEquals(
+            ChatPromptPlan.TaskExecution(
+                action = ChatTaskAction.CaptureThenPreview,
+                assistantMessage = "正在按“截图 -> 预览”执行任务...",
+                aiStatus = "规则任务: 截图并预览"
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun planReturnsTaskExecutionForRuntimeHealthSweepPrompt() = runBlocking {
+        val plan = ChatPromptPlanner.plan(
+            context = plannerContext("请做一次运行时体检")
+        ) { _, _, _ ->
+            error("task execution should not call AI planner")
+        }
+
+        assertEquals(
+            ChatPromptPlan.TaskExecution(
+                action = ChatTaskAction.RuntimeHealthSweep,
+                assistantMessage = "正在按“Ping -> Runtime Status -> 获取能力”执行任务...",
+                aiStatus = "规则任务: 运行时体检"
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun planReturnsTaskExecutionForSwipeThenCapturePrompt() = runBlocking {
+        val plan = ChatPromptPlanner.plan(
+            context = plannerContext("滑动后截图")
+        ) { _, _, _ ->
+            error("task execution should not call AI planner")
+        }
+
+        assertEquals(
+            ChatPromptPlan.TaskExecution(
+                action = ChatTaskAction.SwipeThenCapture,
+                assistantMessage = "正在按“滑动 -> 截图 -> 预览”执行任务...",
+                aiStatus = "规则任务: 滑动后截图"
+            ),
+            plan
+        )
+    }
+
+    @Test
     fun planReturnsAiToolExecutionAndEnablesReflection() = runBlocking {
         val plan = ChatPromptPlanner.plan(
             context = plannerContext("帮我判断一下当前运行时都支持哪些特性")
@@ -118,13 +172,65 @@ class ChatPromptPlannerTest {
         assertEquals("AI 请求失败", plan.aiStatus)
     }
 
-    private fun plannerContext(prompt: String): ChatPlannerContext {
+    @Test
+    fun buildAiPromptWithHistoryIncludesRecentTurns() {
+        val prompt = ChatPromptPlanner.buildAiPromptWithHistory(
+            currentPrompt = "再 ping 一次",
+            recentChat = listOf(
+                ChatHistoryTurn(role = "user", content = "先探测会话"),
+                ChatHistoryTurn(role = "assistant", content = "探测完成")
+            )
+        )
+        assertTrue(prompt.contains("先探测会话"))
+        assertTrue(prompt.contains("探测完成"))
+        assertTrue(prompt.contains("再 ping 一次"))
+        assertTrue(prompt.contains("最近对话"))
+    }
+
+    @Test
+    fun buildAiPromptWithHistoryReturnsRawPromptWhenEmpty() {
+        assertEquals(
+            "单独请求",
+            ChatPromptPlanner.buildAiPromptWithHistory(
+                currentPrompt = "单独请求",
+                recentChat = emptyList()
+            )
+        )
+    }
+
+    @Test
+    fun planPassesHistoryIntoAiPlannerPrompt() = runBlocking {
+        var capturedPrompt = ""
+        val plan = ChatPromptPlanner.plan(
+            context = plannerContext(
+                prompt = "取消刚才那个",
+                recentChat = listOf(
+                    ChatHistoryTurn(role = "user", content = "提交 runtime 任务"),
+                    ChatHistoryTurn(role = "assistant", content = "已提交 task-9")
+                )
+            )
+        ) { _, prompt, _ ->
+            capturedPrompt = prompt
+            Result.success(AiAgentPlan.AssistantReply("收到"))
+        }
+
+        assertTrue(plan is ChatPromptPlan.AssistantReply)
+        assertTrue(capturedPrompt.contains("提交 runtime 任务"))
+        assertTrue(capturedPrompt.contains("task-9"))
+        assertTrue(capturedPrompt.contains("取消刚才那个"))
+    }
+
+    private fun plannerContext(
+        prompt: String,
+        recentChat: List<ChatHistoryTurn> = emptyList()
+    ): ChatPlannerContext {
         return ChatPlannerContext(
             prompt = prompt,
             modelSettings = ModelSettings(),
             sessionSummary = "session-ready",
             capabilityStatus = "capability-ready",
-            eventStreaming = false
+            eventStreaming = false,
+            recentChat = recentChat
         )
     }
 }

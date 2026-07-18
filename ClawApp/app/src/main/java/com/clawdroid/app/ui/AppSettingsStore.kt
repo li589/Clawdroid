@@ -18,6 +18,7 @@ internal object AppSettingsStore {
     private const val keyCustomApiPath = "custom_api_path"
     private const val keyUrlPathMode = "url_path_mode"
     private const val keyContextSettings = "context_settings"
+    private const val keyNetworkProxy = "network_proxy_settings"
 
     private var registeredListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
@@ -68,6 +69,7 @@ internal object AppSettingsStore {
                 UrlPathMode.entries.firstOrNull { it.name == raw } ?: UrlPathMode.AutoAppend
             }
         val contextSettings = loadContextSettings(prefs)
+        val proxySettings = loadProxySettings(prefs)
 
         return ModelSettings(
             provider = provider,
@@ -78,6 +80,7 @@ internal object AppSettingsStore {
             localModelName = prefs.getString(keyLocalModelName, "").orEmpty(),
             customApiPath = prefs.getString(keyCustomApiPath, "/chat/completions").orEmpty(),
             urlPathMode = urlPathMode,
+            proxySettings = proxySettings,
             contextSettings = contextSettings
         )
     }
@@ -94,8 +97,43 @@ internal object AppSettingsStore {
             .putString(keyLocalModelName, settings.localModelName)
             .putString(keyCustomApiPath, settings.customApiPath)
             .putString(keyUrlPathMode, settings.urlPathMode.name)
+            .putString(keyNetworkProxy, serializeProxySettings(settings.proxySettings))
             .putString(keyContextSettings, serializeContextSettings(settings.contextSettings))
             .apply()
+    }
+
+    private fun loadProxySettings(prefs: SharedPreferences): NetworkProxySettings {
+        val json = prefs.getString(keyNetworkProxy, null).orEmpty()
+        if (json.isBlank()) return NetworkProxySettings()
+        return try {
+            val obj = JSONObject(json)
+            val mode = NetworkProxyMode.entries.firstOrNull {
+                it.name == obj.optString("mode")
+            } ?: NetworkProxyMode.System
+            NetworkProxySettings(
+                mode = mode,
+                host = obj.optString("host", "127.0.0.1"),
+                port = obj.optInt("port", 7890).coerceIn(1, 65535),
+                username = obj.optString("username", ""),
+                password = runCatching {
+                    val encrypted = obj.optString("passwordEncrypted", "")
+                    if (encrypted.isBlank()) obj.optString("password", "")
+                    else AppSecretCipher.decrypt(encrypted)
+                }.getOrDefault("")
+            )
+        } catch (_: Exception) {
+            NetworkProxySettings()
+        }
+    }
+
+    private fun serializeProxySettings(proxy: NetworkProxySettings): String {
+        return JSONObject().apply {
+            put("mode", proxy.mode.name)
+            put("host", proxy.host)
+            put("port", proxy.port)
+            put("username", proxy.username)
+            put("passwordEncrypted", AppSecretCipher.encrypt(proxy.password))
+        }.toString()
     }
 
     private fun loadContextSettings(prefs: SharedPreferences): ContextSettings {

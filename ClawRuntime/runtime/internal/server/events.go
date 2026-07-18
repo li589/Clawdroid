@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"clawdroid/runtime/internal/ipc"
@@ -20,22 +21,26 @@ import (
 )
 
 const (
-	subscribeEventTaskStateChanged   = "task_state_changed"
-	subscribeEventDaemonStatus       = "daemon_status_changed"
-	subscribeEventCapabilityChanged  = "capability_changed"
-	subscribeEventWindowChanged      = "window_changed"
-	subscribeEventSubscriptionClosed = "subscription_closed"
-	maxSubscribeEvents               = 16
-	eventStreamPollInterval          = 2 * time.Second
-	eventStreamHeartbeatEvery        = 5
-	eventWriteTimeout               = 5 * time.Second
+	subscribeEventTaskStateChanged     = "task_state_changed"
+	subscribeEventDaemonStatus         = "daemon_status_changed"
+	subscribeEventCapabilityChanged    = "capability_changed"
+	subscribeEventWindowChanged        = "window_changed"
+	subscribeEventXposedFocusChanged   = "xposed_focus_changed"
+	subscribeEventXposedViewChanged    = "xposed_view_changed"
+	subscribeEventSubscriptionClosed   = "subscription_closed"
+	maxSubscribeEvents                 = 16
+	eventStreamPollInterval            = 2 * time.Second
+	eventStreamHeartbeatEvery          = 5
+	eventWriteTimeout                  = 5 * time.Second
 )
 
 var allowedSubscribeEvents = map[string]struct{}{
-	subscribeEventTaskStateChanged:  {},
-	subscribeEventDaemonStatus:      {},
-	subscribeEventCapabilityChanged: {},
-	subscribeEventWindowChanged:     {},
+	subscribeEventTaskStateChanged:   {},
+	subscribeEventDaemonStatus:       {},
+	subscribeEventCapabilityChanged:  {},
+	subscribeEventWindowChanged:      {},
+	subscribeEventXposedFocusChanged: {},
+	subscribeEventXposedViewChanged:  {},
 }
 
 type subscribeEventsArgs struct {
@@ -49,17 +54,19 @@ type eventFrame struct {
 }
 
 type eventSnapshot struct {
-	daemonStatus    map[string]interface{}
-	capabilityState map[string]interface{}
-	windowState     map[string]interface{}
-	taskState       map[string]interface{}
+	daemonStatus     map[string]interface{}
+	capabilityState  map[string]interface{}
+	windowState      map[string]interface{}
+	taskState        map[string]interface{}
+	xposedFocusState map[string]interface{}
+	xposedViewState  map[string]interface{}
 }
 
 func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req ipc.Request, conn net.Conn, writer *bufio.Writer) error {
 	s.finalizeCapabilityState(sess)
 
 	// Security: enforce event.subscribe capability
-	if !slices.Contains(sess.capabilities, "event.subscribe") {
+	if !slices.Contains(sess.capabilities, ipc.CapabilityEventSubscribe) {
 		return writeResponseFrame(writer, ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
@@ -69,24 +76,10 @@ func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req i
 		})
 	}
 
-	// Security: enforce rate limit on event subscription requests
-	if !sess.allowRequest(s.cfg.RateLimitPerMinute) {
-		message := fmt.Sprintf(
-			"event subscription rate limit exceeded: package=%s session=%s",
-			sess.packageName, sess.id,
-		)
-		s.recordRateLimit(message)
-		return writeResponseFrame(writer, ipc.Response{
-			RequestID: req.RequestID,
-			OK:        false,
-			Code:      ipc.CodeErrRateLimited,
-			Message:   ipc.ErrorMessage(ipc.CodeErrRateLimited),
-			Data: mergeData(s.sessionData(sess), map[string]interface{}{
-				"rate_limit_per_minute": s.cfg.RateLimitPerMinute,
-				"last_rate_limit":       message,
-			}),
-		})
-	}
+	// Rate limiting is enforced uniformly for all actions by the main request
+	// loop in handleConnection (server.go) before routing here. Re-checking
+	// here would double-consume the per-minute token budget for subscribe_events
+	// versus every other action.
 
 	args, err := parseSubscribeEventsArgs(req.Args)
 	if err != nil {
@@ -118,6 +111,13 @@ func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req i
 		return err
 	}
 
+	// Register a per-subscriber wake channel so report_xposed_* wakes this loop
+	// without being stolen by another subscriber (the previous single shared
+	// channel only ever woke one subscriber per report).
+	wake := make(chan struct{}, 1)
+	s.registerEventSub(wake)
+	defer s.unregisterEventSub(wake)
+
 	currentSnapshot := s.captureEventSnapshot(sess)
 	for _, frame := range buildSnapshotEventFrames(currentSnapshot, args.Events) {
 		if err := writeEventFrame(conn, writer, frame); err != nil {
@@ -134,11 +134,12 @@ func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req i
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+		case <-wake:
 		}
 		heartbeatCounter++
 		nextSnapshot := s.captureEventSnapshot(sess)
 		changedFrames := diffSnapshotEventFrames(currentSnapshot, nextSnapshot, args.Events)
-		if len(changedFrames) == 0 && heartbeatCounter >= eventStreamHeartbeatEvery && containsEvent(args.Events, subscribeEventDaemonStatus) {
+		if len(changedFrames) == 0 && heartbeatCounter >= eventStreamHeartbeatEvery && slices.Contains(args.Events, subscribeEventDaemonStatus) {
 			changedFrames = append(changedFrames, eventFrame{
 				Event:     subscribeEventDaemonStatus,
 				Timestamp: time.Now().Unix(),
@@ -222,7 +223,9 @@ func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
 		windowState: map[string]interface{}{
 			"focused_window": detectFocusedWindow(),
 		},
-		taskState: taskState,
+		taskState:        taskState,
+		xposedFocusState: s.captureXposedFocusState(),
+		xposedViewState:  s.captureXposedViewState(),
 	}
 }
 
@@ -279,6 +282,10 @@ func buildSnapshotEventFrames(snapshot eventSnapshot, eventNames []string) []eve
 			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.capabilityState)})
 		case subscribeEventWindowChanged:
 			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.windowState)})
+		case subscribeEventXposedFocusChanged:
+			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.xposedFocusState)})
+		case subscribeEventXposedViewChanged:
+			frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(snapshot.xposedViewState)})
 		}
 	}
 	return frames
@@ -305,6 +312,14 @@ func diffSnapshotEventFrames(previous eventSnapshot, current eventSnapshot, even
 			if !mapsEqual(previous.windowState, current.windowState) {
 				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.windowState)})
 			}
+		case subscribeEventXposedFocusChanged:
+			if !mapsEqual(previous.xposedFocusState, current.xposedFocusState) {
+				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.xposedFocusState)})
+			}
+		case subscribeEventXposedViewChanged:
+			if !mapsEqual(previous.xposedViewState, current.xposedViewState) {
+				frames = append(frames, eventFrame{Event: eventName, Timestamp: now, Data: copyMap(current.xposedViewState)})
+			}
 		}
 	}
 	return frames
@@ -318,7 +333,35 @@ func writeEventFrame(conn net.Conn, writer *bufio.Writer, frame eventFrame) erro
 	return writeJSONFrameWithTimeout(conn, writer, payload)
 }
 
+// focusedWindowCacheTTL bounds how often detectFocusedWindow may fork dumpsys
+// subprocesses. Without it, every eventWake signal (e.g. each report_xposed_*)
+// would trigger up to three dumpsys calls across all subscribers.
+const focusedWindowCacheTTL = 500 * time.Millisecond
+
+var (
+	focusedWindowMu       sync.Mutex
+	focusedWindowCache    string
+	focusedWindowCachedAt time.Time
+)
+
+// detectFocusedWindow returns the focused window, cached for focusedWindowCacheTTL.
+// The lock is held across the uncached call so concurrent subscribers that miss
+// the cache block on the lock and then observe the freshly-populated cache,
+// preventing an N×3 dumpsys stampede when a single notifyEventWake broadcast
+// hits multiple subscribers at once.
 func detectFocusedWindow() string {
+	focusedWindowMu.Lock()
+	defer focusedWindowMu.Unlock()
+	if !focusedWindowCachedAt.IsZero() && time.Since(focusedWindowCachedAt) < focusedWindowCacheTTL {
+		return focusedWindowCache
+	}
+	result := detectFocusedWindowUncached()
+	focusedWindowCache = result
+	focusedWindowCachedAt = time.Now()
+	return result
+}
+
+func detectFocusedWindowUncached() string {
 	for _, resolver := range []func() string{
 		detectFocusedWindowFromWindows,
 		detectFocusedWindowFromActivityTop,
@@ -542,15 +585,6 @@ func readCurrentProcessMetrics() (int, int64) {
 		break
 	}
 	return pid, rssKB
-}
-
-func containsEvent(events []string, event string) bool {
-	for _, item := range events {
-		if item == event {
-			return true
-		}
-	}
-	return false
 }
 
 func copyMap(source map[string]interface{}) map[string]interface{} {

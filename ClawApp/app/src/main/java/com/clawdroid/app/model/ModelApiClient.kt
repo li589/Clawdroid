@@ -1,10 +1,8 @@
 package com.clawdroid.app.model
 
 import com.clawdroid.app.ui.ApiPathStyle
-import com.clawdroid.app.ui.ContextSettings
 import com.clawdroid.app.ui.ModelProvider
 import com.clawdroid.app.ui.ModelSettings
-import com.clawdroid.app.ui.UrlPathMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -127,16 +125,30 @@ internal object ModelApiClient {
     }
 
     /**
-     * 查询模型列表（部分供应商支持）
-     * 返回模型名称列表
+     * 查询模型列表（OpenAI/Anthropic 兼容中转站、硅基流动、NewAPI、Ollama 等）
      */
     suspend fun listModels(settings: ModelSettings): Result<List<String>> {
         return withContext(Dispatchers.IO) {
             runCatching {
-                val endpoint = buildApiUrl(settings, "/models")
-                val headers = buildAuthHeaders(settings, isListCall = true)
-                val response = executeRawRequest(endpoint, "GET", headers)
-                parseModelList(settings.provider, response)
+                require(settings.resolvedEndpoint().isNotBlank()) { "API Base URL 不能为空" }
+                if (settings.provider != ModelProvider.Local) {
+                    require(settings.apiKey.isNotBlank()) { "API Key 不能为空" }
+                }
+
+                val candidates = ModelApiUrlBuilder.buildModelsUrlCandidates(settings)
+                require(candidates.isNotEmpty()) { "无法构造模型列表 URL，请检查 Base URL" }
+
+                var lastError: Throwable? = null
+                for (endpoint in candidates) {
+                    try {
+                        val headers = buildAuthHeaders(settings)
+                        val response = executeRawRequest(settings, endpoint, "GET", headers)
+                        return@runCatching ModelApiUrlBuilder.parseModelList(response)
+                    } catch (error: Throwable) {
+                        lastError = error
+                    }
+                }
+                throw lastError ?: IllegalStateException("获取模型列表失败")
             }
         }
     }
@@ -171,7 +183,7 @@ internal object ModelApiClient {
         prompt: String,
         systemPrompt: String?
     ): String {
-        val endpoint = buildApiUrl(settings, "/chat/completions")
+        val endpoint = ModelApiUrlBuilder.buildChatUrl(settings)
         val headers = buildAuthHeaders(settings)
         val ctx = settings.contextSettings
 
@@ -197,7 +209,7 @@ internal object ModelApiClient {
             if (ctx.stopSequences.isNotEmpty()) put("stop", JSONArray(ctx.stopSequences))
         }
 
-        val response = executeJsonRequest(endpoint, "POST", headers, payload.toString())
+        val response = executeJsonRequest(settings, endpoint, "POST", headers, payload.toString())
         return parseOpenAiChatResponse(response)
     }
 
@@ -223,7 +235,7 @@ internal object ModelApiClient {
         prompt: String,
         systemPrompt: String?
     ): String {
-        val endpoint = buildApiUrl(settings, "/messages")
+        val endpoint = ModelApiUrlBuilder.buildChatUrl(settings)
         val headers = buildAnthropicHeaders(settings)
         val ctx = settings.contextSettings
 
@@ -248,7 +260,7 @@ internal object ModelApiClient {
             ctx.thinkingBudget?.let { put("thinking", JSONObject().put("type", "enabled").put("budget_tokens", it)) }
         }
 
-        val response = executeJsonRequest(endpoint, "POST", headers, payload.toString())
+        val response = executeJsonRequest(settings, endpoint, "POST", headers, payload.toString())
         return parseAnthropicMessagesResponse(response)
     }
 
@@ -265,100 +277,42 @@ internal object ModelApiClient {
     }
 
     // -------------------------------------------------------------------------
-    // 模型列表解析（按供应商）
-    // -------------------------------------------------------------------------
-
-    private fun parseModelList(provider: ModelProvider, response: String): List<String> {
-        return try {
-            val root = JSONObject(response)
-            when (provider) {
-                ModelProvider.OpenAI,
-                ModelProvider.OpenAICompatible,
-                ModelProvider.Deepseek,
-                ModelProvider.Kimi,
-                ModelProvider.Qwen,
-                ModelProvider.OpenRouter,
-                ModelProvider.TogetherAI,
-                ModelProvider.Groq,
-                ModelProvider.Custom,
-                ModelProvider.Local -> {
-                    // OpenAI 风格：{ "data": [{ "id": "gpt-4" }, ...] }
-                    val data = root.optJSONArray("data") ?: return emptyList()
-                    (0 until data.length()).mapNotNull { data.optJSONObject(it)?.optString("id") }
-                }
-                ModelProvider.Anthropic,
-                ModelProvider.AnthropicCompatible,
-                ModelProvider.ClaudeCode -> {
-                    // Anthropic 风格：{ "data": [{ "name": "claude-3-5-sonnet-20241022" }, ...] }
-                    val data = root.optJSONArray("data") ?: return emptyList()
-                    (0 until data.length()).mapNotNull {
-                        data.optJSONObject(it)?.optString("name")
-                            ?: data.optJSONObject(it)?.optString("id")
-                    }
-                }
-                else -> emptyList()
-            }
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // URL 拼接策略
-    // -------------------------------------------------------------------------
-
-    /**
-     * 根据 URL 路径模式和供应商风格，构建最终 API URL
-     */
-    private fun buildApiUrl(settings: ModelSettings, defaultPath: String): String {
-        val base = settings.resolvedEndpoint()
-        return when (settings.urlPathMode) {
-            UrlPathMode.FullUrl -> {
-                // 用户已输入完整 URL，直接使用
-                base
-            }
-            UrlPathMode.AppendCustom -> {
-                // 用户输入域名 + 自定义路径
-                val customPath = settings.customApiPath.trimStart('/')
-                if (customPath.isBlank()) base else "$base/$customPath"
-            }
-            UrlPathMode.AutoAppend -> {
-                // 根据供应商风格自动补全路径
-                when (settings.provider.apiPathStyle) {
-                    ApiPathStyle.OpenAI -> "$base/chat/completions"
-                    ApiPathStyle.Anthropic -> "$base/messages"
-                    ApiPathStyle.Custom -> "$base${settings.customApiPath}"
-                }
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
     // 请求头构建
     // -------------------------------------------------------------------------
 
-    private fun buildAuthHeaders(settings: ModelSettings, isListCall: Boolean = false): Map<String, String> {
+    private fun buildAuthHeaders(settings: ModelSettings): Map<String, String> {
         val headers = mutableMapOf<String, String>()
-        // Auth header
-        when (settings.provider) {
-            ModelProvider.Anthropic, ModelProvider.AnthropicCompatible, ModelProvider.ClaudeCode -> {
-                // Anthropic 使用 x-api-key
+        when {
+            settings.provider.usesAnthropicKeyHeader() -> {
+                // 官方 Anthropic / 兼容代理：x-api-key；部分中转也接受 Bearer，优先规范头
                 if (settings.apiKey.isNotBlank()) {
-                    headers[settings.provider.authHeaderName] = settings.apiKey
+                    headers["x-api-key"] = settings.apiKey
+                    // 兼容部分仅认 Authorization 的 Claude 中转
+                    headers["Authorization"] = "Bearer ${settings.apiKey}"
                 }
             }
-            ModelProvider.Local -> {
-                // 本地模型: 支持用户填写的 API Key (如 Ollama basic-auth)
+            settings.provider == ModelProvider.Local -> {
                 if (settings.apiKey.isNotBlank()) {
-                    headers["Authorization"] = settings.apiKey
+                    val key = settings.apiKey.trim()
+                    headers["Authorization"] = if (key.startsWith("Bearer ", ignoreCase = true)) {
+                        key
+                    } else {
+                        "Bearer $key"
+                    }
                 }
             }
             else -> {
                 if (settings.apiKey.isNotBlank()) {
                     val prefix = settings.provider.authHeaderPrefix
-                    headers[settings.provider.authHeaderName] = if (prefix.isNotBlank()) "$prefix ${settings.apiKey}" else settings.apiKey
+                    headers[settings.provider.authHeaderName] =
+                        if (prefix.isNotBlank()) "$prefix ${settings.apiKey}" else settings.apiKey
                 }
             }
+        }
+        // 部分聚合网关建议带上引用站信息
+        if (settings.provider == ModelProvider.OpenRouter) {
+            headers.putIfAbsent("HTTP-Referer", "https://clawdroid.app")
+            headers.putIfAbsent("X-Title", "Clawdroid")
         }
         return headers
     }
@@ -376,27 +330,30 @@ internal object ModelApiClient {
     // -------------------------------------------------------------------------
 
     private fun executeJsonRequest(
+        settings: ModelSettings,
         url: String,
         method: String,
         headers: Map<String, String>,
         body: String? = null
     ): String {
-        return executeRawRequest(url, method, headers, body)
+        return executeRawRequest(settings, url, method, headers, body)
     }
 
     private fun executeRawRequest(
+        settings: ModelSettings,
         url: String,
         method: String,
         headers: Map<String, String>,
         body: String? = null
     ): String {
         val urlObj = URL(url)
-        val connection = (urlObj.openConnection() as HttpURLConnection).apply {
+        val connection = NetworkProxySupport.openConnection(url, settings.proxySettings).apply {
             requestMethod = method
             connectTimeout = 12_000
             readTimeout = 120_000
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            NetworkProxySupport.applyProxyAuthorization(this, settings.proxySettings)
             headers.forEach { (key, value) ->
                 setRequestProperty(key, value)
             }
@@ -426,8 +383,12 @@ internal object ModelApiClient {
             }
             if (responseCode !in 200..299) {
                 val message = runCatching {
-                    JSONObject(raw).optJSONObject("error")?.optString("message")
-                        ?: JSONObject(raw).optString("error", "")
+                    val json = JSONObject(raw)
+                    json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                        ?: json.optJSONObject("error")?.optString("msg")?.takeIf { it.isNotBlank() }
+                        ?: json.optString("error").takeIf { it.isNotBlank() && !it.startsWith("{") }
+                        ?: json.optString("message").takeIf { it.isNotBlank() }
+                        ?: json.optString("msg").takeIf { it.isNotBlank() }
                 }.getOrNull().orEmpty()
                 error("HTTP $responseCode ${if (message.isNotBlank()) message else raw.take(240)}")
             }

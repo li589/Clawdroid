@@ -83,6 +83,7 @@ android {
     }
 
     buildFeatures {
+        aidl = true
         compose = true
         buildConfig = true
     }
@@ -95,6 +96,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -111,10 +116,18 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation("commons-net:commons-net:3.11.1")
+    implementation("com.github.mwiede:jsch:0.2.21")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("io.mockk:mockk:1.13.12")
+    testImplementation("org.json:json:20240303")
+    testImplementation(project(":xposed-stubs"))
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 

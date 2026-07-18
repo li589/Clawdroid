@@ -1,9 +1,7 @@
 package com.clawdroid.app.ui
 
-import com.clawdroid.app.env.LocalEnvironmentDiagnosis
 import com.clawdroid.app.env.LocalEnvironmentStatus
 import com.clawdroid.app.env.buildLocalEnvironmentDiagnosis
-import com.clawdroid.app.runtime.ClawRuntimeConnectionState
 import com.clawdroid.app.runtime.ClawRuntimeEventFrame
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -20,7 +18,8 @@ internal fun buildLocalEnvironmentSummary(status: LocalEnvironmentStatus): Strin
     val notification = permissionGrantedLabel(status.notificationPermissionGranted)
     val writeSettings = permissionGrantedLabel(status.writeSettingsGranted)
     val allFiles = permissionGrantedLabel(status.allFilesAccessGranted)
-    return "Root=$root, Magisk守护=$magisk, 模块=$module, Runtime=$runtime, LSPosed=$lsposed, Accessibility=$accessibility, 通知=$notification, 系统设置=$writeSettings, 全部文件=$allFiles"
+    val shizuku = shizukuEnvLabel(status)
+    return "Root=$root, Magisk守护=$magisk, 模块=$module, Runtime=$runtime, LSPosed=$lsposed, Accessibility=$accessibility, 通知=$notification, Shizuku=$shizuku, 系统设置=$writeSettings, 全部文件=$allFiles"
 }
 
 internal fun rootStatusLabel(rootGranted: Boolean?): String {
@@ -69,6 +68,15 @@ internal fun booleanStatusLabel(value: Boolean): String {
     return if (value) "正常" else "未启用"
 }
 
+internal fun shizukuEnvLabel(status: LocalEnvironmentStatus): String {
+    return when {
+        status.shizukuPermissionGranted -> "已授权"
+        status.shizukuBinderAlive -> "未授权"
+        status.shizukuManagerInstalled -> "未连接"
+        else -> "未安装"
+    }
+}
+
 internal fun permissionGrantedLabel(value: Boolean): String {
     return if (value) "已授权" else "未授权"
 }
@@ -77,81 +85,10 @@ internal fun buildRuntimeConnectionDiagnosis(
     localStatus: LocalEnvironmentStatus,
     runtimeState: OverviewRuntimeState
 ): String {
-    val localDiagnosis = buildLocalEnvironmentDiagnosis(localStatus)
-    return when {
-        localStatus.rootGranted != true -> localDiagnosis.asMultilineString()
-        !localStatus.magiskDaemonRunning || !localStatus.magiskModuleInstalled ||
-            !localStatus.magiskModuleEnabled || !localStatus.runtimeDaemonRunning -> {
-            localDiagnosis.asMultilineString()
-        }
-
-        runtimeState.session.state == ClawRuntimeConnectionState.Ready &&
-            runtimeState.session.runtimeLoaded == false -> buildString {
-            append("Runtime 会话已 Ready，但 LSPosed 运行时注入未落地")
-            append('\n')
-            append("状态轨迹: ")
-            append(runtimeState.session.trace)
-            append('\n')
-            append("Runtime 进程: ")
-            append(runtimeState.session.runtimeProcess.ifBlank { "unknown" })
-            append('\n')
-            append("最近摘要: ")
-            append(runtimeState.session.summary)
-            append('\n')
-            append("建议优先检查 xposed_runtime_marker、LSPosed 作用域、自进程注入以及授权调整后是否已重启设备。")
-        }
-
-        runtimeState.session.state == ClawRuntimeConnectionState.Ready -> buildString {
-            append("Runtime 会话正常")
-            append('\n')
-            append("状态轨迹: ")
-            append(runtimeState.session.trace)
-            append('\n')
-            append("当前能力链路已 Ready，可继续做截图、滑动、Shell 与事件闭环验证。")
-        }
-
-        runtimeState.session.state == ClawRuntimeConnectionState.Degraded -> buildString {
-            append("Runtime 会话已连通，但当前处于降级态")
-            append('\n')
-            append("状态轨迹: ")
-            append(runtimeState.session.trace)
-            append('\n')
-            append("最近摘要: ")
-            append(runtimeState.session.summary)
-            append('\n')
-            append("建议优先检查设备上实际生效的 runtime 配置、授权白名单与能力开关。")
-        }
-
-        runtimeState.session.state == ClawRuntimeConnectionState.Closed -> buildString {
-            append("Runtime 会话已关闭或鉴权失败")
-            append('\n')
-            append("状态轨迹: ")
-            append(runtimeState.session.trace)
-            append('\n')
-            append("最近摘要: ")
-            append(runtimeState.session.summary)
-            append('\n')
-            append("建议确认 App 与模块是否来自同一轮构建，尤其是 shared secret、签名白名单和设备端 runtime.yaml。")
-        }
-
-        runtimeState.session.state == ClawRuntimeConnectionState.Disconnected &&
-            runtimeState.session.summary == "尚未建立会话" -> {
-            "Runtime 守护已可见，但还没有执行会话探针\n建议先执行 Runtime Probe 或 Capabilities，确认最终状态是 Ready、Degraded 还是 Closed。"
-        }
-
-        else -> buildString {
-            append("Runtime 会话仍在协商或等待下一步探测")
-            append('\n')
-            append("当前状态: ")
-            append(runtimeState.session.state)
-            append('\n')
-            append("状态轨迹: ")
-            append(runtimeState.session.trace)
-            append('\n')
-            append("最近摘要: ")
-            append(runtimeState.session.summary)
-        }
-    }
+    return buildRuntimeSessionDiagnosis(
+        localStatus = localStatus,
+        runtimeState = runtimeState
+    ).asMultilineString()
 }
 
 internal fun buildLocalEnvironmentDiagnosisText(status: LocalEnvironmentStatus): String {
@@ -175,9 +112,52 @@ internal fun summarizeEventFrame(frame: ClawRuntimeEventFrame): String {
             val focused = parseFocusedWindowSummary(frame.data["focused_window"]?.toString())
             "window=$focused"
         }
+        "xposed_focus_changed" -> {
+            val pkg = frame.data["package_name"]?.toString().orEmpty()
+            val activity = frame.data["activity_class"]?.toString().orEmpty()
+            val source = frame.data["source"]?.toString().orEmpty()
+            val active = frame.data["active"]?.toString().orEmpty()
+            val extras = frame.data["extras"] as? Map<*, *>
+            val fragment = frame.data["settings_fragment"]?.toString().orEmpty()
+                .ifBlank { extras?.get("settings_fragment")?.toString().orEmpty() }
+            buildString {
+                append("xposed=")
+                append(pkg.ifBlank { "?" })
+                if (activity.isNotBlank()) append('/').append(activity)
+                if (fragment.isNotBlank()) append(" fragment=").append(fragment)
+                if (active.isNotBlank()) append(" active=").append(active)
+                if (source.isNotBlank()) append(" src=").append(source)
+            }
+        }
+        "xposed_view_changed" -> {
+            val pkg = frame.data["package_name"]?.toString().orEmpty()
+            val activity = frame.data["activity_class"]?.toString().orEmpty()
+            val nodes = frame.data["node_count"]?.toString().orEmpty()
+            val compose = frame.data["compose_surface"]?.toString().orEmpty()
+            val source = frame.data["source"]?.toString().orEmpty()
+            buildString {
+                append("view=")
+                append(pkg.ifBlank { "?" })
+                if (activity.isNotBlank()) append('/').append(activity)
+                if (nodes.isNotBlank()) append(" nodes=").append(nodes)
+                if (compose == "true") append(" compose")
+                if (source.isNotBlank()) append(" src=").append(source)
+            }
+        }
         "task_state_changed" -> {
+            val taskId = frame.data["task_id"]?.toString().orEmpty()
             val state = frame.data["state"]?.toString().orEmpty()
-            "task=$state"
+            val current = (frame.data["current_step"] as? Number)?.toInt()
+            val total = (frame.data["total_steps"] as? Number)?.toInt()
+            val completed = (frame.data["completed_steps"] as? Number)?.toInt()
+            val progress = when {
+                total != null && total > 0 && current != null -> {
+                    val done = completed ?: current.coerceAtLeast(0)
+                    " step=${current + 1}/$total completed=$done"
+                }
+                else -> ""
+            }
+            "task=$state id=${taskId.ifBlank { "?" }}$progress"
         }
         "diagnostic_changed" -> {
             buildDiagnosticEventSummary(frame.data)
@@ -206,6 +186,12 @@ internal fun parseFocusedWindowSummary(raw: String?): String {
     if (raw.isNullOrBlank()) {
         return "unknown"
     }
+    val summaryMatch = Regex("\"summary\"\\s*:\\s*\"([^\"]*)\"").find(raw)
+    if (summaryMatch != null) {
+        val summary = summaryMatch.groupValues[1].ifBlank { "unknown" }
+        val source = Regex("\"source\"\\s*:\\s*\"([^\"]*)\"").find(raw)?.groupValues?.get(1).orEmpty()
+        return if (source.isBlank()) summary else "$summary@$source"
+    }
     return runCatching {
         val payload = JSONObject(raw)
         val summary = payload.optString("summary").ifBlank { "unknown" }
@@ -225,6 +211,19 @@ internal fun buildShellOutput(stdout: String, stderr: String): String {
     }
 }
 
+internal fun mergeShellCommandOptions(
+    current: List<String>,
+    remote: List<String>
+): List<String> {
+    if (remote.isEmpty()) {
+        return current.ifEmpty { defaultShellCommandOptions() }
+    }
+    val merged = LinkedHashSet<String>()
+    merged.addAll(remote)
+    merged.addAll(current)
+    return merged.toList()
+}
+
 internal fun defaultShellCommandOptions(): List<String> {
     return listOf(
         "dumpsys window windows",
@@ -240,7 +239,11 @@ internal fun defaultShellCommandOptions(): List<String> {
         "getprop ro.hardware",
         "settings get secure accessibility_enabled",
         "settings get secure enabled_accessibility_services",
-        "cmd overlay list"
+        "cmd overlay list",
+        "ls /data/adb/modules/clawruntime",
+        "cat /data/adb/modules/clawruntime/webroot/status.json",
+        "cat /data/adb/modules/clawruntime/webroot/verify.json",
+        "pidof clawdroid-runtime"
     )
 }
 

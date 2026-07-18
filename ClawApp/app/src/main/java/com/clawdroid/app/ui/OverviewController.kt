@@ -4,17 +4,14 @@ import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clawdroid.app.BuildConfig
-import com.clawdroid.app.env.AppPermissionManager
-import com.clawdroid.app.env.LocalEnvironmentProbe
 import com.clawdroid.app.env.LocalEnvironmentStatus
+import com.clawdroid.app.env.RootActionResult
 import com.clawdroid.app.env.StartupAutoGrantPlan
-import com.clawdroid.app.env.StartupPermissionStore
 import com.clawdroid.app.env.buildLocalEnvironmentDiagnosis
 import com.clawdroid.app.env.buildStartupAutoGrantPlan
 import com.clawdroid.app.env.shouldRememberRootPromptResult
@@ -22,59 +19,155 @@ import com.clawdroid.app.env.shouldAutoRequestRootOnStartup
 import com.clawdroid.app.runtime.ClawRuntimeClient
 import com.clawdroid.app.runtime.ClawRuntimeConnectionState
 import com.clawdroid.app.runtime.ClawRuntimeEventFrame
+import com.clawdroid.app.runtime.RuntimeEventService
+import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
+import com.clawdroid.app.tools.ClawCaptureArtifact
+import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
+import com.clawdroid.app.fault.FaultIsolation
+import com.clawdroid.app.fault.safeLaunch
 import com.clawdroid.app.tools.ClawToolExecutor
+import com.clawdroid.app.focus.LiveXposedFocusStore
+import com.clawdroid.app.focus.LiveXposedViewStore
+import com.clawdroid.app.tools.LiveToolCapabilityStore
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlin.math.max
 
 internal class OverviewController(
-    private val appContext: Context,
+    appContext: Context,
     private val runtimeClient: ClawRuntimeClient,
     private val toolExecutor: ClawToolExecutor,
-    private val previewLimitBytes: Int
+    private val previewLimitBytes: Int,
+    private val environmentGateway: OverviewEnvironmentGateway = DefaultOverviewEnvironmentGateway(appContext),
+    private val metricsSampler: OverviewMetricsSampler = DefaultOverviewMetricsSampler,
+    private val autoStart: Boolean = true,
+    eventService: RuntimeEventService? = null
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(createInitialOverviewUiState(runtimeClient))
     val uiState: StateFlow<OverviewUiState> = _uiState.asStateFlow()
     private val _dashboardMetrics = MutableStateFlow(DashboardRuntimeMetrics())
     val dashboardMetrics: StateFlow<DashboardRuntimeMetrics> = _dashboardMetrics.asStateFlow()
-    private val _latestCapturePreview = MutableStateFlow<ImageBitmap?>(null)
-    val latestCapturePreview: StateFlow<ImageBitmap?> = _latestCapturePreview.asStateFlow()
+    private val capturePreviewStore = CapturePreviewStore()
+    val latestCapturePreview: StateFlow<ImageBitmap?> = capturePreviewStore.preview
 
     val automationController = AutomationController(
         toolExecutor = toolExecutor,
         scope = viewModelScope
     )
 
-    private var eventSubscriptionJob: Job? = null
+    private val ownsEventService = eventService == null
+    private val runtimeEventService =
+        eventService ?: RuntimeEventService(runtimeClient, viewModelScope)
+
+    private val eventHub = OverviewEventHub(
+        eventService = runtimeEventService,
+        scope = viewModelScope,
+        updateEventState = ::updateEventState,
+        onEventFrame = ::refreshEventDerivedState,
+        onUnhandledError = { _, message ->
+            updateRuntimeState { it.copy(lastErrorStatus = message) }
+        }
+    )
+
     private var dashboardSamplingJob: Job? = null
+    private var initialStartupCompleted: Boolean = false
+    private var connectionRefreshInFlight: Boolean = false
+    private var lastHostStartedRefreshAtMs: Long = 0L
+
+    @Volatile
+    private var captureArtifactListener: ((ClawCaptureArtifact) -> Unit)? = null
+
+    @Volatile
+    private var runtimeTaskEventListener: ((ClawRuntimeTaskSnapshot) -> Unit)? = null
+
+    private val xposedFocusListener: (String) -> Unit = { summary ->
+        viewModelScope.launch {
+            updatePermissionState { state ->
+                state.copy(
+                    localEnvironmentStatus = state.localEnvironmentStatus.copy(
+                        xposedFocusSummary = summary
+                    )
+                )
+            }
+        }
+    }
+
+    private val xposedViewListener: (String) -> Unit = { summary ->
+        viewModelScope.launch {
+            updatePermissionState { state ->
+                state.copy(
+                    localEnvironmentStatus = state.localEnvironmentStatus.copy(
+                        xposedViewSummary = summary
+                    )
+                )
+            }
+        }
+    }
+
+    private fun onOverviewError(
+        tag: String,
+        setStatus: ((String) -> Unit)? = null
+    ): (Throwable) -> Unit = { error ->
+        val message = FaultIsolation.formatIsolatedError(tag, error)
+        setStatus?.invoke(message)
+        updateRuntimeState { it.copy(lastErrorStatus = message) }
+    }
+
+    fun setRuntimeTaskEventListener(listener: ((ClawRuntimeTaskSnapshot) -> Unit)?) {
+        runtimeTaskEventListener = listener
+    }
+
+    fun setCaptureArtifactListener(listener: ((ClawCaptureArtifact) -> Unit)?) {
+        captureArtifactListener = listener
+        val capture = uiState.value.runtimeState.capture
+        val path = capture.latestPath.trim()
+        if (listener != null && path.isNotEmpty()) {
+            val dimensions = capture.latestDimensions.split('x')
+            listener(
+                ClawCaptureArtifact(
+                    imagePath = path,
+                    format = capture.latestFormat,
+                    width = dimensions.getOrNull(0)?.toIntOrNull() ?: 0,
+                    height = dimensions.getOrNull(1)?.toIntOrNull() ?: 0,
+                    fileSize = capture.latestFileSize,
+                    sha256 = ""
+                )
+            )
+        }
+    }
 
     init {
-        viewModelScope.launch {
-            performStartupChecks()
+        LiveXposedFocusStore.addListener(xposedFocusListener)
+        LiveXposedViewStore.addListener(xposedViewListener)
+        if (autoStart) {
+            safeLaunch("overview:startup", onError = onOverviewError("overview:startup") { msg ->
+                updatePermissionState { it.copy(permissionActionStatus = msg) }
+            }) {
+                performStartupChecks()
+            }
+        } else {
+            initialStartupCompleted = true
         }
     }
 
     fun refreshLocalEnvironment() {
-        viewModelScope.launch {
+        safeLaunch("overview:env", onError = onOverviewError("overview:env") { msg ->
+            updatePermissionState { it.copy(permissionActionStatus = msg) }
+        }) {
             refreshLocalEnvironmentState(includeRootCheck = true)
         }
     }
 
     suspend fun refreshLocalEnvironmentState(includeRootCheck: Boolean) {
         updatePermissionState { it.copy(localEnvironmentSummary = "检测中...") }
-        val status = LocalEnvironmentProbe.probe(
-            appContext,
-            includeRootCheck = includeRootCheck
-        )
+        val status = environmentGateway.probeLocalEnvironment(includeRootCheck = includeRootCheck)
 
-        StartupPermissionStore.rememberGrantedPermissions(appContext, status)
+        environmentGateway.rememberGrantedPermissions(status)
         updatePermissionState {
             it.copy(
                 localEnvironmentStatus = status,
@@ -86,17 +179,21 @@ internal class OverviewController(
     }
 
     fun handleSystemSettingsReturned() {
-        viewModelScope.launch {
+        safeLaunch("overview:settings-return", onError = onOverviewError("overview:settings-return") { msg ->
+            updatePermissionState { it.copy(permissionActionStatus = msg) }
+        }) {
             refreshLocalEnvironmentState(includeRootCheck = true)
             updatePermissionState { it.copy(permissionActionStatus = "已从系统设置返回，请查看最新权限状态") }
         }
     }
 
     fun handleNotificationPermissionResult(granted: Boolean) {
-        viewModelScope.launch {
+        safeLaunch("overview:notification", onError = onOverviewError("overview:notification") { msg ->
+            updatePermissionState { it.copy(permissionActionStatus = msg) }
+        }) {
             refreshLocalEnvironmentState(includeRootCheck = true)
             if (granted) {
-                StartupPermissionStore.rememberNotificationGrant(appContext)
+                environmentGateway.rememberNotificationGrant()
             }
             updatePermissionState {
                 it.copy(
@@ -140,36 +237,36 @@ internal class OverviewController(
 
     fun grantNotificationPermissionViaRoot() {
         runRootPermissionAction(
-            action = { AppPermissionManager.grantNotificationViaRoot(appContext) },
-            onSuccess = { StartupPermissionStore.rememberNotificationGrant(appContext) }
+            action = environmentGateway::grantNotificationViaRoot,
+            onSuccess = environmentGateway::rememberNotificationGrant
         )
     }
 
     fun grantWriteSettingsViaRoot() {
         runRootPermissionAction(
-            action = { AppPermissionManager.grantWriteSettingsViaRoot(appContext) },
-            onSuccess = { StartupPermissionStore.rememberWriteSettingsGrant(appContext) }
+            action = environmentGateway::grantWriteSettingsViaRoot,
+            onSuccess = environmentGateway::rememberWriteSettingsGrant
         )
     }
 
     fun grantAllFilesAccessViaRoot() {
         runRootPermissionAction(
-            action = { AppPermissionManager.grantAllFilesAccessViaRoot(appContext) },
-            onSuccess = { StartupPermissionStore.rememberAllFilesGrant(appContext) }
+            action = environmentGateway::grantAllFilesAccessViaRoot,
+            onSuccess = environmentGateway::rememberAllFilesGrant
         )
     }
 
     fun enableAccessibilityViaRoot() {
         runRootPermissionAction(
-            action = { AppPermissionManager.enableAccessibilityViaRoot(appContext) },
-            onSuccess = { StartupPermissionStore.rememberAccessibilityGrant(appContext) }
+            action = environmentGateway::enableAccessibilityViaRoot,
+            onSuccess = environmentGateway::rememberAccessibilityGrant
         )
     }
 
     fun grantAutomationPermissionsViaRoot() {
         runRootPermissionAction(
-            action = { AppPermissionManager.grantAutomationPermissionsViaRoot(appContext) },
-            onSuccess = { StartupPermissionStore.rememberAutomationGrant(appContext) }
+            action = environmentGateway::grantAutomationPermissionsViaRoot,
+            onSuccess = environmentGateway::rememberAutomationGrant
         )
     }
 
@@ -177,7 +274,7 @@ internal class OverviewController(
         val permissionState = uiState.value.permissionState
         runRootPermissionAction(
             action = {
-                AppPermissionManager.chmodPathViaRoot(
+                environmentGateway.chmodPathViaRoot(
                     path = permissionState.permissionTargetPath,
                     mode = permissionState.permissionChmodMode
                 )
@@ -189,7 +286,7 @@ internal class OverviewController(
         val permissionState = uiState.value.permissionState
         runRootPermissionAction(
             action = {
-                AppPermissionManager.chownPathViaRoot(
+                environmentGateway.chownPathViaRoot(
                     path = permissionState.permissionTargetPath,
                     ownerSpec = permissionState.permissionChownOwner
                 )
@@ -198,14 +295,16 @@ internal class OverviewController(
     }
 
     private fun runRootPermissionAction(
-        action: suspend () -> com.clawdroid.app.env.RootActionResult,
+        action: suspend () -> RootActionResult,
         onSuccess: (() -> Unit)? = null
     ) {
-        viewModelScope.launch {
+        safeLaunch("overview:root-action", onError = onOverviewError("overview:root-action") { msg ->
+            updatePermissionState { it.copy(permissionActionStatus = msg) }
+        }) {
             updatePermissionState { it.copy(permissionActionStatus = "执行中...") }
             val result = action()
             if (result.success) {
-                StartupPermissionStore.markRootPromptResult(appContext, granted = true)
+                environmentGateway.markRootPromptResult(granted = true)
                 onSuccess?.invoke()
             }
             refreshLocalEnvironmentState(includeRootCheck = true)
@@ -223,30 +322,28 @@ internal class OverviewController(
 
     private suspend fun performStartupChecks() {
         updatePermissionState { it.copy(permissionActionStatus = "启动自检中...") }
-        val remembered = StartupPermissionStore.load(appContext)
+        val remembered = environmentGateway.loadStartupPermissionState()
         val shouldRequestRoot = shouldAutoRequestRootOnStartup(remembered)
         val rootResult = if (shouldRequestRoot) {
-            AppPermissionManager.requestRootAccess()
+            environmentGateway.requestRootAccess()
         } else {
-            com.clawdroid.app.env.RootActionResult(
+            RootActionResult(
                 success = false,
                 output = "首次启动尚未获得 Root 授权，保持手动授权模式"
             )
         }
         if (shouldRequestRoot && shouldRememberRootPromptResult(rootResult)) {
-            StartupPermissionStore.markRootPromptResult(appContext, granted = rootResult.success)
+            environmentGateway.markRootPromptResult(granted = rootResult.success)
         }
 
-        val initialStatus = LocalEnvironmentProbe.probe(
-            context = appContext,
-            includeRootCheck = rootResult.success
-        )
-        StartupPermissionStore.rememberGrantedPermissions(appContext, initialStatus)
+        val includeRootCheck = rootResult.success || remembered.rootGrantedEver
+        val initialStatus = environmentGateway.probeLocalEnvironment(includeRootCheck = includeRootCheck)
+        environmentGateway.rememberGrantedPermissions(initialStatus)
 
         val autoGrantMessages = mutableListOf<String>()
         if (rootResult.success) {
             val plan = buildStartupAutoGrantPlan(
-                state = StartupPermissionStore.load(appContext),
+                state = environmentGateway.loadStartupPermissionState(),
                 status = initialStatus
             )
             if (plan.hasWork) {
@@ -254,7 +351,7 @@ internal class OverviewController(
             }
         }
 
-        refreshLocalEnvironmentState(includeRootCheck = rootResult.success)
+        refreshLocalEnvironmentState(includeRootCheck = includeRootCheck)
         val finalStatus = uiState.value.permissionState.localEnvironmentStatus
         updatePermissionState {
             it.copy(
@@ -266,15 +363,53 @@ internal class OverviewController(
                 )
             )
         }
-        runStartupRuntimeProbe()
+        connectRuntimeAfterEnvironmentCheck(reason = "启动自检")
+        initialStartupCompleted = true
+        lastHostStartedRefreshAtMs = System.currentTimeMillis()
+    }
+
+    fun onHostStarted() {
+        if (!initialStartupCompleted || connectionRefreshInFlight) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastHostStartedRefreshAtMs < FOREGROUND_REFRESH_MIN_INTERVAL_MS) {
+            return
+        }
+        lastHostStartedRefreshAtMs = now
+        safeLaunch("overview:host-started", onError = onOverviewError("overview:host-started")) {
+            refreshConnectionIfStale()
+        }
+    }
+
+    suspend fun refreshConnectionIfStale(force: Boolean = false) {
+        if (connectionRefreshInFlight) {
+            return
+        }
+        connectionRefreshInFlight = true
+        try {
+            val sessionState = uiState.value.runtimeState.session.state
+            val alreadyConnected = sessionState == ClawRuntimeConnectionState.Ready ||
+                sessionState == ClawRuntimeConnectionState.Degraded
+            if (!force && alreadyConnected) {
+                return
+            }
+            val remembered = environmentGateway.loadStartupPermissionState()
+            val includeRootCheck = remembered.rootGrantedEver ||
+                uiState.value.permissionState.localEnvironmentStatus.rootGranted == true
+            refreshLocalEnvironmentState(includeRootCheck = includeRootCheck)
+            connectRuntimeAfterEnvironmentCheck(reason = "前台恢复")
+        } finally {
+            connectionRefreshInFlight = false
+        }
     }
 
     private suspend fun applyStartupAutoGrantPlan(plan: StartupAutoGrantPlan): List<String> {
         val messages = mutableListOf<String>()
         if (plan.useAutomationGrant) {
-            val result = AppPermissionManager.grantAutomationPermissionsViaRoot(appContext)
+            val result = environmentGateway.grantAutomationPermissionsViaRoot()
             if (result.success) {
-                StartupPermissionStore.rememberAutomationGrant(appContext)
+                environmentGateway.rememberAutomationGrant()
                 messages += "自动恢复一键权限"
             } else {
                 messages += "自动恢复一键权限失败: ${result.output}"
@@ -283,36 +418,36 @@ internal class OverviewController(
         }
 
         if (plan.grantNotification) {
-            val result = AppPermissionManager.grantNotificationViaRoot(appContext)
+            val result = environmentGateway.grantNotificationViaRoot()
             messages += if (result.success) {
-                StartupPermissionStore.rememberNotificationGrant(appContext)
+                environmentGateway.rememberNotificationGrant()
                 "自动恢复通知权限"
             } else {
                 "自动恢复通知权限失败: ${result.output}"
             }
         }
         if (plan.grantWriteSettings) {
-            val result = AppPermissionManager.grantWriteSettingsViaRoot(appContext)
+            val result = environmentGateway.grantWriteSettingsViaRoot()
             messages += if (result.success) {
-                StartupPermissionStore.rememberWriteSettingsGrant(appContext)
+                environmentGateway.rememberWriteSettingsGrant()
                 "自动恢复系统设置权限"
             } else {
                 "自动恢复系统设置权限失败: ${result.output}"
             }
         }
         if (plan.grantAllFiles) {
-            val result = AppPermissionManager.grantAllFilesAccessViaRoot(appContext)
+            val result = environmentGateway.grantAllFilesAccessViaRoot()
             messages += if (result.success) {
-                StartupPermissionStore.rememberAllFilesGrant(appContext)
+                environmentGateway.rememberAllFilesGrant()
                 "自动恢复全部文件访问"
             } else {
                 "自动恢复全部文件访问失败: ${result.output}"
             }
         }
         if (plan.grantAccessibility) {
-            val result = AppPermissionManager.enableAccessibilityViaRoot(appContext)
+            val result = environmentGateway.enableAccessibilityViaRoot()
             messages += if (result.success) {
-                StartupPermissionStore.rememberAccessibilityGrant(appContext)
+                environmentGateway.rememberAccessibilityGrant()
                 "自动恢复无障碍"
             } else {
                 "自动恢复无障碍失败: ${result.output}"
@@ -347,10 +482,10 @@ internal class OverviewController(
         if (dashboardSamplingJob != null) {
             return
         }
-        dashboardSamplingJob = viewModelScope.launch {
+        dashboardSamplingJob = safeLaunch("overview:dashboard", onError = onOverviewError("overview:dashboard")) {
             while (true) {
                 val rootAvailable = uiState.value.permissionState.localEnvironmentStatus.rootGranted == true
-                val sampledMetrics = DashboardMetricsCollector.sample(rootAvailable = rootAvailable)
+                val sampledMetrics = metricsSampler.sample(rootAvailable = rootAvailable)
                 _dashboardMetrics.value = sampledMetrics
                 delay(1000)
             }
@@ -358,6 +493,14 @@ internal class OverviewController(
     }
 
     fun applyToolSideEffects(result: ClawToolCallResult) {
+        applyNonPreviewToolSideEffects(result)
+        // Decode preview here only — never call renderReadPreviewResult (avoids recursion).
+        result.previewBytes?.takeIf { it.isNotEmpty() }?.let { bytes ->
+            capturePreviewStore.publishDecoded(bytes)
+        }
+    }
+
+    private fun applyNonPreviewToolSideEffects(result: ClawToolCallResult) {
         updateRuntimeState { current ->
             current.copy(
                 shell = current.shell.copy(
@@ -366,7 +509,8 @@ internal class OverviewController(
             )
         }
         result.captureArtifact?.let { artifact ->
-            _latestCapturePreview.value = null
+            capturePreviewStore.clear()
+            captureArtifactListener?.invoke(artifact)
             updateRuntimeState {
                 it.copy(
                     capture = it.capture.copy(
@@ -394,6 +538,89 @@ internal class OverviewController(
                 )
             }
         }
+        val snapshots = result.taskSnapshots
+            ?: listOfNotNull(result.taskSnapshot)
+        if (snapshots.isNotEmpty()) {
+            updateRuntimeState { current ->
+                val byId = linkedMapOf<String, ClawRuntimeTaskSnapshot>()
+                snapshots.forEach { snapshot ->
+                    if (snapshot.taskId.isNotBlank()) {
+                        byId[snapshot.taskId] = snapshot
+                    }
+                }
+                current.runtimeTasks.forEach { existing ->
+                    if (existing.taskId.isNotBlank() && existing.taskId !in byId) {
+                        byId[existing.taskId] = existing
+                    }
+                }
+                val merged = byId.values
+                    .sortedByDescending { task ->
+                        task.startedAt.takeIf { value -> value > 0L } ?: task.createdAt
+                    }
+                    .take(MAX_RUNTIME_TASKS_VISIBLE)
+                current.copy(
+                    runtimeTasks = merged,
+                    runtimeTasksStatus = "已同步 ${merged.size} 个任务"
+                )
+            }
+        }
+    }
+
+    /**
+     * Apply capture/session/task sync plus per-tool Overview status fields after Dispatcher execution.
+     */
+    fun applyChatToolEffects(
+        tool: ClawTool,
+        arguments: Map<String, String>,
+        result: ClawToolCallResult
+    ) {
+        applyToolSideEffects(result)
+        when (tool) {
+            ClawTool.RUNTIME_PING -> updateRuntimeState { it.copy(pingStatus = result.output) }
+            ClawTool.GET_VERSION -> updateRuntimeState { it.copy(versionStatus = result.output) }
+            ClawTool.GET_HEALTH -> updateRuntimeState { it.copy(healthStatus = result.output) }
+            ClawTool.GET_RUNTIME_STATUS -> applyRuntimeStatusSideEffects(result)
+            ClawTool.GET_LAST_ERROR -> updateRuntimeState { it.copy(lastErrorStatus = result.output) }
+            ClawTool.PROBE_SESSION -> updateRuntimeState {
+                it.copy(session = it.session.copy(summary = result.output))
+            }
+            ClawTool.GET_CAPABILITIES -> updateRuntimeState { it.copy(capabilityStatus = result.output) }
+            ClawTool.CAPTURE_SCREEN -> updateRuntimeState { it.copy(captureStatus = result.output) }
+            ClawTool.READ_LATEST_CAPTURE -> updateRuntimeState { it.copy(readFileStatus = result.output) }
+            ClawTool.INJECT_TAP -> updateRuntimeState { it.copy(tapStatus = result.output) }
+            ClawTool.INJECT_KEYEVENT -> updateRuntimeState { it.copy(keyeventStatus = result.output) }
+            ClawTool.INJECT_SWIPE -> updateRuntimeState { it.copy(swipeStatus = result.output) }
+            ClawTool.EXECUTE_SHELL_LIMITED -> updateRuntimeState {
+                it.copy(shell = it.shell.copy(status = result.output))
+            }
+            ClawTool.PAGE_CONFIRM,
+            ClawTool.CLICK_PRECHECK,
+            ClawTool.SAFE_TAP -> {
+                automationController.applyDispatchedToolEffects(tool, arguments, result)
+            }
+            else -> Unit
+        }
+    }
+
+    private fun applyRuntimeStatusSideEffects(result: ClawToolCallResult) {
+        updateRuntimeState { current ->
+            val syncedCommands = mergeShellCommandOptions(
+                current = current.shell.commandOptions,
+                remote = result.allowedShellCommands.orEmpty()
+            )
+            current.copy(
+                runtimeStatus = result.output,
+                runtimeConfigSummary = result.runtimeConfigSummary ?: current.runtimeConfigSummary,
+                shell = current.shell.copy(
+                    commandOptions = syncedCommands,
+                    selectedCommand = when {
+                        current.shell.selectedCommand in syncedCommands -> current.shell.selectedCommand
+                        syncedCommands.isNotEmpty() -> syncedCommands.first()
+                        else -> current.shell.selectedCommand
+                    }
+                )
+            )
+        }
     }
 
     suspend fun readLatestCaptureForChat(): String {
@@ -415,7 +642,7 @@ internal class OverviewController(
         val captureResult = toolExecutor.captureScreen(includeShaPreview = false)
         applyToolSideEffects(captureResult)
         if (!captureResult.success) {
-            _latestCapturePreview.value = null
+            capturePreviewStore.clear()
         }
         updateRuntimeState { it.copy(captureStatus = captureResult.output) }
         if (!captureResult.success || !includePreview) {
@@ -451,6 +678,13 @@ internal class OverviewController(
         return result.output
     }
 
+    suspend fun getRuntimeStatusForChat(): String {
+        val result = toolExecutor.getRuntimeStatus()
+        applyToolSideEffects(result)
+        applyRuntimeStatusSideEffects(result)
+        return result.output
+    }
+
     suspend fun getLastErrorForChat(): String {
         val result = toolExecutor.getLastError()
         applyToolSideEffects(result)
@@ -476,6 +710,13 @@ internal class OverviewController(
         val result = toolExecutor.injectTap(x = x, y = y, displayId = displayId)
         applyToolSideEffects(result)
         updateRuntimeState { it.copy(tapStatus = result.output) }
+        return result.output
+    }
+
+    suspend fun injectKeyeventForChat(key: String? = null, keyCode: Int? = null, displayId: Int = 0): String {
+        val result = toolExecutor.injectKeyevent(key = key, keyCode = keyCode, displayId = displayId)
+        applyToolSideEffects(result)
+        updateRuntimeState { it.copy(keyeventStatus = result.output) }
         return result.output
     }
 
@@ -517,8 +758,78 @@ internal class OverviewController(
         return result.output
     }
 
+    fun refreshRuntimeTasks() {
+        safeLaunch("overview:tasks", onError = onOverviewError("overview:tasks") { msg ->
+            updateRuntimeState { it.copy(runtimeTasksStatus = msg) }
+        }) {
+            updateRuntimeState { it.copy(runtimeTasksStatus = "刷新中...") }
+            runtimeClient.taskList().fold(
+                onSuccess = { result ->
+                    val listed = result.tasks
+                        .sortedByDescending { task ->
+                            task.startedAt.takeIf { value -> value > 0L } ?: task.createdAt
+                        }
+                        .take(MAX_RUNTIME_TASKS_VISIBLE)
+                    updateRuntimeState {
+                        it.copy(
+                            runtimeTasks = listed,
+                            runtimeTasksStatus = if (listed.isEmpty()) {
+                                "当前会话暂无 Runtime 任务"
+                            } else {
+                                "已同步 ${listed.size} 个任务"
+                            }
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    updateRuntimeState {
+                        it.copy(
+                            runtimeTasksStatus = "失败: ${error.message ?: error::class.java.simpleName}"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun cancelRuntimeTask(taskId: String) {
+        val normalizedId = taskId.trim()
+        if (normalizedId.isBlank()) {
+            return
+        }
+        safeLaunch("overview:task-cancel", onError = onOverviewError("overview:task-cancel") { msg ->
+            updateRuntimeState { it.copy(runtimeTasksStatus = msg) }
+        }) {
+            updateRuntimeState { it.copy(runtimeTasksStatus = "正在取消 $normalizedId ...") }
+            val result = toolExecutor.taskCancel(normalizedId)
+            updateRuntimeState { it.copy(runtimeTasksStatus = result.output) }
+            if (result.success) {
+                refreshRuntimeTasks()
+            }
+        }
+    }
+
+    private fun upsertRuntimeTask(snapshot: ClawRuntimeTaskSnapshot) {
+        updateRuntimeState { current ->
+            val merged = buildList {
+                add(snapshot)
+                current.runtimeTasks.forEach { existing ->
+                    if (existing.taskId != snapshot.taskId) {
+                        add(existing)
+                    }
+                }
+            }.take(MAX_RUNTIME_TASKS_VISIBLE)
+            current.copy(
+                runtimeTasks = merged,
+                runtimeTasksStatus = "事件更新: ${snapshot.summaryLine()}"
+            )
+        }
+    }
+
     fun ping() {
-        viewModelScope.launch {
+        safeLaunch("overview:ping", onError = onOverviewError("overview:ping") { msg ->
+            updateRuntimeState { it.copy(pingStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(pingStatus = "请求中...") }
             val result = toolExecutor.ping()
             applyToolSideEffects(result)
@@ -527,7 +838,9 @@ internal class OverviewController(
     }
 
     fun getVersion() {
-        viewModelScope.launch {
+        safeLaunch("overview:version", onError = onOverviewError("overview:version") { msg ->
+            updateRuntimeState { it.copy(versionStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(versionStatus = "请求中...") }
             val result = toolExecutor.getVersion()
             applyToolSideEffects(result)
@@ -536,7 +849,9 @@ internal class OverviewController(
     }
 
     fun getHealth() {
-        viewModelScope.launch {
+        safeLaunch("overview:health", onError = onOverviewError("overview:health") { msg ->
+            updateRuntimeState { it.copy(healthStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(healthStatus = "请求中...") }
             val result = toolExecutor.getHealth()
             applyToolSideEffects(result)
@@ -544,8 +859,21 @@ internal class OverviewController(
         }
     }
 
+    fun getRuntimeStatus() {
+        safeLaunch("overview:runtime-status", onError = onOverviewError("overview:runtime-status") { msg ->
+            updateRuntimeState { it.copy(runtimeStatus = msg) }
+        }) {
+            updateRuntimeState { it.copy(runtimeStatus = "请求中...") }
+            val result = toolExecutor.getRuntimeStatus()
+            applyToolSideEffects(result)
+            applyRuntimeStatusSideEffects(result)
+        }
+    }
+
     fun getLastError() {
-        viewModelScope.launch {
+        safeLaunch("overview:last-error", onError = onOverviewError("overview:last-error") { msg ->
+            updateRuntimeState { it.copy(lastErrorStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(lastErrorStatus = "请求中...") }
             val result = toolExecutor.getLastError()
             applyToolSideEffects(result)
@@ -554,7 +882,11 @@ internal class OverviewController(
     }
 
     fun probeSession() {
-        viewModelScope.launch {
+        safeLaunch("overview:probe", onError = onOverviewError("overview:probe") { msg ->
+            updateRuntimeState { state ->
+                state.copy(session = state.session.copy(summary = msg))
+            }
+        }) {
             updateRuntimeState {
                 it.copy(
                     session = it.session.copy(
@@ -575,14 +907,52 @@ internal class OverviewController(
         }
     }
 
-    private suspend fun runStartupRuntimeProbe() {
+    private suspend fun connectRuntimeAfterEnvironmentCheck(reason: String) {
+        val env = uiState.value.permissionState.localEnvironmentStatus
+        val precheckHint = when {
+            env.rootGranted == true && !env.runtimeDaemonRunning ->
+                "$reason: 已确认 Root，但 Runtime 守护未运行，跳过自动 Probe"
+            env.rootGranted != true ->
+                "$reason: Root 未就绪，仍尝试连接 Runtime"
+            !env.magiskModuleInstalled ->
+                "$reason: Magisk 模块未安装，仍尝试连接 Runtime"
+            !env.magiskModuleEnabled ->
+                "$reason: Magisk 模块未启用，仍尝试连接 Runtime"
+            !env.runtimeDaemonRunning ->
+                "$reason: Runtime 守护未检测到，仍尝试连接 Runtime"
+            else ->
+                "$reason: Root/Magisk 检查通过，自动连接 Runtime"
+        }
+
+        if (env.rootGranted == true && !env.runtimeDaemonRunning) {
+            updateRuntimeState {
+                it.copy(
+                    session = it.session.copy(
+                        state = ClawRuntimeConnectionState.Disconnected,
+                        trace = "Disconnected",
+                        authMode = "未协商",
+                        summary = buildString {
+                            appendLine(precheckHint)
+                            append("建议检查 Magisk 模块 service.sh / verify.sh，确认 clawdroid-runtime 已拉起后再手动 Probe。")
+                        }.trim(),
+                        runtimeLoaded = null,
+                        runtimeProcess = "",
+                        runtimeLoadedAtEpochMs = 0L,
+                        degradedReason = "runtime_daemon_not_running"
+                    ),
+                    capabilityStatus = "未同步：Runtime 守护未运行"
+                )
+            }
+            return
+        }
+
         updateRuntimeState {
             it.copy(
                 session = it.session.copy(
                     state = ClawRuntimeConnectionState.Disconnected,
                     trace = "Disconnected",
-                    authMode = "启动自检中...",
-                    summary = "启动后自动执行 Runtime Probe...",
+                    authMode = "$reason 中...",
+                    summary = "$precheckHint\n正在执行 Runtime Probe...",
                     runtimeLoaded = null,
                     runtimeProcess = "",
                     runtimeLoadedAtEpochMs = 0L,
@@ -590,13 +960,66 @@ internal class OverviewController(
                 )
             )
         }
-        val result = toolExecutor.probeSession()
-        applyToolSideEffects(result)
-        updateRuntimeState { it.copy(session = it.session.copy(summary = result.output)) }
+        val probeResult = toolExecutor.probeSession()
+        applyToolSideEffects(probeResult)
+        updateRuntimeState {
+            it.copy(
+                session = it.session.copy(
+                    summary = buildString {
+                        appendLine(precheckHint)
+                        append(probeResult.output)
+                    }.trim()
+                )
+            )
+        }
+
+        val sessionState = uiState.value.runtimeState.session.state
+        val shouldSyncCapabilities = probeResult.success &&
+            (sessionState == ClawRuntimeConnectionState.Ready ||
+                sessionState == ClawRuntimeConnectionState.Degraded)
+        if (!shouldSyncCapabilities) {
+            if (!probeResult.success) {
+                updateRuntimeState {
+                    it.copy(capabilityStatus = "未同步：Runtime Probe 未成功")
+                }
+            }
+            return
+        }
+
+        updateRuntimeState { it.copy(capabilityStatus = "同步中...") }
+        val capabilitiesResult = toolExecutor.getCapabilities()
+        applyToolSideEffects(capabilitiesResult)
+        updateRuntimeState { it.copy(capabilityStatus = capabilitiesResult.output) }
+        ensureAutoEventSubscription(reason = reason)
+        refreshRuntimeTasks()
+    }
+
+    private fun ensureAutoEventSubscription(reason: String) {
+        if (uiState.value.eventState.eventStreaming) {
+            return
+        }
+        startContinuousSubscription(
+            onStarted = {
+                updateEventState { current ->
+                    current.copy(
+                        eventStatus = "${current.eventStatus}（$reason 自动订阅）"
+                    )
+                }
+            },
+            onFailure = { message ->
+                updateEventState { current ->
+                    current.copy(
+                        eventStatus = "自动订阅失败($reason): $message"
+                    )
+                }
+            }
+        )
     }
 
     fun getCapabilities() {
-        viewModelScope.launch {
+        safeLaunch("overview:capabilities", onError = onOverviewError("overview:capabilities") { msg ->
+            updateRuntimeState { it.copy(capabilityStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(capabilityStatus = "请求中...") }
             val result = toolExecutor.getCapabilities()
             applyToolSideEffects(result)
@@ -605,7 +1028,9 @@ internal class OverviewController(
     }
 
     fun captureScreen() {
-        viewModelScope.launch {
+        safeLaunch("overview:capture", onError = onOverviewError("overview:capture") { msg ->
+            updateRuntimeState { it.copy(captureStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(captureStatus = "请求中...") }
             val result = toolExecutor.captureScreen(includeShaPreview = true)
             applyToolSideEffects(result)
@@ -614,7 +1039,9 @@ internal class OverviewController(
     }
 
     fun readLatestCapture() {
-        viewModelScope.launch {
+        safeLaunch("overview:read-capture", onError = onOverviewError("overview:read-capture") { msg ->
+            updateRuntimeState { it.copy(readFileStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(readFileStatus = "请求中...") }
             val runtimeState = uiState.value.runtimeState
             val result = toolExecutor.readLatestCapture(
@@ -629,7 +1056,9 @@ internal class OverviewController(
     }
 
     fun injectTap() {
-        viewModelScope.launch {
+        safeLaunch("overview:tap", onError = onOverviewError("overview:tap") { msg ->
+            updateRuntimeState { it.copy(tapStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(tapStatus = "请求中...") }
             val result = toolExecutor.injectTap(x = 540, y = 1200)
             applyToolSideEffects(result)
@@ -638,7 +1067,9 @@ internal class OverviewController(
     }
 
     fun injectSwipe() {
-        viewModelScope.launch {
+        safeLaunch("overview:swipe", onError = onOverviewError("overview:swipe") { msg ->
+            updateRuntimeState { it.copy(swipeStatus = msg) }
+        }) {
             updateRuntimeState { it.copy(swipeStatus = "请求中...") }
             val result = toolExecutor.injectSwipe(
                 x1 = 540,
@@ -652,8 +1083,23 @@ internal class OverviewController(
         }
     }
 
+    fun injectKeyeventBack() {
+        safeLaunch("overview:keyevent", onError = onOverviewError("overview:keyevent") { msg ->
+            updateRuntimeState { it.copy(keyeventStatus = msg) }
+        }) {
+            updateRuntimeState { it.copy(keyeventStatus = "请求中...") }
+            val result = toolExecutor.injectKeyevent(key = "BACK")
+            applyToolSideEffects(result)
+            updateRuntimeState { it.copy(keyeventStatus = result.output) }
+        }
+    }
+
     fun executeShell() {
-        viewModelScope.launch {
+        safeLaunch("overview:shell", onError = onOverviewError("overview:shell") { msg ->
+            updateRuntimeState {
+                it.copy(shell = it.shell.copy(status = msg, output = msg))
+            }
+        }) {
             updateRuntimeState {
                 it.copy(
                     shell = it.shell.copy(
@@ -676,81 +1122,11 @@ internal class OverviewController(
         onClosed: ((String) -> Unit)? = null,
         onFailure: ((String) -> Unit)? = null
     ) {
-        viewModelScope.launch {
-            eventSubscriptionJob?.cancelAndJoin()
-            runtimeClient.stopEventSubscription()
-            updateEventState {
-                it.copy(
-                    eventLines = emptyList(),
-                    eventStatus = "连接中...",
-                    eventStreaming = true,
-                    eventLogVersion = it.eventLogVersion + 1
-                )
-            }
-            eventSubscriptionJob = launch {
-                runCatching {
-                    runtimeClient.startEventSubscription(
-                        events = listOf(
-                            "daemon_status_changed",
-                            "capability_changed",
-                            "window_changed",
-                            "task_state_changed"
-                        ),
-                        onStarted = { started ->
-                            updateEventState {
-                                it.copy(
-                                    eventStatus = "订阅中: mode=${started.streamMode}, interval=${started.pollIntervalMs}ms, events=${started.subscribed.joinToString()}"
-                                )
-                            }
-                            onStarted?.invoke("事件流已连接，轮询间隔 ${started.pollIntervalMs}ms。")
-                        },
-                        onEvent = { frame ->
-                            refreshEventDerivedState(frame)
-                            val line = "${formatEpochSeconds(frame.timestamp)}  ${summarizeEventFrame(frame)}"
-                            updateEventState { current ->
-                                current.copy(
-                                    eventLines = (listOf(line) + current.eventLines).take(24),
-                                    eventLogVersion = current.eventLogVersion + 1
-                                )
-                            }
-                        },
-                        onClosed = { reason ->
-                            updateEventState {
-                                it.copy(
-                                    eventStreaming = false,
-                                    eventStatus = "已停止: $reason"
-                                )
-                            }
-                            onClosed?.invoke(reason)
-                        }
-                    )
-                }.onFailure { error ->
-                    val message = error.message ?: error::class.java.simpleName
-                    updateEventState {
-                        it.copy(
-                            eventStreaming = false,
-                            eventStatus = "失败: $message"
-                        )
-                    }
-                    onFailure?.invoke(message)
-                }
-            }
-        }
+        eventHub.start(onStarted = onStarted, onClosed = onClosed, onFailure = onFailure)
     }
 
     fun stopContinuousSubscription(onStopped: (() -> Unit)? = null) {
-        viewModelScope.launch {
-            runtimeClient.stopEventSubscription()
-            eventSubscriptionJob?.cancelAndJoin()
-            eventSubscriptionJob = null
-            updateEventState {
-                it.copy(
-                    eventStreaming = false,
-                    eventStatus = "已手动停止"
-                )
-            }
-            onStopped?.invoke()
-        }
+        eventHub.stop(onStopped = onStopped)
     }
 
     fun applyDebugLongOverviewSeed() {
@@ -771,7 +1147,13 @@ internal class OverviewController(
                     appendLine("最近限流: none")
                     appendLine("限流时间: unknown")
                     appendLine("限流次数: 0")
-                    append("只读白名单: /data/local/tmp/clawdroid, /data/local/tmp/clawdroid/captures, /data/local/tmp/clawdroid/audit, /sdcard/Pictures, /sdcard/Download")
+                    append("只读白名单: /data/local/tmp/clawdroid, /data/local/tmp/clawdroid/captures, /data/local/tmp/clawdroid/audit, /data/local/tmp/clawdroid/xposed, /data/adb/modules/clawruntime, /sdcard/Pictures, /sdcard/Download")
+                },
+                runtimeStatus = buildString {
+                    appendLine("成功: version=0.2.0, uptime=120s")
+                    appendLine("module=clawruntime, installed=true, enabled=true, state=running, pid=3141")
+                    appendLine("verify=ok: seeded")
+                    append("actions=14, shell=18, keys=11")
                 },
                 shell = it.shell.copy(
                     status = "成功: template=debug.seed.long_overview, exit=0, duration=42ms, stdout_truncated=false, stderr_truncated=false",
@@ -799,26 +1181,28 @@ internal class OverviewController(
     }
 
     override fun onCleared() {
-        runtimeClient.stopEventSubscription()
-        eventSubscriptionJob?.cancel()
+        LiveXposedFocusStore.removeListener(xposedFocusListener)
+        LiveXposedViewStore.removeListener(xposedViewListener)
+        eventHub.detach()
+        if (ownsEventService) {
+            runtimeEventService.shutdown()
+        }
         dashboardSamplingJob?.cancel()
         super.onCleared()
     }
 
     private fun renderReadPreviewResult(result: ClawToolCallResult): String {
-        applyToolSideEffects(result)
+        applyNonPreviewToolSideEffects(result)
         val bytes = result.previewBytes
-        if (bytes == null) {
-            _latestCapturePreview.value = null
+        if (bytes == null || bytes.isEmpty()) {
+            capturePreviewStore.clear()
             return result.output
         }
-        val decoded = runCatching { decodeCapturePreview(bytes) }.getOrNull()
+        val decoded = capturePreviewStore.publishDecoded(bytes)
         val runtimeState = uiState.value.runtimeState
         return if (decoded != null) {
-            _latestCapturePreview.value = decoded.image
             "成功: decoded=${decoded.width}x${decoded.height}, sample=${decoded.sampleSize}, bytes=${formatBytes(bytes.size.toLong())}, capture_size=${formatBytes(runtimeState.capture.latestFileSize)}, format=${runtimeState.capture.latestFormat}"
         } else {
-            _latestCapturePreview.value = null
             "失败: 图片解码失败，read_bytes=${formatBytes(bytes.size.toLong())}, capture_size=${formatBytes(runtimeState.capture.latestFileSize)}, format=${runtimeState.capture.latestFormat}，可能是格式不匹配、尺寸异常或原图过大"
         }
     }
@@ -833,13 +1217,37 @@ internal class OverviewController(
                 }
             }
 
+            "task_state_changed" -> {
+                val snapshot = ClawRuntimeTaskSnapshot.fromData(frame.data)
+                if (snapshot.taskId.isNotBlank()) {
+                    upsertRuntimeTask(snapshot)
+                    runtimeTaskEventListener?.invoke(snapshot)
+                }
+            }
+
+            "capability_changed" -> {
+                // LiveToolCapabilityStore already updated by RuntimeEventService.
+                val root = frame.data["root"]?.toString().orEmpty()
+                val accessibility = frame.data["accessibility"]?.toString().orEmpty()
+                val loaded = frame.data["lsposed_runtime_loaded"]?.toString().orEmpty()
+                val caps = LiveToolCapabilityStore.snapshot()
+                updateRuntimeState {
+                    it.copy(
+                        capabilityStatus = buildString {
+                            appendLine("事件同步: capability_changed")
+                            appendLine("root=$root, accessibility=$accessibility, runtime_loaded=$loaded")
+                            append("capabilities=[${caps.joinToString()}]")
+                        }
+                    )
+                }
+            }
+
             "daemon_status_changed" -> {
                 val lastError = frame.data["last_error"]?.toString().orEmpty().ifBlank { "none" }
                 val lastErrorAt = (frame.data["last_error_at"] as? Number)?.toLong() ?: 0L
                 val lastRateLimit = frame.data["last_rate_limit"]?.toString().orEmpty().ifBlank { "none" }
                 val lastRateLimitAt = (frame.data["last_rate_limit_at"] as? Number)?.toLong() ?: 0L
                 val rateLimitHits = (frame.data["rate_limit_hits"] as? Number)?.toInt() ?: 0
-                val rateLimitPerMinute = (frame.data["rate_limit_per_minute"] as? Number)?.toInt() ?: 0
                 val readonlyWhitelist = (frame.data["readonly_whitelist"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
                 updateRuntimeState {
                     it.copy(
@@ -870,48 +1278,16 @@ internal class OverviewController(
         }
     }
 
-    private data class DecodedPreview(
-        val image: ImageBitmap,
-        val width: Int,
-        val height: Int,
-        val sampleSize: Int
-    )
-
-    private fun decodeCapturePreview(bytes: ByteArray, maxPreviewDimension: Int = 2048): DecodedPreview? {
-        val bounds = android.graphics.BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-        }
-        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        val sourceWidth = bounds.outWidth
-        val sourceHeight = bounds.outHeight
-        if (sourceWidth <= 0 || sourceHeight <= 0) {
-            return null
-        }
-
-        var sampleSize = 1
-        while (max(sourceWidth / sampleSize, sourceHeight / sampleSize) > maxPreviewDimension) {
-            sampleSize *= 2
-        }
-
-        val decodeOptions = android.graphics.BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
-        }
-        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions) ?: return null
-        return DecodedPreview(
-            image = bitmap.asImageBitmap(),
-            width = bitmap.width,
-            height = bitmap.height,
-            sampleSize = sampleSize
-        )
-    }
-
     companion object {
+        private const val FOREGROUND_REFRESH_MIN_INTERVAL_MS = 5_000L
+        private const val MAX_RUNTIME_TASKS_VISIBLE = 8
+
         fun provideFactory(
             appContext: Context,
             runtimeClient: ClawRuntimeClient,
             toolExecutor: ClawToolExecutor,
-            previewLimitBytes: Int
+            previewLimitBytes: Int,
+            eventService: RuntimeEventService? = null
         ): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -923,7 +1299,8 @@ internal class OverviewController(
                         appContext = appContext,
                         runtimeClient = runtimeClient,
                         toolExecutor = toolExecutor,
-                        previewLimitBytes = previewLimitBytes
+                        previewLimitBytes = previewLimitBytes,
+                        eventService = eventService
                     ) as T
                 }
             }
@@ -936,24 +1313,35 @@ internal fun rememberOverviewController(
     context: Context,
     runtimeClient: ClawRuntimeClient,
     toolExecutor: ClawToolExecutor,
-    previewLimitBytes: Int
+    previewLimitBytes: Int,
+    eventService: RuntimeEventService? = null
 ): OverviewController {
-    val factory = remember(context, runtimeClient, toolExecutor, previewLimitBytes) {
+    val factory = remember(context, runtimeClient, toolExecutor, previewLimitBytes, eventService) {
         OverviewController.provideFactory(
             appContext = context.applicationContext,
             runtimeClient = runtimeClient,
             toolExecutor = toolExecutor,
-            previewLimitBytes = previewLimitBytes
+            previewLimitBytes = previewLimitBytes,
+            eventService = eventService
         )
     }
     return viewModel(factory = factory)
 }
 
 private fun buildPermissionSummary(status: LocalEnvironmentStatus): String {
-    return "通知=${permissionGrantedLabel(status.notificationPermissionGranted)}，无障碍=${booleanStatusLabel(status.accessibilityEnabled)}，系统设置=${permissionGrantedLabel(status.writeSettingsGranted)}，全部文件=${permissionGrantedLabel(status.allFilesAccessGranted)}"
+    return "通知=${permissionGrantedLabel(status.notificationPermissionGranted)}，通知监听=${booleanStatusLabel(status.notificationListenerEnabled)}，无障碍=${booleanStatusLabel(status.accessibilityEnabled)}，系统设置=${permissionGrantedLabel(status.writeSettingsGranted)}，全部文件=${permissionGrantedLabel(status.allFilesAccessGranted)}，Shizuku=${shizukuStatusLabel(status)}"
 }
 
-private fun buildStartupCheckSummary(
+private fun shizukuStatusLabel(status: LocalEnvironmentStatus): String {
+    return when {
+        status.shizukuPermissionGranted -> "已授权"
+        status.shizukuBinderAlive -> "未授权"
+        status.shizukuManagerInstalled -> "未连接"
+        else -> "未安装"
+    }
+}
+
+internal fun buildStartupCheckSummary(
     rootRequested: Boolean,
     rootResult: com.clawdroid.app.env.RootActionResult,
     finalStatus: LocalEnvironmentStatus,
@@ -972,7 +1360,7 @@ private fun buildStartupCheckSummary(
     return "$rootSummary\n环境诊断: ${diagnosis.title}\n${diagnosis.actionHint}\n$magiskSummary\n$permissionSummary\n$restoreSummary"
 }
 
-private fun createInitialOverviewUiState(
+internal fun createInitialOverviewUiState(
     runtimeClient: ClawRuntimeClient
 ): OverviewUiState {
     val initialLocalEnvironmentStatus = LocalEnvironmentStatus(
@@ -1032,13 +1420,15 @@ private fun createInitialOverviewUiState(
             pingStatus = "未检测",
             versionStatus = "未读取版本信息",
             healthStatus = "未读取健康状态",
+            runtimeStatus = "未读取 Runtime/模块统一状态",
             lastErrorStatus = "未读取最近错误",
             runtimeConfigSummary = "未读取 ClawRuntime 配置摘要",
             capabilityStatus = "未读取",
             captureStatus = "未截图",
             readFileStatus = "未读取文件",
             tapStatus = "未执行点击",
-            swipeStatus = "未执行滑动"
+            swipeStatus = "未执行滑动",
+            keyeventStatus = "未执行按键"
         ),
         eventState = OverviewEventState(
             eventStatus = "未订阅事件",

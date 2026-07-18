@@ -69,7 +69,7 @@ class DebugRuntimeBridgeReceiver : BroadcastReceiver() {
 
         val runtimeClient = ClawRuntimeClient(
             packageName = context.packageName,
-            sharedSecret = BuildConfig.CLAW_RUNTIME_SHARED_SECRET,
+            sharedSecret = com.clawdroid.app.runtime.RuntimeSecretStore.resolve(context),
             signatureDigest = ClawRuntimeClient.resolveSignatureDigest(context, context.packageName)
         )
         val toolExecutor = ClawToolExecutor(runtimeClient)

@@ -3,30 +3,16 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"clawdroid/runtime/internal/ipc"
 	"clawdroid/runtime/internal/task"
 )
 
-var frozenActionCapabilities = map[string]string{
-	"ping":               "system.ping",
-	"get_capabilities":   "system.inspect",
-	"capture_screen":     "screen.capture",
-	"inject_tap":         "input.inject",
-	"inject_swipe":       "input.inject",
-	"read_file_limited":  "file.read.limited",
-	"exec_shell_limited": "shell.exec.limited",
-	"subscribe_events":   "event.subscribe",
-	"task_submit":        "task.manage",
-	"task_get":           "task.manage",
-	"task_list":          "task.manage",
-	"task_cancel":        "task.manage",
-}
-
 func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
 	switch req.Action {
-	case "ping":
+	case ipc.ActionPing:
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        true,
@@ -40,7 +26,7 @@ func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
 				}),
 			),
 		}
-	case "get_capabilities":
+	case ipc.ActionGetCapabilities:
 		s.finalizeCapabilityState(sess)
 
 		rootAvailable := detectRootAvailable()
@@ -77,33 +63,51 @@ func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
 			Message:   ipc.ErrorMessage(ipc.CodeOK),
 			Data:      data,
 		}
-	case "capture_screen":
+	case ipc.ActionGetRuntimeStatus:
+		s.finalizeCapabilityState(sess)
+		return s.handleGetRuntimeStatus(sess, req)
+	case ipc.ActionCaptureScreen:
 		s.finalizeCapabilityState(sess)
 		return s.handleCaptureScreen(sess, req)
-	case "read_file_limited":
+	case ipc.ActionReadFileLimited:
 		s.finalizeCapabilityState(sess)
 		return s.handleReadFileLimited(sess, req)
-	case "inject_tap":
+	case ipc.ActionWriteFileLimited:
+		s.finalizeCapabilityState(sess)
+		return s.handleWriteFileLimited(sess, req)
+	case ipc.ActionStatFileLimited:
+		s.finalizeCapabilityState(sess)
+		return s.handleStatFileLimited(sess, req)
+	case ipc.ActionInjectTap:
 		s.finalizeCapabilityState(sess)
 		return s.handleInjectTap(sess, req)
-	case "inject_swipe":
+	case ipc.ActionInjectSwipe:
 		s.finalizeCapabilityState(sess)
 		return s.handleInjectSwipe(sess, req)
-	case "exec_shell_limited":
+	case ipc.ActionInjectKeyevent:
+		s.finalizeCapabilityState(sess)
+		return s.handleInjectKeyevent(sess, req)
+	case ipc.ActionExecShellLimited:
 		s.finalizeCapabilityState(sess)
 		return s.handleExecShellLimited(sess, req)
-	case "task_submit":
+	case ipc.ActionTaskSubmit:
 		s.finalizeCapabilityState(sess)
 		return s.handleTaskSubmit(sess, req)
-	case "task_get":
+	case ipc.ActionTaskGet:
 		s.finalizeCapabilityState(sess)
 		return s.handleTaskGet(sess, req)
-	case "task_list":
+	case ipc.ActionTaskList:
 		s.finalizeCapabilityState(sess)
 		return s.handleTaskList(sess, req)
-	case "task_cancel":
+	case ipc.ActionTaskCancel:
 		s.finalizeCapabilityState(sess)
 		return s.handleTaskCancel(sess, req)
+	case ipc.ActionReportXposedFocus:
+		s.finalizeCapabilityState(sess)
+		return s.handleReportXposedFocus(sess, req)
+	case ipc.ActionReportXposedView:
+		s.finalizeCapabilityState(sess)
+		return s.handleReportXposedView(sess, req)
 	default:
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -112,6 +116,26 @@ func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
 			Message:   ipc.ErrorMessage(ipc.CodeErrActionNotAllowed),
 			Data:      map[string]interface{}{},
 		}
+	}
+}
+
+func (s *Server) handleGetRuntimeStatus(sess *session, req ipc.Request) ipc.Response {
+	module := detectMagiskModuleStatus()
+	data := mergeData(s.sessionData(sess), mergeData(s.healthState(sess), map[string]interface{}{
+		"module":                 module.asMap(),
+		"allowed_shell_commands": sortedAllowedShellCommands,
+		"allowed_keyevents":      allowedKeyeventList(),
+		"actions":                sortedActionNames(),
+	}))
+	if sess.degradedReason != "" {
+		data["degraded_reason"] = sess.degradedReason
+	}
+	return ipc.Response{
+		RequestID: req.RequestID,
+		OK:        true,
+		Code:      ipc.CodeOK,
+		Message:   ipc.ErrorMessage(ipc.CodeOK),
+		Data:      data,
 	}
 }
 
@@ -146,27 +170,38 @@ func mergeData(base map[string]interface{}, extra map[string]interface{}) map[st
 }
 
 func (s *Server) capabilityList() []string {
-	capabilities := []string{"system.ping", "system.inspect", "event.subscribe", "task.manage"}
+	capabilities := []string{
+		ipc.CapabilitySystemPing,
+		ipc.CapabilitySystemInspect,
+		ipc.CapabilityEventSubscribe,
+		ipc.CapabilityEventReport,
+		ipc.CapabilityTaskManage,
+	}
 
 	if s.cfg.ScreenshotEnabled {
-		capabilities = append(capabilities, "screen.capture")
+		capabilities = append(capabilities, ipc.CapabilityScreenCapture)
 	}
 	if s.cfg.InputInjectEnabled {
-		capabilities = append(capabilities, "input.inject")
+		capabilities = append(capabilities, ipc.CapabilityInputInject)
 	}
 	if s.cfg.ShellEnabled {
-		capabilities = append(capabilities, "shell.exec.limited")
+		capabilities = append(capabilities, ipc.CapabilityShellExecLimited)
 	}
 	if s.cfg.FileBridgeEnabled {
-		capabilities = append(capabilities, "file.read.limited")
+		capabilities = append(capabilities, ipc.CapabilityFileReadLimited, ipc.CapabilityFileWriteLimited)
 	}
 
 	return capabilities
 }
 
 func expectedCapabilityForAction(action string) (string, bool) {
-	capability, ok := frozenActionCapabilities[action]
-	return capability, ok
+	return ipc.ExpectedCapability(action)
+}
+
+func sortedActionNames() []string {
+	actions := ipc.KnownActions()
+	sort.Strings(actions)
+	return actions
 }
 
 // handleTaskSubmit submits a new multi-step task for execution.

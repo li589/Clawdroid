@@ -16,17 +16,47 @@ internal data class SettingsScreenState(
     val runtimeVersionStatus: String,
     val runtimeHealthStatus: String,
     val runtimeLastErrorStatus: String,
-    val runtimeConfigSummary: String
+    val runtimeConfigSummary: String,
+    val configMemory: ModelConfigMemory = ModelConfigMemory(),
+    val memoryStatus: String = "",
+    val inputWarning: String = "",
+    val mcpEnabled: Boolean = false,
+    val mcpRunning: Boolean = false,
+    val mcpPort: Int = 8765,
+    val mcpToken: String = "",
+    val mcpStatusText: String = "未启动",
+    val mcpEndpointHint: String = "",
+    val assistEnabled: Boolean = false,
+    val assistHostUrl: String = "http://127.0.0.1:8766/mcp",
+    val assistToken: String = "",
+    val assistStatusText: String = "未启用",
+    val assistEndpointHint: String = ""
 )
 
 internal data class SettingsScreenActions(
     val onThemeModeSelected: (ThemeMode) -> Unit,
     val onModelSettingsChanged: (ModelSettings) -> Unit,
+    val onSelectProvider: (ModelProvider) -> Unit,
     val onContextSettingsChanged: (ContextSettings) -> Unit,
     val onTestModelConnection: () -> Unit,
     val onFetchModelList: () -> Unit,
     val onSelectModelFromList: (String) -> Unit,
-    val onToggleAdvancedSettings: () -> Unit
+    val onClearAvailableModels: () -> Unit = {},
+    val onCommitConfigMemory: () -> Unit = {},
+    val onToggleAdvancedSettings: () -> Unit,
+    val onApplyRememberedUrl: (String) -> Unit = {},
+    val onApplyRememberedModel: (String) -> Unit = {},
+    val onApplyRememberedApiKey: (String) -> Unit = {},
+    val onApplyProviderSnapshot: (ModelProvider) -> Unit = {},
+    val onFallbackConfig: () -> Unit = {},
+    val onClearConfigMemory: () -> Unit = {},
+    val onMcpEnabledChanged: (Boolean) -> Unit = {},
+    val onMcpPortChanged: (Int) -> Unit = {},
+    val onMcpRegenerateToken: () -> Unit = {},
+    val onAssistEnabledChanged: (Boolean) -> Unit = {},
+    val onAssistHostUrlChanged: (String) -> Unit = {},
+    val onAssistTokenChanged: (String) -> Unit = {},
+    val onAssistProbe: () -> Unit = {}
 )
 
 internal fun buildSettingsScreenState(
@@ -38,7 +68,9 @@ internal fun buildSettingsScreenState(
     runtimeHealthStatus: String,
     runtimeLastErrorStatus: String,
     runtimeConfigSummary: String,
-    settingsState: SettingsUiState
+    settingsState: SettingsUiState,
+    mcpState: com.clawdroid.app.mcp.McpServerUiState,
+    assistState: com.clawdroid.app.mcp.assist.AssistMcpUiState
 ): SettingsScreenState {
     return SettingsScreenState(
         versionName = versionName,
@@ -56,18 +88,56 @@ internal fun buildSettingsScreenState(
         runtimeVersionStatus = runtimeVersionStatus,
         runtimeHealthStatus = runtimeHealthStatus,
         runtimeLastErrorStatus = runtimeLastErrorStatus,
-        runtimeConfigSummary = runtimeConfigSummary
+        runtimeConfigSummary = runtimeConfigSummary,
+        configMemory = settingsState.configMemory,
+        memoryStatus = settingsState.memoryStatus,
+        inputWarning = settingsState.inputWarning,
+        mcpEnabled = mcpState.enabled,
+        mcpRunning = mcpState.running,
+        mcpPort = mcpState.port,
+        mcpToken = mcpState.token,
+        mcpStatusText = mcpState.statusText,
+        mcpEndpointHint = mcpState.endpointHint,
+        assistEnabled = assistState.enabled,
+        assistHostUrl = assistState.hostUrl,
+        assistToken = assistState.token,
+        assistStatusText = assistState.statusText,
+        assistEndpointHint = assistState.endpointHint
     )
 }
 
-internal fun SettingsViewModel.buildSettingsScreenActions(): SettingsScreenActions {
+internal fun SettingsViewModel.buildSettingsScreenActions(
+    onMcpEnabledChanged: (Boolean) -> Unit,
+    onMcpPortChanged: (Int) -> Unit,
+    onMcpRegenerateToken: () -> Unit,
+    onAssistEnabledChanged: (Boolean) -> Unit,
+    onAssistHostUrlChanged: (String) -> Unit,
+    onAssistTokenChanged: (String) -> Unit,
+    onAssistProbe: () -> Unit
+): SettingsScreenActions {
     return SettingsScreenActions(
         onThemeModeSelected = ::selectThemeMode,
         onModelSettingsChanged = ::updateModelSettings,
+        onSelectProvider = ::selectProvider,
         onContextSettingsChanged = ::updateContextSettings,
         onTestModelConnection = ::testModelConnection,
         onFetchModelList = ::fetchModelList,
         onSelectModelFromList = ::selectModelFromList,
-        onToggleAdvancedSettings = ::toggleAdvancedSettings
+        onClearAvailableModels = ::clearAvailableModels,
+        onCommitConfigMemory = { commitConfigMemory("输入完成，已写入记忆") },
+        onToggleAdvancedSettings = ::toggleAdvancedSettings,
+        onApplyRememberedUrl = ::applyRememberedUrl,
+        onApplyRememberedModel = ::applyRememberedModel,
+        onApplyRememberedApiKey = ::applyRememberedApiKey,
+        onApplyProviderSnapshot = ::applyProviderSnapshot,
+        onFallbackConfig = ::fallbackToPreviousConfig,
+        onClearConfigMemory = { clearConfigMemory(keepProviderSnapshots = true) },
+        onMcpEnabledChanged = onMcpEnabledChanged,
+        onMcpPortChanged = onMcpPortChanged,
+        onMcpRegenerateToken = onMcpRegenerateToken,
+        onAssistEnabledChanged = onAssistEnabledChanged,
+        onAssistHostUrlChanged = onAssistHostUrlChanged,
+        onAssistTokenChanged = onAssistTokenChanged,
+        onAssistProbe = onAssistProbe
     )
 }

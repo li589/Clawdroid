@@ -24,6 +24,7 @@ const (
 	CodeErrShellExecFailed          = 3003
 	CodeErrFileOutOfScope           = 3004
 	CodeErrFileReadFailed           = 3005
+	CodeErrFileWriteFailed          = 3006
 	CodeErrAdapterNotAvailable      = 4001
 	CodeErrTargetVersionUnsupported = 4002
 	CodeErrTargetUIChanged          = 4003
@@ -83,6 +84,8 @@ func ErrorMessage(code int) string {
 		return "file out of scope"
 	case CodeErrFileReadFailed:
 		return "file read failed"
+	case CodeErrFileWriteFailed:
+		return "file write failed"
 	case CodeErrAdapterNotAvailable:
 		return "adapter not available"
 	case CodeErrTargetVersionUnsupported:

@@ -1,6 +1,7 @@
 package com.clawdroid.app.ui
 import com.clawdroid.app.automation.AutomationTaskState
 import com.clawdroid.app.env.LocalEnvironmentStatus
+import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.runtime.ClawRuntimeConnectionState
 
 internal data class OverviewPermissionState(
@@ -69,13 +70,17 @@ internal data class OverviewRuntimeState(
     val pingStatus: String,
     val versionStatus: String,
     val healthStatus: String,
+    val runtimeStatus: String,
     val lastErrorStatus: String,
     val runtimeConfigSummary: String,
     val capabilityStatus: String,
     val captureStatus: String,
     val readFileStatus: String,
     val tapStatus: String,
-    val swipeStatus: String
+    val swipeStatus: String,
+    val keyeventStatus: String,
+    val runtimeTasks: List<ClawRuntimeTaskSnapshot> = emptyList(),
+    val runtimeTasksStatus: String = "尚未刷新 Runtime 任务"
 )
 
 internal data class SessionInfo(
@@ -111,6 +116,7 @@ internal data class OverviewRuntimeActions(
     val onPing: () -> Unit,
     val onGetVersion: () -> Unit,
     val onGetHealth: () -> Unit,
+    val onGetRuntimeStatus: () -> Unit,
     val onGetLastError: () -> Unit,
     val onSessionProbe: () -> Unit,
     val onGetCapabilities: () -> Unit,
@@ -118,9 +124,12 @@ internal data class OverviewRuntimeActions(
     val onReadLatestCapture: () -> Unit,
     val onInjectTap: () -> Unit,
     val onInjectSwipe: () -> Unit,
+    val onInjectKeyeventBack: () -> Unit,
     val onShellExpandedChange: (Boolean) -> Unit,
     val onShellCommandSelected: (String) -> Unit,
-    val onExecuteShell: () -> Unit
+    val onExecuteShell: () -> Unit,
+    val onRefreshRuntimeTasks: () -> Unit,
+    val onCancelRuntimeTask: (String) -> Unit
 )
 
 internal data class OverviewEventState(
@@ -174,6 +183,7 @@ internal fun OverviewController.buildRuntimeActions(): OverviewRuntimeActions {
         onPing = ::ping,
         onGetVersion = ::getVersion,
         onGetHealth = ::getHealth,
+        onGetRuntimeStatus = ::getRuntimeStatus,
         onGetLastError = ::getLastError,
         onSessionProbe = ::probeSession,
         onGetCapabilities = ::getCapabilities,
@@ -181,9 +191,12 @@ internal fun OverviewController.buildRuntimeActions(): OverviewRuntimeActions {
         onReadLatestCapture = ::readLatestCapture,
         onInjectTap = ::injectTap,
         onInjectSwipe = ::injectSwipe,
+        onInjectKeyeventBack = ::injectKeyeventBack,
         onShellExpandedChange = ::updateShellDropdownExpanded,
         onShellCommandSelected = ::selectShellCommand,
-        onExecuteShell = ::executeShell
+        onExecuteShell = ::executeShell,
+        onRefreshRuntimeTasks = ::refreshRuntimeTasks,
+        onCancelRuntimeTask = ::cancelRuntimeTask
     )
 }
 

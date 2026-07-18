@@ -3,6 +3,15 @@ package com.clawdroid.app.ui
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.ui.graphics.ImageBitmap
 
+internal data class AssistMcpOverviewStatus(
+    val phoneServerRunning: Boolean = false,
+    val phoneServerStatus: String = "未启动",
+    val assistClientEnabled: Boolean = false,
+    val assistClientStatus: String = "未启用",
+    val assistLastError: String = "",
+    val liveCapabilityCount: Int = 0
+)
+
 internal fun LazyListScope.statusOverviewScreen(
     permissionState: OverviewPermissionState,
     permissionActions: OverviewPermissionActions,
@@ -14,6 +23,7 @@ internal fun LazyListScope.statusOverviewScreen(
     runtimeActions: OverviewRuntimeActions,
     eventState: OverviewEventState,
     eventActions: OverviewEventActions,
+    assistMcpStatus: AssistMcpOverviewStatus = AssistMcpOverviewStatus(),
     debugHighlightLongContent: Boolean = false
 ) {
     if (debugHighlightLongContent) {
@@ -71,6 +81,23 @@ internal fun LazyListScope.statusOverviewScreen(
         )
     }
     item {
+        StatusCard(
+            title = "协助 MCP",
+            content = buildString {
+                appendLine(
+                    "手机侧服务: ${if (assistMcpStatus.phoneServerRunning) "运行中" else "未运行"} — ${assistMcpStatus.phoneServerStatus}"
+                )
+                appendLine(
+                    "电脑协助端点: ${if (assistMcpStatus.assistClientEnabled) "已启用" else "未启用"} — ${assistMcpStatus.assistClientStatus}"
+                )
+                if (assistMcpStatus.assistLastError.isNotBlank()) {
+                    appendLine("最近错误: ${assistMcpStatus.assistLastError}")
+                }
+                append("Live capabilities: ${assistMcpStatus.liveCapabilityCount}（用于工具可用性标注）")
+            }
+        )
+    }
+    item {
         MetricsOverviewCard(
             daemonMetrics = runtimeState.latestDaemonMetrics,
             runtimeMetrics = runtimeState.latestRuntimeProcessMetrics,
@@ -113,7 +140,7 @@ internal fun LazyListScope.statusOverviewScreen(
     item {
         StatusCard(
             title = "本地环境详情",
-            content = "Root: ${rootStatusLabel(permissionState.localEnvironmentStatus.rootGranted)}\nMagisk 守护: ${magiskDaemonStatusLabel(permissionState.localEnvironmentStatus)}\nClawRuntime 模块: ${moduleStatusLabel(permissionState.localEnvironmentStatus)}\nRuntime 守护: ${runtimeDaemonStatusLabel(permissionState.localEnvironmentStatus)}\nLSPosed: ${lsposedStatusLabel(permissionState.localEnvironmentStatus)}\nLSPosed 进程: ${permissionState.localEnvironmentStatus.xposedProcessName.ifBlank { "unknown" }}\nLSPosed 时间: ${formatEpochMillis(permissionState.localEnvironmentStatus.xposedLoadedAtEpochMs)}\nAccessibility: ${booleanStatusLabel(permissionState.localEnvironmentStatus.accessibilityEnabled)}\n通知权限: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.notificationPermissionGranted)}\n修改系统设置: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.writeSettingsGranted)}\n全部文件访问: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.allFilesAccessGranted)}"
+            content = "Root: ${rootStatusLabel(permissionState.localEnvironmentStatus.rootGranted)}\nMagisk 守护: ${magiskDaemonStatusLabel(permissionState.localEnvironmentStatus)}\nClawRuntime 模块: ${moduleStatusLabel(permissionState.localEnvironmentStatus)}\nRuntime 守护: ${runtimeDaemonStatusLabel(permissionState.localEnvironmentStatus)}\nLSPosed: ${lsposedStatusLabel(permissionState.localEnvironmentStatus)}\nLSPosed 进程: ${permissionState.localEnvironmentStatus.xposedProcessName.ifBlank { "unknown" }}\nLSPosed 时间: ${formatEpochMillis(permissionState.localEnvironmentStatus.xposedLoadedAtEpochMs)}\n目标焦点: ${permissionState.localEnvironmentStatus.xposedFocusSummary.ifBlank { "unknown" }}\nView 层次: ${permissionState.localEnvironmentStatus.xposedViewSummary.ifBlank { "unknown" }}\n适配配置: ${permissionState.localEnvironmentStatus.xposedAdapterConfigSummary.ifBlank { "unknown" }}\nAccessibility: ${booleanStatusLabel(permissionState.localEnvironmentStatus.accessibilityEnabled)}\n通知权限: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.notificationPermissionGranted)}\n通知监听: ${booleanStatusLabel(permissionState.localEnvironmentStatus.notificationListenerEnabled)}\nShizuku: ${shizukuEnvLabel(permissionState.localEnvironmentStatus)}\n修改系统设置: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.writeSettingsGranted)}\n全部文件访问: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.allFilesAccessGranted)}"
         )
     }
     item {
@@ -197,6 +224,15 @@ internal fun LazyListScope.statusOverviewScreen(
     }
     item { SectionTitle("ClawRuntime 控制") }
     item {
+        RuntimeTasksCard(
+            tasks = runtimeState.runtimeTasks,
+            status = runtimeState.runtimeTasksStatus,
+            eventStreaming = eventState.eventStreaming,
+            onRefresh = runtimeActions.onRefreshRuntimeTasks,
+            onCancel = runtimeActions.onCancelRuntimeTask
+        )
+    }
+    item {
         ActionCard(
             title = "ClawRuntime 联通测试",
             buttonText = "发送 Ping",
@@ -218,6 +254,14 @@ internal fun LazyListScope.statusOverviewScreen(
             buttonText = "获取 Health",
             result = runtimeState.healthStatus,
             onClick = runtimeActions.onGetHealth
+        )
+    }
+    item {
+        ActionCard(
+            title = "Runtime/模块统一状态",
+            buttonText = "获取 Runtime Status",
+            result = runtimeState.runtimeStatus,
+            onClick = runtimeActions.onGetRuntimeStatus
         )
     }
     item {
@@ -276,6 +320,14 @@ internal fun LazyListScope.statusOverviewScreen(
             buttonText = "执行 Swipe(540,1800 -> 540,400)",
             result = runtimeState.swipeStatus,
             onClick = runtimeActions.onInjectSwipe
+        )
+    }
+    item {
+        ActionCard(
+            title = "按键注入",
+            buttonText = "执行 Keyevent BACK",
+            result = runtimeState.keyeventStatus,
+            onClick = runtimeActions.onInjectKeyeventBack
         )
     }
     item { SectionTitle("诊断与事件") }

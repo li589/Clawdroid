@@ -9,20 +9,28 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -30,8 +38,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,13 +52,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.clawdroid.app.model.usesAnthropicKeyHeader
 import com.clawdroid.app.ui.ContextSettings.Companion.MAX_MAX_TOKENS
 import com.clawdroid.app.ui.ContextSettings.Companion.MAX_TEMPERATURE
 import com.clawdroid.app.ui.ContextSettings.Companion.MAX_THINKING_BUDGET
 import com.clawdroid.app.ui.ContextSettings.Companion.MIN_MAX_TOKENS
 import com.clawdroid.app.ui.ContextSettings.Companion.MIN_TEMPERATURE
 import com.clawdroid.app.ui.ContextSettings.Companion.MIN_THINKING_BUDGET
+
+
+@Composable
+private fun focusCommitModifier(onCommit: () -> Unit): Modifier {
+    var hadFocus by remember { mutableStateOf(false) }
+    return Modifier.onFocusChanged { state ->
+        if (hadFocus && !state.isFocused) {
+            onCommit()
+        }
+        hadFocus = state.isFocused
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 主设置页面
@@ -85,16 +109,43 @@ internal fun LazyListScope.settingsScreen(
             modelListLoading = state.modelListLoading,
             availableModels = state.availableModels,
             validationMessage = validationMessage,
+            rememberedModels = state.configMemory.recentModels,
             onModelSettingsChanged = actions.onModelSettingsChanged,
+            onSelectProvider = actions.onSelectProvider,
             onTestModelConnection = actions.onTestModelConnection,
             onFetchModelList = actions.onFetchModelList,
-            onSelectModelFromList = actions.onSelectModelFromList
+            onSelectModelFromList = actions.onSelectModelFromList,
+            onClearAvailableModels = actions.onClearAvailableModels,
+            onCommitConfigMemory = actions.onCommitConfigMemory,
+            onApplyRememberedModel = actions.onApplyRememberedModel
         )
     }
     item {
         ApiEndpointSettingsCard(
             modelSettings = state.modelSettings,
-            onModelSettingsChanged = actions.onModelSettingsChanged
+            rememberedUrls = state.configMemory.recentUrls,
+            rememberedApiKeys = state.configMemory.recentApiKeys,
+            inputWarning = state.inputWarning,
+            onModelSettingsChanged = actions.onModelSettingsChanged,
+            onCommitConfigMemory = actions.onCommitConfigMemory,
+            onApplyRememberedUrl = actions.onApplyRememberedUrl,
+            onApplyRememberedApiKey = actions.onApplyRememberedApiKey
+        )
+    }
+    item {
+        NetworkProxySettingsCard(
+            modelSettings = state.modelSettings,
+            onModelSettingsChanged = actions.onModelSettingsChanged,
+            onCommitConfigMemory = actions.onCommitConfigMemory
+        )
+    }
+    item {
+        ModelConfigMemoryCard(
+            memory = state.configMemory,
+            memoryStatus = state.memoryStatus,
+            onApplyProviderSnapshot = actions.onApplyProviderSnapshot,
+            onFallbackConfig = actions.onFallbackConfig,
+            onClearConfigMemory = actions.onClearConfigMemory
         )
     }
     item {
@@ -118,7 +169,35 @@ internal fun LazyListScope.settingsScreen(
             )
         }
     }
+    item { SectionTitle("协助 MCP") }
+    item {
+        McpServerSettingsCard(
+            enabled = state.mcpEnabled,
+            running = state.mcpRunning,
+            port = state.mcpPort,
+            token = state.mcpToken,
+            statusText = state.mcpStatusText,
+            endpointHint = state.mcpEndpointHint,
+            onEnabledChanged = actions.onMcpEnabledChanged,
+            onPortChanged = actions.onMcpPortChanged,
+            onRegenerateToken = actions.onMcpRegenerateToken
+        )
+    }
+    item {
+        AssistMcpClientSettingsCard(
+            enabled = state.assistEnabled,
+            hostUrl = state.assistHostUrl,
+            token = state.assistToken,
+            statusText = state.assistStatusText,
+            endpointHint = state.assistEndpointHint,
+            onEnabledChanged = actions.onAssistEnabledChanged,
+            onHostUrlChanged = actions.onAssistHostUrlChanged,
+            onTokenChanged = actions.onAssistTokenChanged,
+            onProbe = actions.onAssistProbe
+        )
+    }
     item { SectionTitle("运行诊断") }
+    item { RuntimeSecretOverrideCard() }
     item {
         StatusCard(
             title = "应用与连接",
@@ -148,6 +227,251 @@ internal fun LazyListScope.settingsScreen(
             title = "配置分层",
             content = "应用级: 模型供应商、API Key、接口地址\n运行级: ClawRuntime 侧维护 Socket、审计、限流、白名单"
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime 密钥覆盖（设备侧；空则回退 BuildConfig）
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun RuntimeSecretOverrideCard() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var draft by remember {
+        mutableStateOf(
+            com.clawdroid.app.runtime.RuntimeSecretStore.getOverride(context.applicationContext).orEmpty()
+        )
+    }
+    var secretVisible by remember { mutableStateOf(false) }
+    var status by remember {
+        mutableStateOf(
+            if (com.clawdroid.app.runtime.RuntimeSecretStore.usingOverride(context.applicationContext)) {
+                "当前使用设备覆盖密钥"
+            } else {
+                "当前使用编译期默认密钥"
+            }
+        )
+    }
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "Runtime 共享密钥", style = MaterialTheme.typography.titleLarge)
+            Text(
+                text = if (com.clawdroid.app.runtime.RuntimeSecretStore.usingOverride(context.applicationContext)) {
+                    "状态：设备覆盖生效（优先于编译期密钥）"
+                } else {
+                    "状态：使用编译期默认密钥（APK 可逆向；生产请改用设备覆盖）"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "覆盖值必须与 Magisk runtime.yaml 的 auth.shared_secret 一致。留空并保存或点清除则回退编译期密钥。修改后需重开应用以重建 IPC 客户端。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                label = { Text("设备侧覆盖密钥") },
+                singleLine = true,
+                visualTransformation = if (secretVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    FilledTonalButton(onClick = { secretVisible = !secretVisible }) {
+                        Text(if (secretVisible) "隐藏" else "显示")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        com.clawdroid.app.runtime.RuntimeSecretStore.setOverride(
+                            context.applicationContext,
+                            draft
+                        )
+                        status = if (draft.isBlank()) {
+                            "已清除覆盖，重启后使用编译期密钥"
+                        } else {
+                            "已保存覆盖，请重启应用使 IPC 生效"
+                        }
+                    }
+                ) {
+                    Text("保存")
+                }
+                TextButton(
+                    onClick = {
+                        draft = ""
+                        com.clawdroid.app.runtime.RuntimeSecretStore.clearOverride(context.applicationContext)
+                        status = "已清除覆盖，重启后使用编译期密钥"
+                    }
+                ) {
+                    Text("清除")
+                }
+            }
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 协助 MCP（手机侧服务 + 电脑协助客户端）
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun McpServerSettingsCard(
+    enabled: Boolean,
+    running: Boolean,
+    port: Int,
+    token: String,
+    statusText: String,
+    endpointHint: String,
+    onEnabledChanged: (Boolean) -> Unit,
+    onPortChanged: (Int) -> Unit,
+    onRegenerateToken: () -> Unit
+) {
+    var portText by remember(port) { mutableStateOf(port.toString()) }
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "协助 MCP · 手机侧服务", style = MaterialTheme.typography.titleLarge)
+            Text(
+                text = "电脑经 adb forward 调用本机工具 / Skills / Agents（server: clawdroid-assist）。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(if (running) "服务运行中" else "服务已关闭")
+                Switch(checked = enabled, onCheckedChange = onEnabledChanged)
+            }
+            OutlinedTextField(
+                value = portText,
+                onValueChange = { value ->
+                    portText = value.filter { it.isDigit() }.take(5)
+                    portText.toIntOrNull()?.let(onPortChanged)
+                },
+                label = { Text("监听端口") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("访问 Token") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            FilledTonalButton(onClick = onRegenerateToken) {
+                Text("重新生成 Token")
+            }
+            ResultPanel(text = "状态\n$statusText")
+            if (endpointHint.isNotBlank()) {
+                ResultPanel(text = "连接说明\n$endpointHint")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistMcpClientSettingsCard(
+    enabled: Boolean,
+    hostUrl: String,
+    token: String,
+    statusText: String,
+    endpointHint: String,
+    onEnabledChanged: (Boolean) -> Unit,
+    onHostUrlChanged: (String) -> Unit,
+    onTokenChanged: (String) -> Unit,
+    onProbe: () -> Unit
+) {
+    var tokenVisible by remember { mutableStateOf(false) }
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "协助 MCP · 电脑协助端点", style = MaterialTheme.typography.titleLarge)
+            Text(
+                text = "手机通过 adb reverse 调用电脑 MCP（assist_ping / assist_list_tools / assist_call_tool）。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(if (enabled) "客户端已启用" else "客户端已关闭")
+                Switch(checked = enabled, onCheckedChange = onEnabledChanged)
+            }
+            OutlinedTextField(
+                value = hostUrl,
+                onValueChange = onHostUrlChanged,
+                label = { Text("电脑 MCP URL") },
+                supportingText = { FieldSupportingText("例如 http://127.0.0.1:8766/mcp") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = onTokenChanged,
+                label = { Text("电脑 MCP Token（可选）") },
+                singleLine = true,
+                visualTransformation = if (tokenVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    FilledTonalButton(onClick = { tokenVisible = !tokenVisible }) {
+                        Text(if (tokenVisible) "隐藏" else "显示")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            FilledTonalButton(onClick = onProbe) {
+                Text("探测连通")
+            }
+            ResultPanel(text = "状态\n$statusText")
+            if (endpointHint.isNotBlank()) {
+                ResultPanel(text = "连接说明\n$endpointHint")
+            }
+        }
     }
 }
 
@@ -257,16 +581,24 @@ private fun ModelProviderSettingsCard(
     modelListLoading: Boolean,
     availableModels: List<String>,
     validationMessage: String?,
+    rememberedModels: List<String>,
     onModelSettingsChanged: (ModelSettings) -> Unit,
+    onSelectProvider: (ModelProvider) -> Unit,
     onTestModelConnection: () -> Unit,
     onFetchModelList: () -> Unit,
-    onSelectModelFromList: (String) -> Unit
+    onSelectModelFromList: (String) -> Unit,
+    onClearAvailableModels: () -> Unit,
+    onCommitConfigMemory: () -> Unit,
+    onApplyRememberedModel: (String) -> Unit
 ) {
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     val hSpacing = responsiveFlowHSpacing()
     val vSpacing = responsiveFlowVSpacing()
-    var modelDropdownExpanded by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    var showModelPicker by remember(availableModels) {
+        mutableStateOf(availableModels.isNotEmpty())
+    }
 
     ModernCard {
         Column(
@@ -277,69 +609,49 @@ private fun ModelProviderSettingsCard(
         ) {
             Text(text = "模型供应商", style = MaterialTheme.typography.titleMedium)
 
-            // 官方供应商
             ProviderGroupSection(
                 title = "官方",
                 providers = ModelProvider.officialProviders,
                 selectedProvider = modelSettings.provider,
                 hSpacing = hSpacing,
                 vSpacing = vSpacing,
-                onProviderSelected = { p ->
-                    onModelSettingsChanged(modelSettings.copy(provider = p, baseUrl = p.defaultBaseUrl))
-                }
+                onProviderSelected = onSelectProvider
             )
-
-            // 国内供应商
             ProviderGroupSection(
                 title = "国内",
                 providers = ModelProvider.chineseProviders,
                 selectedProvider = modelSettings.provider,
                 hSpacing = hSpacing,
                 vSpacing = vSpacing,
-                onProviderSelected = { p ->
-                    onModelSettingsChanged(modelSettings.copy(provider = p, baseUrl = p.defaultBaseUrl))
-                }
+                onProviderSelected = onSelectProvider
             )
-
-            // 聚合平台
             ProviderGroupSection(
                 title = "聚合平台",
                 providers = ModelProvider.aggregatorProviders,
                 selectedProvider = modelSettings.provider,
                 hSpacing = hSpacing,
                 vSpacing = vSpacing,
-                onProviderSelected = { p ->
-                    onModelSettingsChanged(modelSettings.copy(provider = p, baseUrl = p.defaultBaseUrl))
-                }
+                onProviderSelected = onSelectProvider
             )
-
-            // 协议兼容
             ProviderGroupSection(
                 title = "协议兼容",
                 providers = ModelProvider.protocolProviders,
                 selectedProvider = modelSettings.provider,
                 hSpacing = hSpacing,
                 vSpacing = vSpacing,
-                onProviderSelected = { p ->
-                    onModelSettingsChanged(modelSettings.copy(provider = p, baseUrl = p.defaultBaseUrl))
-                }
+                onProviderSelected = onSelectProvider
             )
 
-            // 自定义 / 本地
             Row(
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 AssistChip(
-                    onClick = {
-                        onModelSettingsChanged(modelSettings.copy(provider = ModelProvider.Custom, baseUrl = ""))
-                    },
+                    onClick = { onSelectProvider(ModelProvider.Custom) },
                     label = { Text(modelProviderLabel(ModelProvider.Custom)) }
                 )
                 AssistChip(
-                    onClick = {
-                        onModelSettingsChanged(modelSettings.copy(provider = ModelProvider.Local))
-                    },
+                    onClick = { onSelectProvider(ModelProvider.Local) },
                     label = { Text(modelProviderLabel(ModelProvider.Local)) }
                 )
             }
@@ -349,60 +661,91 @@ private fun ModelProviderSettingsCard(
                 text = "当前: ${modelProviderLabel(modelSettings.provider)}\n${modelProviderHint(modelSettings.provider)}"
             )
 
-            // 模型选择 + 获取列表
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    OutlinedTextField(
-                        value = modelSettings.modelName,
-                        onValueChange = { onModelSettingsChanged(modelSettings.copy(modelName = it)) },
-                        label = { Text("模型名称") },
-                        supportingText = { FieldSupportingText("如 gpt-4o / claude-3-5-sonnet") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        trailingIcon = {
-                            if (modelSettings.provider != ModelProvider.Local) {
-                                Box {
-                                    IconButton(onClick = { modelDropdownExpanded = true }) {
-                                        Icon(Icons.Default.List, contentDescription = "选择模型")
-                                    }
-                                    DropdownMenu(
-                                        expanded = modelDropdownExpanded && availableModels.isNotEmpty(),
-                                        onDismissRequest = { modelDropdownExpanded = false }
-                                    ) {
-                                        availableModels.take(50).forEach { model ->
-                                            DropdownMenuItem(
-                                                text = { Text(model, style = MaterialTheme.typography.bodySmall) },
-                                                onClick = {
-                                                    onSelectModelFromList(model)
-                                                    modelDropdownExpanded = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
+                OutlinedTextField(
+                    value = modelSettings.modelName,
+                    onValueChange = { onModelSettingsChanged(modelSettings.copy(modelName = it)) },
+                    label = { Text("模型名称") },
+                    supportingText = {
+                        FieldSupportingText(
+                            if (availableModels.isEmpty()) {
+                                "手动填写，或点右侧按钮拉取列表后筛选；失焦/完成才记入记忆"
+                            } else {
+                                "已拉取 ${availableModels.size} 个，可在下方搜索筛选"
+                            }
+                        )
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(focusCommitModifier(onCommitConfigMemory)),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            onCommitConfigMemory()
+                            focusManager.clearFocus()
+                        }
+                    ),
+                    trailingIcon = {
+                        if (availableModels.isNotEmpty()) {
+                            IconButton(onClick = { showModelPicker = !showModelPicker }) {
+                                Icon(
+                                    imageVector = if (showModelPicker) {
+                                        Icons.Default.KeyboardArrowUp
+                                    } else {
+                                        Icons.Default.KeyboardArrowDown
+                                    },
+                                    contentDescription = "展开模型列表"
+                                )
                             }
                         }
-                    )
-                }
+                    }
+                )
                 FilledTonalButton(
-                    onClick = onFetchModelList,
-                    enabled = !modelListLoading && modelSettings.provider != ModelProvider.Local && modelSettings.apiKey.isNotBlank()
+                    onClick = {
+                        showModelPicker = true
+                        onFetchModelList()
+                    },
+                    enabled = !modelListLoading && (
+                        modelSettings.provider == ModelProvider.Local ||
+                            modelSettings.apiKey.isNotBlank()
+                        ) && modelSettings.resolvedEndpoint().isNotBlank()
                 ) {
                     Icon(
                         imageVector = if (modelListLoading) Icons.Default.Refresh else Icons.Default.List,
-                        contentDescription = null
+                        contentDescription = "拉取模型列表"
                     )
                 }
+            }
+
+            if (availableModels.isNotEmpty() && showModelPicker) {
+                ModelListPickerPanel(
+                    models = availableModels,
+                    selectedModel = modelSettings.modelName,
+                    onSelect = onSelectModelFromList,
+                    onClose = {
+                        showModelPicker = false
+                        onClearAvailableModels()
+                    },
+                    onCollapse = { showModelPicker = false }
+                )
+            }
+
+            if (rememberedModels.isNotEmpty()) {
+                MemoryChipRow(
+                    title = "模型记忆",
+                    values = rememberedModels.take(8),
+                    onSelect = onApplyRememberedModel
+                )
             }
             if (modelListStatus.isNotBlank()) {
                 ResultPanel(text = modelListStatus)
             }
 
-            // 测试连接按钮
             PrimaryActionButton(
                 text = if (modelTesting) "测试中..." else "测试模型连接",
                 onClick = onTestModelConnection,
@@ -413,6 +756,159 @@ private fun ModelProviderSettingsCard(
                 ResultPanel(text = "还不能测试：$it")
             }
             ResultPanel(text = modelTestStatus)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ModelListPickerPanel(
+    models: List<String>,
+    selectedModel: String,
+    onSelect: (String) -> Unit,
+    onClose: () -> Unit,
+    onCollapse: () -> Unit
+) {
+    var query by remember(models) { mutableStateOf("") }
+    var activeToken by remember(models) { mutableStateOf<String?>(null) }
+    val tokens = remember(models) { ModelListCatalog.suggestTokens(models) }
+    val result = remember(models, query, activeToken) {
+        ModelListCatalog.filter(models, query = query, activeToken = activeToken)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "模型列表筛选",
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Row {
+                    TextButton(onClick = onCollapse) { Text("收起") }
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭并清空列表")
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("搜索模型") },
+                placeholder = { Text("名称 / 厂商 / 关键字，如 qwen、claude、gpt") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotBlank()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Default.Clear, contentDescription = "清除搜索")
+                        }
+                    }
+                }
+            )
+
+            if (tokens.isNotEmpty()) {
+                Text(
+                    text = "快捷标签",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = activeToken == null,
+                        onClick = { activeToken = null },
+                        label = { Text("全部") }
+                    )
+                    tokens.forEach { token ->
+                        FilterChip(
+                            selected = activeToken.equals(token, ignoreCase = true),
+                            onClick = {
+                                activeToken = if (activeToken.equals(token, ignoreCase = true)) {
+                                    null
+                                } else {
+                                    token
+                                }
+                            },
+                            label = { Text(token) }
+                        )
+                    }
+                }
+            }
+
+            Text(
+                text = result.summary() + if (result.shown >= 300 && result.total > 300) {
+                    "（最多展示 300 条，请继续缩小搜索）"
+                } else {
+                    ""
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (result.filtered.isEmpty()) {
+                ResultPanel(text = "没有匹配的模型，试试换个关键字或标签")
+            } else {
+                // 使用普通滚动，避免嵌在设置页 LazyColumn 内再套 LazyColumn
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 280.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    result.filtered.forEach { model ->
+                        val selected = model == selectedModel
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(model) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = model,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (selected) {
+                                Text(
+                                    text = "已选",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        HorizontalDivider()
+                    }
+                }
+            }
         }
     }
 }
@@ -449,7 +945,13 @@ private fun ProviderGroupSection(
 @Composable
 private fun ApiEndpointSettingsCard(
     modelSettings: ModelSettings,
-    onModelSettingsChanged: (ModelSettings) -> Unit
+    rememberedUrls: List<String>,
+    rememberedApiKeys: List<String>,
+    inputWarning: String,
+    onModelSettingsChanged: (ModelSettings) -> Unit,
+    onCommitConfigMemory: () -> Unit,
+    onApplyRememberedUrl: (String) -> Unit,
+    onApplyRememberedApiKey: (String) -> Unit
 ) {
     // 仅非本地模型显示此卡片
     if (modelSettings.provider == ModelProvider.Local) return
@@ -457,6 +959,7 @@ private fun ApiEndpointSettingsCard(
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     val hSpacing = responsiveFlowHSpacing()
+    val focusManager = LocalFocusManager.current
     var apiKeyVisible by remember { mutableStateOf(false) }
 
     ModernCard {
@@ -467,6 +970,9 @@ private fun ApiEndpointSettingsCard(
             verticalArrangement = Arrangement.spacedBy(innerSpacing)
         ) {
             Text(text = "API 接入配置", style = MaterialTheme.typography.titleMedium)
+            if (inputWarning.isNotBlank()) {
+                ResultPanel(text = "输入已消毒: $inputWarning")
+            }
 
             // URL 路径模式选择
             Text(
@@ -496,10 +1002,34 @@ private fun ApiEndpointSettingsCard(
                 value = modelSettings.baseUrl,
                 onValueChange = { onModelSettingsChanged(modelSettings.copy(baseUrl = it)) },
                 label = { Text("API Base URL") },
-                supportingText = { FieldSupportingText(baseUrlHintFor(modelSettings)) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                supportingText = {
+                    FieldSupportingText(
+                        baseUrlHintFor(modelSettings) + " · 仅 http/https，失焦后写入记忆"
+                    )
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(focusCommitModifier(onCommitConfigMemory)),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        onCommitConfigMemory()
+                        focusManager.clearFocus()
+                    }
+                )
             )
+            if (rememberedUrls.isNotEmpty()) {
+                MemoryChipRow(
+                    title = "URL 记忆",
+                    values = rememberedUrls.take(8),
+                    labelFor = { it },
+                    onSelect = onApplyRememberedUrl
+                )
+            }
 
             // 自定义路径（仅 AppendCustom 或 Custom 模式显示）
             if (modelSettings.urlPathMode == UrlPathMode.AppendCustom || modelSettings.provider == ModelProvider.Custom) {
@@ -518,9 +1048,25 @@ private fun ApiEndpointSettingsCard(
                 value = modelSettings.apiKey,
                 onValueChange = { onModelSettingsChanged(modelSettings.copy(apiKey = it)) },
                 label = { Text("API Key") },
-                supportingText = { FieldSupportingText("已加密存储 | ${authHeaderHintFor(modelSettings.provider)}") },
-                modifier = Modifier.fillMaxWidth(),
+                supportingText = {
+                    FieldSupportingText(
+                        "已加密存储 | ${authHeaderHintFor(modelSettings.provider)} · 失焦后写入记忆"
+                    )
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(focusCommitModifier(onCommitConfigMemory)),
                 visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        onCommitConfigMemory()
+                        focusManager.clearFocus()
+                    }
+                ),
                 trailingIcon = {
                     FilledTonalButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
                         Text(if (apiKeyVisible) "隐藏" else "显示")
@@ -528,6 +1074,155 @@ private fun ApiEndpointSettingsCard(
                 },
                 singleLine = true
             )
+            if (rememberedApiKeys.isNotEmpty()) {
+                MemoryChipRow(
+                    title = "API Key 记忆",
+                    values = rememberedApiKeys.take(6),
+                    labelFor = { key ->
+                        if (key.length <= 8) "****" else key.take(4) + "…" + key.takeLast(4)
+                    },
+                    onSelect = onApplyRememberedApiKey
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 网络代理 / VPN 设置卡片
+// ---------------------------------------------------------------------------
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NetworkProxySettingsCard(
+    modelSettings: ModelSettings,
+    onModelSettingsChanged: (ModelSettings) -> Unit,
+    onCommitConfigMemory: () -> Unit
+) {
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    val hSpacing = responsiveFlowHSpacing()
+    val vSpacing = responsiveFlowVSpacing()
+    val focusManager = LocalFocusManager.current
+    val proxy = modelSettings.proxySettings
+    var passwordVisible by remember { mutableStateOf(false) }
+
+    fun updateProxy(block: (NetworkProxySettings) -> NetworkProxySettings) {
+        onModelSettingsChanged(modelSettings.copy(proxySettings = block(proxy)))
+    }
+
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "网络代理 / VPN", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "AI 请求出口。选「跟随系统」时走设备 VPN；本地 Clash/V2Ray 等可选 HTTP/SOCKS。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(hSpacing),
+                verticalArrangement = Arrangement.spacedBy(vSpacing)
+            ) {
+                NetworkProxyMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = proxy.mode == mode,
+                        onClick = {
+                            updateProxy { it.copy(mode = mode) }
+                            onCommitConfigMemory()
+                        },
+                        label = { Text(mode.displayName) }
+                    )
+                }
+            }
+
+            Text(
+                text = proxy.summary(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (proxy.isCustomProxy()) {
+                OutlinedTextField(
+                    value = proxy.host,
+                    onValueChange = { value -> updateProxy { it.copy(host = value) } },
+                    label = { Text("代理主机") },
+                    supportingText = { FieldSupportingText("常见 127.0.0.1（本机 Clash / 系统代理）") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(focusCommitModifier(onCommitConfigMemory)),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                OutlinedTextField(
+                    value = proxy.port.toString(),
+                    onValueChange = { raw ->
+                        val digits = raw.filter { it.isDigit() }.take(5)
+                        val port = digits.toIntOrNull()?.coerceIn(1, 65535) ?: proxy.port
+                        updateProxy { it.copy(port = if (digits.isEmpty()) proxy.port else port) }
+                    },
+                    label = { Text("代理端口") },
+                    supportingText = { FieldSupportingText("HTTP 常见 7890；SOCKS 常见 7891 / 1080") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(focusCommitModifier(onCommitConfigMemory)),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                if (proxy.mode == NetworkProxyMode.Http) {
+                    OutlinedTextField(
+                        value = proxy.username,
+                        onValueChange = { value -> updateProxy { it.copy(username = value) } },
+                        label = { Text("代理用户名（可选）") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(focusCommitModifier(onCommitConfigMemory)),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+                    )
+                    OutlinedTextField(
+                        value = proxy.password,
+                        onValueChange = { value -> updateProxy { it.copy(password = value) } },
+                        label = { Text("代理密码（可选）") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(focusCommitModifier(onCommitConfigMemory)),
+                        visualTransformation = if (passwordVisible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                onCommitConfigMemory()
+                                focusManager.clearFocus()
+                            }
+                        ),
+                        trailingIcon = {
+                            FilledTonalButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Text(if (passwordVisible) "隐藏" else "显示")
+                            }
+                        },
+                        singleLine = true
+                    )
+                }
+            }
         }
     }
 }
@@ -773,6 +1468,120 @@ private fun themeModeLabel(mode: ThemeMode): String {
     }
 }
 
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MemoryChipRow(
+    title: String,
+    values: List<String>,
+    labelFor: (String) -> String = { it },
+    onSelect: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            values.forEach { value ->
+                AssistChip(
+                    onClick = { onSelect(value) },
+                    label = {
+                        Text(
+                            text = labelFor(value),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ModelConfigMemoryCard(
+    memory: ModelConfigMemory,
+    memoryStatus: String,
+    onApplyProviderSnapshot: (ModelProvider) -> Unit,
+    onFallbackConfig: () -> Unit,
+    onClearConfigMemory: () -> Unit
+) {
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    val snapshots = memory.providerSnapshots.values.sortedByDescending { it.savedAtEpochMs }
+
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "配置记忆与回退", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "自动记住模型名、API URL、API Key；切换供应商时恢复该供应商上次配置；可回退到改动前。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = onFallbackConfig,
+                    enabled = memory.canFallback,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(if (memory.canFallback) "回退上一配置" else "无可回退")
+                }
+                FilledTonalButton(
+                    onClick = onClearConfigMemory,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("清除近期记忆")
+                }
+            }
+            if (snapshots.isNotEmpty()) {
+                Text(
+                    text = "供应商快照",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    snapshots.take(10).forEach { snap ->
+                        AssistChip(
+                            onClick = { onApplyProviderSnapshot(snap.provider) },
+                            label = {
+                                Text(
+                                    text = snap.provider.displayName,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        )
+                    }
+                }
+                ResultPanel(
+                    text = snapshots.take(3).joinToString("\n") { "• ${it.summaryLabel()}" }
+                )
+            }
+            if (memoryStatus.isNotBlank()) {
+                ResultPanel(text = memoryStatus)
+            }
+        }
+    }
+}
+
 private fun urlPathModeLabel(mode: UrlPathMode): String {
     return when (mode) {
         UrlPathMode.AutoAppend -> "自动补全"
@@ -783,47 +1592,37 @@ private fun urlPathModeLabel(mode: UrlPathMode): String {
 
 private fun urlPathModeHint(mode: UrlPathMode): String {
     return when (mode) {
-        UrlPathMode.AutoAppend -> "自动追加 /chat/completions 或 /messages"
-        UrlPathMode.FullUrl -> "直接使用填写的 URL，不做任何拼接"
-        UrlPathMode.AppendCustom -> "追加下方自定义路径字段"
+        UrlPathMode.AutoAppend -> "聊天追加 /chat/completions 或 /messages；拉列表用 /models"
+        UrlPathMode.FullUrl -> "填完整聊天 URL；拉列表时自动改写为 /models"
+        UrlPathMode.AppendCustom -> "追加下方自定义路径；拉列表仍走 /models"
     }
 }
 
 private fun baseUrlHintFor(settings: ModelSettings): String {
-    return when (settings.provider.apiPathStyle) {
-        ApiPathStyle.OpenAI -> "默认: ${settings.provider.defaultBaseUrl}"
-        ApiPathStyle.Anthropic -> "默认: ${settings.provider.defaultBaseUrl}"
-        ApiPathStyle.Custom -> "填写完整 URL，包含路径"
+    return when (settings.provider) {
+        ModelProvider.OpenAICompatible ->
+            "中转站示例: https://你的域名/v1（不要填到 chat/completions）"
+        ModelProvider.AnthropicCompatible ->
+            "Claude 中转示例: https://你的域名/v1"
+        ModelProvider.SiliconFlow ->
+            "默认: https://api.siliconflow.cn/v1"
+        ModelProvider.OpenRouter ->
+            "必须含 /api/v1，例如 https://openrouter.ai/api/v1"
+        ModelProvider.Custom ->
+            "填写完整 URL，包含路径"
+        else -> "默认: ${settings.provider.defaultBaseUrl}"
     }
 }
 
 private fun authHeaderHintFor(provider: ModelProvider): String {
-    return when (provider) {
-        ModelProvider.Anthropic, ModelProvider.AnthropicCompatible, ModelProvider.ClaudeCode ->
-            "Header: ${provider.authHeaderName}"
+    return when {
+        provider.usesAnthropicKeyHeader() -> "Header: x-api-key（同时兼容 Bearer）"
         else -> "Header: ${provider.authHeaderName} = Bearer ..."
     }
 }
 
 private fun modelSettingsValidationMessage(settings: ModelSettings): String? {
-    return when (settings.provider) {
-        ModelProvider.Local -> when {
-            settings.localEndpoint.isBlank() -> "本地接口地址不能为空"
-            settings.localModelName.isBlank() -> "本地模型名称不能为空"
-            else -> null
-        }
-        ModelProvider.Custom -> when {
-            settings.baseUrl.isBlank() -> "API URL 不能为空"
-            settings.modelName.isBlank() -> "模型名称不能为空"
-            else -> null
-        }
-        else -> when {
-            settings.baseUrl.isBlank() -> "API Base URL 不能为空"
-            settings.modelName.isBlank() -> "模型名称不能为空"
-            settings.apiKey.isBlank() -> "API Key 不能为空"
-            else -> null
-        }
-    }
+    return ModelInputSanitizer.validationError(settings)
 }
 
 // ---------------------------------------------------------------------------

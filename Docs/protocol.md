@@ -64,7 +64,7 @@
 
 - `version` 当前仅允许 `1`
 - `request_id` 长度建议不超过 `64` 字符
-- `action` 必须属于本文档定义的 8 个动作之一
+- `action` 必须属于动作目录中的已知动作
 - `capability` 必须与 `action` 对应
 - `args` 不允许为 `null`
 
@@ -123,12 +123,22 @@
 | --- | --- |
 | `ping` | `system.ping` |
 | `get_capabilities` | `system.inspect` |
+| `get_runtime_status` | `system.inspect` |
 | `capture_screen` | `screen.capture` |
 | `inject_tap` | `input.inject` |
 | `inject_swipe` | `input.inject` |
+| `inject_keyevent` | `input.inject` |
 | `read_file_limited` | `file.read.limited` |
 | `exec_shell_limited` | `shell.exec.limited` |
 | `subscribe_events` | `event.subscribe` |
+| `report_xposed_focus` | `event.report` |
+| `report_xposed_view` | `event.report` |
+| `task_submit` | `task.manage` |
+| `task_get` | `task.manage` |
+| `task_list` | `task.manage` |
+| `task_cancel` | `task.manage` |
+
+> 动作目录以 `ClawRuntime/runtime/internal/ipc/actions.go` 与 App 侧 `RuntimeActionCatalog` 为准；本文表与实现对齐。
 
 ## 5. Error Codes
 
@@ -503,14 +513,16 @@ Retrying -> Failed
   "events": [
     "task_state_changed",
     "daemon_status_changed",
-    "capability_changed"
+    "capability_changed",
+    "window_changed",
+    "xposed_focus_changed"
   ]
 }
 ```
 
 - **参数范围**:
   - `events`: 非空数组
-  - 事件名仅允许 `task_state_changed`、`daemon_status_changed`、`capability_changed`、`window_changed`
+  - 事件名仅允许 `task_state_changed`、`daemon_status_changed`、`capability_changed`、`window_changed`、`xposed_focus_changed`、`xposed_view_changed`
   - 单次订阅事件数 `1 - 16`
 - **是否幂等**: 是
 - **是否可取消**: 是
@@ -527,16 +539,102 @@ Retrying -> Failed
 }
 ```
 
+### 8.8.1 `report_xposed_focus`
+
+- **Capability**: `event.report`
+- **用途**: App 上报 LSPosed schema v2 焦点快照；守护进程缓存后通过 `xposed_focus_changed` 差分推送给订阅方
+- **参数结构**:
+
+```json
+{
+  "focus_json": "{\"schema_version\":2,\"package_name\":\"com.android.settings\",\"activity_class\":\"com.android.settings.Settings\",\"active\":true,\"extras\":{}}"
+}
+```
+
+- **参数范围**:
+  - `focus_json`: 非空 JSON 对象字符串，至少含 `package_name`、`activity_class`
+- **是否幂等**: 否（覆盖最新缓存）
+- **是否可取消**: 否
+- **默认超时**: `2000 ms`
+- **审计级别**: 低
+- **成功返回关键字段**: `accepted`、`package_name`、`activity_class`、`updated_at_epoch_ms`
+
+### 8.8.2 `report_xposed_view`
+
+- **Capability**: `event.report`
+- **用途**: App 上报 Settings 浅层 View 层次（schema v1）；推送 `xposed_view_changed`
+- **参数结构**:
+
+```json
+{
+  "view_json": "{\"schema_version\":1,\"package_name\":\"com.android.settings\",\"activity_class\":\"com.android.settings.Settings\",\"node_count\":8,\"compose_surface\":false,\"nodes\":[]}"
+}
+```
+
+- **参数范围**:
+  - `view_json`: 非空 JSON 对象字符串，至少含 `package_name`、`activity_class`
+- **是否幂等**: 否
+- **是否可取消**: 否
+- **默认超时**: `2000 ms`
+- **审计级别**: 低
+- **成功返回关键字段**: `accepted`、`package_name`、`activity_class`、`node_count`、`compose_surface`、`updated_at_epoch_ms`
+
+### 8.9 `get_runtime_status`
+
+- **Capability**: `system.inspect`
+- **用途**: 统一返回守护健康、Magisk 模块状态、动作目录、Shell/按键白名单
+- **参数结构**: `{}`
+- **是否幂等**: 是
+- **是否可取消**: 否
+- **默认超时**: `2000 ms`
+- **审计级别**: 低
+- **成功返回关键字段**:
+  - `module`: Magisk 模块安装/启用/verify/status 摘要
+  - `actions`: 当前已知动作目录
+  - `allowed_shell_commands`: Shell 白名单
+  - `allowed_keyevents`: 按键白名单
+  - 以及 `get_capabilities` / 健康诊断同类字段
+
+### 8.10 `inject_keyevent`
+
+- **Capability**: `input.inject`
+- **用途**: 注入白名单内系统按键（导航/编辑类）
+- **参数结构**:
+
+```json
+{
+  "key": "BACK",
+  "display_id": 0
+}
+```
+
+或：
+
+```json
+{
+  "keycode": 4,
+  "display_id": 0
+}
+```
+
+- **参数范围**:
+  - `key` / `keycode` 二选一；仅允许 `BACK`/`HOME`/`APP_SWITCH`/`ENTER`/`DEL`/`TAB`/`SPACE`/`DPAD_*`
+  - `display_id`: `>= 0`
+- **是否幂等**: 否
+- **是否可取消**: 否
+- **默认超时**: `1000 ms`
+- **审计级别**: 高
+
 ## 9. Protocol Constraints
 
 ### 9.1 Idempotency
 
-- `ping`、`get_capabilities`、`read_file_limited`、`subscribe_events` 视为幂等动作
-- `capture_screen`、`inject_tap`、`inject_swipe`、`exec_shell_limited` 不视为幂等动作
+- `ping`、`get_capabilities`、`get_runtime_status`、`read_file_limited`、`subscribe_events` 视为幂等动作
+- `capture_screen`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`exec_shell_limited` 不视为幂等动作
 
 ### 9.2 Cancellation
 
-- 不可取消动作：`ping`、`get_capabilities`、`inject_tap`、`inject_swipe`
+- 不可取消动作：`ping`、`get_capabilities`、`get_runtime_status`、`inject_tap`、`inject_swipe`、`inject_keyevent`
 - 可取消动作：`capture_screen`、`read_file_limited`、`exec_shell_limited`、`subscribe_events`
 
 ### 9.3 Timeout

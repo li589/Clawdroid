@@ -1,16 +1,19 @@
 package server
 
 import (
-	"clawdroid/runtime/internal/ipc"
 	"sync"
 	"time"
+
+	"clawdroid/runtime/internal/ipc"
 )
 
 var idempotentActions = map[string]struct{}{
-	"ping":              {},
-	"get_capabilities":  {},
-	"read_file_limited": {},
-	"subscribe_events":  {},
+	ipc.ActionPing:             {},
+	ipc.ActionGetCapabilities:  {},
+	ipc.ActionGetRuntimeStatus: {},
+	ipc.ActionReadFileLimited:  {},
+	ipc.ActionStatFileLimited:  {},
+	ipc.ActionSubscribeEvents:  {},
 }
 
 func isIdempotentAction(action string) bool {

@@ -1,38 +1,30 @@
 package com.clawdroid.app.xposed
 
-import android.content.Context
 import com.clawdroid.app.BuildConfig
-import com.clawdroid.app.env.LocalRuntimeStatus
 import de.robv.android.xposed.IXposedHookLoadPackage
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 class ClawdroidXposedInit : IXposedHookLoadPackage {
-    override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        if (lpparam.packageName == modulePackageName) {
-            installRuntimeMarkerHook(lpparam)
-            return
-        }
+    private val config by lazy { XposedAdapterConfig.load() }
+
+    private val adapters by lazy {
+        AdapterRegistry.createDefaultAdapters(
+            modulePackageName = modulePackageName,
+            config = config
+        )
     }
 
-    private fun installRuntimeMarkerHook(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val processName = lpparam.processName ?: lpparam.packageName
-        XposedHelpers.findAndHookMethod(
-            "android.app.Application",
-            lpparam.classLoader,
-            "attach",
-            Context::class.java,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val context = param.args.firstOrNull() as? Context ?: return
-                    if (context.packageName != modulePackageName) {
-                        return
-                    }
-                    LocalRuntimeStatus.markXposedInjected(context, processName)
-                }
-            }
+    override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val installed = AdapterRegistry.installMatchingAdapters(
+            lpparam = lpparam,
+            adapters = adapters
         )
+        if (installed.isNotEmpty()) {
+            XposedBridge.log(
+                "Clawdroid Xposed adapters loaded for ${lpparam.packageName}: ${installed.joinToString()}"
+            )
+        }
     }
 
     companion object {

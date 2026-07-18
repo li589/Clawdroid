@@ -35,7 +35,9 @@ internal enum class ModelProvider(
         displayName = "Anthropic",
         hint = "官方 Claude 系列模型",
         defaultBaseUrl = "https://api.anthropic.com/v1",
-        apiPathStyle = ApiPathStyle.Anthropic
+        apiPathStyle = ApiPathStyle.Anthropic,
+        authHeaderName = "x-api-key",
+        authHeaderPrefix = ""
     ),
     Gemini(
         displayName = "Gemini",
@@ -85,6 +87,12 @@ internal enum class ModelProvider(
         defaultBaseUrl = "https://api.minimax.chat/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
+    SiliconFlow(
+        displayName = "硅基流动",
+        hint = "SiliconFlow OpenAI 兼容接口（含 /v1/models）",
+        defaultBaseUrl = "https://api.siliconflow.cn/v1",
+        apiPathStyle = ApiPathStyle.OpenAI
+    ),
     OpenRouter(
         displayName = "OpenRouter",
         hint = "OpenRouter 聚合网关，支持 100+ 模型",
@@ -106,15 +114,17 @@ internal enum class ModelProvider(
     // 协议兼容模式：用户填入自定义地址，程序按所选协议组装请求
     OpenAICompatible(
         displayName = "OpenAI 兼容",
-        hint = "任何兼容 OpenAI 接口规范的第三方网关或转发站",
+        hint = "中转站 / NewAPI / OneAPI：Base 填到 /v1，自动拉 /models",
         defaultBaseUrl = "https://api.openai.com/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     AnthropicCompatible(
         displayName = "Anthropic 兼容",
-        hint = "任何兼容 Anthropic Messages API 的第三方代理",
+        hint = "Claude 中转：Base 填到 /v1，使用 x-api-key",
         defaultBaseUrl = "https://api.anthropic.com/v1",
-        apiPathStyle = ApiPathStyle.Anthropic
+        apiPathStyle = ApiPathStyle.Anthropic,
+        authHeaderName = "x-api-key",
+        authHeaderPrefix = ""
     ),
     // Claude Code / Codex 等专用工具接口
     ClaudeCode(
@@ -122,7 +132,8 @@ internal enum class ModelProvider(
         hint = "Anthropic Claude Code CLI 接口（需要项目令牌）",
         defaultBaseUrl = "https://api.anthropic.com/v1",
         apiPathStyle = ApiPathStyle.Anthropic,
-        authHeaderName = "x-api-key"
+        authHeaderName = "x-api-key",
+        authHeaderPrefix = ""
     ),
     Codex(
         displayName = "Codex (OpenAI)",
@@ -154,7 +165,7 @@ internal enum class ModelProvider(
             OpenAI, Anthropic, Gemini
         )
         val chineseProviders = listOf(
-            Deepseek, Kimi, Qwen, Zhipu, TencentHunyuan, Baidu, MiniMax
+            Deepseek, Kimi, Qwen, Zhipu, TencentHunyuan, Baidu, MiniMax, SiliconFlow
         )
         val aggregatorProviders = listOf(
             OpenRouter, TogetherAI, Groq
@@ -193,6 +204,8 @@ internal data class ModelSettings(
     val customApiPath: String = "/chat/completions",
     // 请求路径拼接策略：自动补全（默认）或用户输入完整路径
     val urlPathMode: UrlPathMode = UrlPathMode.AutoAppend,
+    // 网络代理：跟随系统/VPN，或本地 HTTP/SOCKS 代理（Clash / V2Ray 等）
+    val proxySettings: NetworkProxySettings = NetworkProxySettings(),
     // 上下文参数
     val contextSettings: ContextSettings = ContextSettings()
 ) {
@@ -219,14 +232,44 @@ internal data class ModelSettings(
 
 /**
  * URL 路径拼接模式：
- * - AutoAppend: 自动拼接 v1/chat/completions 或 v1/messages
- * - FullUrl: 用户输入完整 URL，不做任何拼接
- * - AppendCustom: 自动追加用户自定义的路径
+ * - AutoAppend: 自动拼接 /chat/completions、/messages 或列表时的 /models
+ * - FullUrl: 用户输入完整 URL；拉模型列表时会把 chat/messages 后缀替换为 /models
+ * - AppendCustom: 域名 + 自定义聊天路径；拉列表时自动改成 /models
  */
 internal enum class UrlPathMode {
-    AutoAppend,   // 自动补全（默认）：如用户填 https://xxx.com，自动追加 /chat/completions
-    FullUrl,      // 完整 URL：直接使用用户输入的 URL
+    AutoAppend,   // 自动补全（默认）：如用户填 https://xxx.com/v1，追加 /chat/completions
+    FullUrl,      // 完整 URL：直接使用用户输入的 URL（列表请求会智能改写）
     AppendCustom  // 追加自定义路径：用户输入域名 + 手动填路径
+}
+
+/**
+ * AI 请求网络出口：
+ * - System: 跟随系统路由（含已连接的 VPN）
+ * - Http: 本地/远程 HTTP 代理（常见 7890 Clash）
+ * - Socks: SOCKS5 代理
+ */
+internal enum class NetworkProxyMode(val displayName: String) {
+    System("跟随系统 / VPN"),
+    Http("HTTP 代理"),
+    Socks("SOCKS5 代理")
+}
+
+internal data class NetworkProxySettings(
+    val mode: NetworkProxyMode = NetworkProxyMode.System,
+    val host: String = "127.0.0.1",
+    val port: Int = 7890,
+    val username: String = "",
+    val password: String = ""
+) {
+    fun summary(): String {
+        return when (mode) {
+            NetworkProxyMode.System -> "系统路由（VPN 生效时自动走 VPN）"
+            NetworkProxyMode.Http -> "HTTP $host:$port"
+            NetworkProxyMode.Socks -> "SOCKS5 $host:$port"
+        }
+    }
+
+    fun isCustomProxy(): Boolean = mode != NetworkProxyMode.System
 }
 
 // ---------------------------------------------------------------------------

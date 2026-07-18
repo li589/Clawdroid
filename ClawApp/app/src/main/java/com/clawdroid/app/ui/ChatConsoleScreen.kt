@@ -24,8 +24,11 @@ internal fun LazyListScope.chatConsoleScreen(
             onCapture = actions.onQuickCapture,
             onShell = actions.onQuickShell,
             onSafeTapTask = actions.onQuickSafeTapTask,
+            onHealthSweepTask = actions.onQuickHealthSweepTask,
+            onSwipeCaptureTask = actions.onQuickSwipeCaptureTask,
             onEvents = actions.onQuickToggleEvents,
-            eventStreaming = state.eventStreaming
+            eventStreaming = state.eventStreaming,
+            actionsEnabled = !state.chatBusy
         )
     }
     item { SectionTitle("任务执行") }
