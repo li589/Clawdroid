@@ -1,0 +1,24 @@
+# Auto-detect text files and normalize line endings on checkout
+* text=auto
+
+# Force LF for cross-platform sensitive files
+*.go   text eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Gradle wrapper script must be LF and executable on Unix
+gradlew      text eol=lf
+gradlew.bat  text eol=crlf
+
+# Binary files
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.zip  binary
+*.apk  binary
+*.jar  binary
+*.so   binary
+*.dex  binary
