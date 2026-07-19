@@ -41,6 +41,19 @@ val clawRuntimeSharedSecret = run {
         )
 }
 
+// Release signing configuration (optional).
+// Reads keystore path/password/alias from local.properties.
+// If any field is missing, release builds fall back to unsigned (CI-friendly).
+// See ClawApp/keystore/README.md for setup instructions.
+val releaseKeystorePath = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.keystore.path")
+val releaseKeystorePassword = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.keystore.password")
+val releaseKeyAlias = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.keystore.alias")
+val releaseKeyPassword = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.keystore.key.password")
+    ?: releaseKeystorePassword
+val hasReleaseSigningConfig = !releaseKeystorePath.isNullOrEmpty() &&
+    !releaseKeystorePassword.isNullOrEmpty() &&
+    !releaseKeyAlias.isNullOrEmpty()
+
 android {
     namespace = "com.clawdroid.app"
     compileSdk = 34
@@ -59,6 +72,22 @@ android {
         }
     }
 
+    signingConfigs {
+        // Only register the release signing config when a keystore is configured
+        // in local.properties. Otherwise release builds output unsigned APKs
+        // (this is the CI-friendly default).
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = rootDir.resolve(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -66,6 +95,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             applicationIdSuffix = ".debug"

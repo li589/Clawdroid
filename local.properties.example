@@ -6,5 +6,18 @@ clawdroid.runtime.sharedSecret=<64-char-random-secret>
 
 # Optional but recommended for release packages.
 # Comma-separated SHA256 signature digests accepted by ClawRuntime.
+# Include both release and debug certificate digests so either variant can connect.
+# Compute via: keytool -list -v -keystore <jks> -alias <alias> | findstr SHA256:
+# Then lowercase, strip colons, prefix with "sha256:".
 # Example:
 # clawdroid.runtime.allowedSignatures=sha256:aaaaaaaa,sha256:bbbbbbbb
+
+# Optional: release APK signing keystore.
+# When all four keys are present, ./gradlew assembleRelease produces a signed APK.
+# When any is missing, release builds fall back to unsigned (CI-friendly).
+# Path is relative to ClawApp/ (the Gradle rootDir).
+# See ClawApp/keystore/README.md for setup instructions.
+# clawdroid.keystore.path=keystore/clawdroid-release.jks
+# clawdroid.keystore.password=<keystore-password>
+# clawdroid.keystore.alias=clawdroid-release
+# clawdroid.keystore.key.password=<key-password>

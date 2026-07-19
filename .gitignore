@@ -3,6 +3,12 @@ local.properties
 ClawApp/local.properties
 !ClawApp/local.properties.example
 
+# Release signing keystore (never commit - contains private key)
+ClawApp/keystore/*.jks
+ClawApp/keystore/*.keystore
+!ClawApp/keystore/.gitkeep
+!ClawApp/keystore/README.md
+
 # IDE and Android Studio
 .idea/
 .android/
