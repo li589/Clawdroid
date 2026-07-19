@@ -34,6 +34,11 @@ replay_pid*
 # Runtime local artifacts
 ClawRuntime/magisk/config/runtime.generated.yaml
 
+# ClawRuntime build outputs (regenerate locally via build-runtime.ps1 / build-magisk.ps1)
+# These contain local config (shared secret, signatures) and must not be committed.
+ClawRuntime/dist/
+ClawRuntime/magisk/bin/
+
 # Logs and temporary outputs
 *.log
 *.tmp
