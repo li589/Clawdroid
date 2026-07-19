@@ -51,5 +51,11 @@ jobs:
           test -f THIRD_PARTY_NOTICES.md
           test -f Docs/compatibility-matrix.md
           test -f Docs/release-notes.md
+          test -f Docs/下一步计划.md
+          test -f Docs/assist-mcp.md
+          test -f Docs/xposed-adapters.md
           test -f ClawRuntime/magisk/config/runtime.yaml
           test -f ClawRuntime/magisk/config/runtime.yaml.example
+      - name: Check Runtime action/error catalog alignment
+        shell: bash
+        run: python3 scripts/check_runtime_catalog.py

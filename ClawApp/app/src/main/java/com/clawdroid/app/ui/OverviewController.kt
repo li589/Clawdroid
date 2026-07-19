@@ -1243,7 +1243,13 @@ internal class OverviewController(
             }
 
             "daemon_status_changed" -> {
-                val lastError = frame.data["last_error"]?.toString().orEmpty().ifBlank { "none" }
+                val rawLastError = frame.data["last_error"]?.toString().orEmpty()
+                val lastError = when {
+                    rawLastError.isBlank() -> "none"
+                    isBenignRuntimeDisconnectNoise(rawLastError) ->
+                        "none (忽略短连接断开噪声: broken pipe / connection reset)"
+                    else -> rawLastError
+                }
                 val lastErrorAt = (frame.data["last_error_at"] as? Number)?.toLong() ?: 0L
                 val lastRateLimit = frame.data["last_rate_limit"]?.toString().orEmpty().ifBlank { "none" }
                 val lastRateLimitAt = (frame.data["last_rate_limit_at"] as? Number)?.toLong() ?: 0L
@@ -1306,6 +1312,14 @@ internal class OverviewController(
             }
         }
     }
+}
+
+/** Short-lived RPC sockets often close before daemon write finishes; not a session outage. */
+internal fun isBenignRuntimeDisconnectNoise(message: String): Boolean {
+    val lower = message.lowercase()
+    return lower.contains("broken pipe") ||
+        lower.contains("connection reset") ||
+        lower.contains("use of closed network connection")
 }
 
 @Composable

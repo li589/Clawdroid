@@ -33,5 +33,9 @@ ClawRuntime/magisk/config/runtime.generated.yaml
 *.tmp
 *.bak
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Trae local planning artifacts
 .trae/

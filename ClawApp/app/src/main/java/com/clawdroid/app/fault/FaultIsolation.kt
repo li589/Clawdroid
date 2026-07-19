@@ -27,6 +27,7 @@ object FaultIsolation {
     private const val LAST_FAULT_FILE = "fault-last.json"
     private const val CRASH_LOG_FILE = "fault-crash.log"
     private const val MAX_STACK_CHARS = 4_000
+    private const val MAX_CRASH_LOG_BYTES = 256 * 1024
 
     @Volatile
     private var appContext: Context? = null
@@ -66,7 +67,13 @@ object FaultIsolation {
                 append(throwable.stackTraceToString().take(MAX_STACK_CHARS))
                 append('\n')
             }
-            File(context.filesDir, CRASH_LOG_FILE).appendText(body)
+            val file = File(context.filesDir, CRASH_LOG_FILE)
+            if (file.exists() && file.length() > MAX_CRASH_LOG_BYTES) {
+                val rotated = File(context.filesDir, "$CRASH_LOG_FILE.1")
+                runCatching { rotated.delete() }
+                runCatching { file.renameTo(rotated) }
+            }
+            file.appendText(body)
         }
     }
 

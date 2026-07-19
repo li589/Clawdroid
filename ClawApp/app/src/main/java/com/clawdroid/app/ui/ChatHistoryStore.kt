@@ -1,6 +1,7 @@
 package com.clawdroid.app.ui
 
 import android.content.Context
+import com.clawdroid.app.chat.ChatTextLimits
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -9,7 +10,6 @@ import org.json.JSONObject
 internal object ChatHistoryStore {
     private const val prefsName = "clawdroid_chat_history"
     private const val keyMessages = "messages"
-    private const val maxMessages = 60
 
     suspend fun load(context: Context): List<ChatMessage> = withContext(Dispatchers.IO) {
         val raw = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
@@ -25,7 +25,7 @@ internal object ChatHistoryStore {
                         ChatMessage(
                             id = item.optString("id").ifBlank { newChatMessageId() },
                             role = ChatRole.valueOf(item.optString("role", ChatRole.Assistant.name)),
-                            content = item.optString("content"),
+                            content = ChatTextLimits.truncateForDisplay(item.optString("content")),
                             attachmentLabel = item.optString("attachment_label").ifBlank { null },
                             createdAtEpochMs = item.optLong("created_at_epoch_ms", System.currentTimeMillis()),
                             state = item.optString("state", ChatMessageState.Final.name)
@@ -36,18 +36,18 @@ internal object ChatHistoryStore {
                         )
                     )
                 }
-            }
+            }.let { ChatTextLimits.windowMessages(it) }
         }.getOrElse { emptyList() }
     }
 
     fun save(context: Context, messages: List<ChatMessage>) {
         val payload = JSONArray()
-        messages.takeLast(maxMessages).forEach { message ->
+        ChatTextLimits.windowMessages(messages).forEach { message ->
             payload.put(
                 JSONObject().apply {
                     put("id", message.id)
                     put("role", message.role.name)
-                    put("content", message.content)
+                    put("content", ChatTextLimits.truncateForDisplay(message.content))
                     put("attachment_label", message.attachmentLabel ?: "")
                     put("created_at_epoch_ms", message.createdAtEpochMs)
                     put("state", message.state.name)
@@ -147,7 +147,9 @@ internal object ChatTaskHistoryStore {
                         status = ChatTaskProgressState.entries.firstOrNull {
                             it.name == stepItem.optString("status", ChatTaskProgressState.Pending.name)
                         } ?: ChatTaskProgressState.Pending,
-                        detail = stepItem.optString("detail", "等待执行"),
+                        detail = ChatTextLimits.truncateForPersist(
+                            stepItem.optString("detail", "等待执行")
+                        ),
                         startedAtEpochMs = stepItem.optLong("started_at_epoch_ms", 0L),
                         finishedAtEpochMs = stepItem.optLong("finished_at_epoch_ms", 0L)
                     )
@@ -171,13 +173,13 @@ internal object ChatTaskHistoryStore {
                 },
             runtimeTaskId = item.optString("runtime_task_id").takeIf { it.isNotBlank() },
             failureReason = item.optString("failure_reason").takeIf { it.isNotBlank() },
-            originPrompt = item.optString("origin_prompt"),
+            originPrompt = ChatTextLimits.truncateForPersist(item.optString("origin_prompt")),
             retryCount = item.optInt("retry_count", 0),
             retryFromTaskId = item.optString("retry_from_task_id").takeIf { it.isNotBlank() },
             failure = item.optJSONObject("failure")?.let { failureItem ->
                 val code = failureItem.optString("code")
-                val summary = failureItem.optString("summary")
-                val rawDetail = failureItem.optString("raw_detail")
+                val summary = ChatTextLimits.truncateForPersist(failureItem.optString("summary"))
+                val rawDetail = ChatTextLimits.truncateForPersist(failureItem.optString("raw_detail"))
                 if (code.isBlank() && summary.isBlank() && rawDetail.isBlank()) {
                     null
                 } else {
@@ -190,8 +192,8 @@ internal object ChatTaskHistoryStore {
             } ?: item.optString("failure_reason").takeIf { it.isNotBlank() }?.let {
                 ChatTaskFailureState(
                     code = "legacy_failure",
-                    summary = it,
-                    rawDetail = it
+                    summary = ChatTextLimits.truncateForPersist(it),
+                    rawDetail = ChatTextLimits.truncateForPersist(it)
                 )
             }
         )
@@ -204,7 +206,7 @@ internal object ChatTaskHistoryStore {
                 JSONObject().apply {
                     put("title", step.title)
                     put("status", step.status.name)
-                    put("detail", step.detail)
+                    put("detail", ChatTextLimits.truncateForPersist(step.detail))
                     put("started_at_epoch_ms", step.startedAtEpochMs)
                     put("finished_at_epoch_ms", step.finishedAtEpochMs)
                 }
@@ -213,25 +215,25 @@ internal object ChatTaskHistoryStore {
         return JSONObject().apply {
             put("task_id", task.taskId)
             put("title", task.title)
-            put("summary", task.summary)
+            put("summary", ChatTextLimits.truncateForPersist(task.summary))
             put("status", task.status.name)
             put("steps", stepsJson)
             put("started_at_epoch_ms", task.startedAtEpochMs)
             put("finished_at_epoch_ms", task.finishedAtEpochMs)
             put("task_action", task.taskAction?.name ?: "")
             put("runtime_task_id", task.runtimeTaskId ?: "")
-            put("failure_reason", task.failureReason ?: "")
+            put("failure_reason", ChatTextLimits.truncateForPersist(task.failureReason ?: ""))
             task.failure?.let {
                 put(
                     "failure",
                     JSONObject().apply {
                         put("code", it.code)
-                        put("summary", it.summary)
-                        put("raw_detail", it.rawDetail)
+                        put("summary", ChatTextLimits.truncateForPersist(it.summary))
+                        put("raw_detail", ChatTextLimits.truncateForPersist(it.rawDetail))
                     }
                 )
             }
-            put("origin_prompt", task.originPrompt)
+            put("origin_prompt", ChatTextLimits.truncateForPersist(task.originPrompt))
             put("retry_count", task.retryCount)
             put("retry_from_task_id", task.retryFromTaskId ?: "")
         }

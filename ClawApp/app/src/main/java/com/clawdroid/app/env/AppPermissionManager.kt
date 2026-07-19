@@ -33,7 +33,20 @@ data class MagiskModuleStatus(
 
 object AppPermissionManager {
     private const val ROOT_COMMAND_TIMEOUT_SECONDS = 20L
+    private const val ACCESSIBILITY_ROOT_TIMEOUT_SECONDS = 60L
     private const val ROOT_OUTPUT_MAX_BYTES = 65536
+
+    // 严格 Android 包名格式：用于 buildAccessibilityResetAndEnableScript 入参校验，
+    // 防止 su -c 脚本中未加引号的 $packageName 触发 case 模式 glob 匹配。
+    private val androidPackagePattern = Regex("""^[A-Za-z]\w*(\.[A-Za-z]\w*)+$""")
+
+    // Shell glob 元字符：component 形如 pkg/.Cls 或 pkg/pkg.Cls，正常情况下不含这些字符。
+    private val GLOB_METACHARS = charArrayOf('*', '?', '[', ']', '\\', '\'', '"', '`', '$', ';', '&', '|', '<', '>', '(', ')', ' ', '\t', '\n', '\r')
+
+    private fun String.containsAnyOf(chars: CharArray): Boolean {
+        for (c in chars) if (indexOf(c) >= 0) return true
+        return false
+    }
 
     fun notificationPermissionGranted(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -119,7 +132,10 @@ object AppPermissionManager {
         )
     }
 
-    suspend fun runRawRootCommand(command: String): RootActionResult = withContext(Dispatchers.IO) {
+    suspend fun runRawRootCommand(
+        command: String,
+        timeoutSeconds: Long = ROOT_COMMAND_TIMEOUT_SECONDS
+    ): RootActionResult = withContext(Dispatchers.IO) {
         val process = try {
             ProcessBuilder("su", "-c", command)
                 .redirectErrorStream(true)
@@ -129,7 +145,7 @@ object AppPermissionManager {
         }
 
         try {
-            if (!process.waitFor(ROOT_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroy()
                 return@withContext RootActionResult(
                     success = false,
@@ -235,29 +251,13 @@ object AppPermissionManager {
         val component = componentName.flattenToString()
         val shortComponent = componentName.flattenToShortString()
         return runRootCommand(
-            """
-            current=${'$'}(settings get secure enabled_accessibility_services 2>/dev/null)
-            case ":${'$'}current:" in
-              *":$component:"*) updated="${'$'}current" ;;
-              *":$shortComponent:"*) updated="${'$'}current" ;;
-              ":null:"|":-1:"|"::") updated="$component" ;;
-              *) updated="${'$'}current:$component" ;;
-            esac
-            settings put secure enabled_accessibility_services "${'$'}updated"
-            settings put secure accessibility_enabled 1
-            enabled=${'$'}(settings get secure accessibility_enabled 2>/dev/null)
-            current=${'$'}(settings get secure enabled_accessibility_services 2>/dev/null)
-            case ":${'$'}current:" in
-              *":$component:"*|*":$shortComponent:"*)
-                [ "${'$'}enabled" = "1" ] && echo "Accessibility enabled for $component" || exit 1
-                ;;
-              *)
-                echo "Accessibility verify failed: ${'$'}current"
-                exit 1
-                ;;
-            esac
-            """.trimIndent(),
-            successMessage = "已通过 Root 启用无障碍服务"
+            command = buildAccessibilityResetAndEnableScript(
+                packageName = context.packageName,
+                component = component,
+                shortComponent = shortComponent
+            ),
+            successMessage = "已通过 Root 重置并启用无障碍服务",
+            timeoutSeconds = ACCESSIBILITY_ROOT_TIMEOUT_SECONDS
         )
     }
 
@@ -280,31 +280,22 @@ object AppPermissionManager {
             $notificationGrant
             (cmd appops set --uid ${context.packageName} android:write_settings allow >/dev/null 2>&1 || cmd appops set ${context.packageName} android:write_settings allow >/dev/null 2>&1 || appops set --uid ${context.packageName} WRITE_SETTINGS allow >/dev/null 2>&1 || appops set ${context.packageName} WRITE_SETTINGS allow >/dev/null 2>&1) || exit 1
             $allFilesGrant
-            current=${'$'}(settings get secure enabled_accessibility_services 2>/dev/null)
-            case ":${'$'}current:" in
-              *":$component:"*) updated="${'$'}current" ;;
-              *":$shortComponent:"*) updated="${'$'}current" ;;
-              ":null:"|":-1:"|"::") updated="$component" ;;
-              *) updated="${'$'}current:$component" ;;
-            esac
-            settings put secure enabled_accessibility_services "${'$'}updated"
-            settings put secure accessibility_enabled 1
             write_mode=${'$'}((cmd appops get --uid ${context.packageName} android:write_settings 2>/dev/null || cmd appops get ${context.packageName} android:write_settings 2>/dev/null || appops get --uid ${context.packageName} WRITE_SETTINGS 2>/dev/null || appops get ${context.packageName} WRITE_SETTINGS 2>/dev/null) | tr '[:upper:]' '[:lower:]')
             if [ "${Build.VERSION.SDK_INT}" -ge "${Build.VERSION_CODES.R}" ]; then
               files_mode=${'$'}((cmd appops get --uid ${context.packageName} android:manage_external_storage 2>/dev/null || cmd appops get ${context.packageName} android:manage_external_storage 2>/dev/null || appops get --uid ${context.packageName} MANAGE_EXTERNAL_STORAGE 2>/dev/null || appops get ${context.packageName} MANAGE_EXTERNAL_STORAGE 2>/dev/null) | tr '[:upper:]' '[:lower:]')
             else
               files_mode="allow"
             fi
-            enabled=${'$'}(settings get secure accessibility_enabled 2>/dev/null)
-            current=${'$'}(settings get secure enabled_accessibility_services 2>/dev/null)
             case "${'$'}write_mode" in *allow*) : ;; *) echo "WRITE_SETTINGS verify failed: ${'$'}write_mode"; exit 1 ;; esac
             case "${'$'}files_mode" in *allow*) : ;; *) echo "MANAGE_EXTERNAL_STORAGE verify failed: ${'$'}files_mode"; exit 1 ;; esac
-            case ":${'$'}current:" in
-              *":$component:"*|*":$shortComponent:"*) [ "${'$'}enabled" = "1" ] || exit 1 ;;
-              *) echo "Accessibility verify failed: ${'$'}current"; exit 1 ;;
-            esac
+            ${buildAccessibilityResetAndEnableScript(
+                packageName = context.packageName,
+                component = component,
+                shortComponent = shortComponent
+            )}
             """.trimIndent(),
-            successMessage = "已通过 Root 完成通知、系统设置、全部文件访问与无障碍授权"
+            successMessage = "已通过 Root 完成通知、系统设置、全部文件访问与无障碍授权",
+            timeoutSeconds = ACCESSIBILITY_ROOT_TIMEOUT_SECONDS
         )
     }
 
@@ -402,14 +393,93 @@ object AppPermissionManager {
 
     private suspend fun runRootCommand(
         command: String,
-        successMessage: String
+        successMessage: String,
+        timeoutSeconds: Long = ROOT_COMMAND_TIMEOUT_SECONDS
     ): RootActionResult = withContext(Dispatchers.IO) {
-        val raw = runRawRootCommand(command)
+        val raw = runRawRootCommand(command, timeoutSeconds = timeoutSeconds)
         if (!raw.success) {
             return@withContext raw
         }
         val suffix = raw.output.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
         RootActionResult(true, successMessage + suffix)
+    }
+
+    /**
+     * Boot-safe accessibility rebind:
+     * wait for boot_completed, disable a11y, strip stale/broken Clawdroid entries, then re-enable.
+     */
+    internal fun buildAccessibilityResetAndEnableScript(
+        packageName: String,
+        component: String,
+        shortComponent: String
+    ): String {
+        // Defense-in-depth: 该脚本通过 su -c 在 root 上下文执行，case 模式中的
+        // $packageName/$component/$shortComponent 未加引号，若任一变量包含 glob
+        // 元字符（* ? [ ]）会被 shell 当作模式匹配，可能误剥离其他应用的 a11y 条目。
+        // 虽然当前参数来源是 context.packageName 与 ComponentName.flattenToString()，
+        // 上游已受限，但在边界处仍以严格 Android 包名/组件名格式断言一次。
+        require(androidPackagePattern.matches(packageName)) {
+            "invalid packageName: $packageName"
+        }
+        require(component.startsWith("$packageName/") && !component.containsAnyOf(GLOB_METACHARS)) {
+            "invalid component: $component"
+        }
+        require(shortComponent.startsWith("$packageName/") && !shortComponent.containsAnyOf(GLOB_METACHARS)) {
+            "invalid shortComponent: $shortComponent"
+        }
+        return """
+            i=0
+            while [ "${'$'}(getprop sys.boot_completed 2>/dev/null)" != "1" ] && [ "${'$'}i" -lt 30 ]; do
+              sleep 1
+              i=${'$'}((i+1))
+            done
+            sleep 3
+            settings put secure accessibility_enabled 0 >/dev/null 2>&1 || true
+            current=${'$'}(settings get secure enabled_accessibility_services 2>/dev/null)
+            cleaned=""
+            old_ifs=${'$'}IFS
+            IFS=':'
+            for entry in ${'$'}current; do
+              [ -z "${'$'}entry" ] && continue
+              [ "${'$'}entry" = "null" ] && continue
+              [ "${'$'}entry" = "-1" ] && continue
+              case ":${'$'}entry:" in
+                *":$component:"*|*":$shortComponent:"*) continue ;;
+              esac
+              case "${'$'}entry" in
+                $packageName/*|$packageName/.*) continue ;;
+                */*) ;;
+                *) continue ;;
+              esac
+              if [ -z "${'$'}cleaned" ]; then
+                cleaned="${'$'}entry"
+              else
+                cleaned="${'$'}cleaned:${'$'}entry"
+              fi
+            done
+            IFS=${'$'}old_ifs
+            settings put secure enabled_accessibility_services "${'$'}cleaned"
+            sleep 1
+            if [ -z "${'$'}cleaned" ] || [ "${'$'}cleaned" = "null" ]; then
+              updated="$component"
+            else
+              updated="${'$'}cleaned:$component"
+            fi
+            settings put secure enabled_accessibility_services "${'$'}updated"
+            settings put secure accessibility_enabled 1
+            sleep 1
+            enabled=${'$'}(settings get secure accessibility_enabled 2>/dev/null)
+            current=${'$'}(settings get secure enabled_accessibility_services 2>/dev/null)
+            case ":${'$'}current:" in
+              *":$component:"*|*":$shortComponent:"*)
+                [ "${'$'}enabled" = "1" ] && echo "Accessibility rebound for $component" || exit 1
+                ;;
+              *)
+                echo "Accessibility verify failed: ${'$'}current"
+                exit 1
+                ;;
+            esac
+        """.trimIndent()
     }
 
     private fun shellQuote(value: String): String {

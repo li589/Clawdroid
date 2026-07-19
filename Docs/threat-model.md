@@ -17,8 +17,10 @@
 本文档覆盖以下对象：
 
 - `Clawdroid App` 主进程
-- `Clawdroid App` 内的 `AccessibilityService`
+- `Clawdroid App` 内的 `AccessibilityService` 与 `NotificationListenerService`
 - `Clawdroid App` 内的 LSPosed 适配代码
+- `Clawdroid App` 内的本地工具执行面与 Assist MCP HTTP/SSE 调试桥
+- `Clawdroid App` 的 Shizuku 用户服务（中层提权，非 Root 替代品）
 - `Clawdroid Magisk 模块`
 - `ClawRuntime`
 - App 与 ClawRuntime 之间的本地 IPC 协议
@@ -30,13 +32,14 @@
 - 目标第三方 App 的内部业务逻辑安全
 - Android 内核级 0day 与 Bootloader 级攻击
 - 用户主动关闭安全限制后的自破坏行为
+- 电脑侧任意第三方 MCP Server 的内部实现安全（仅约束手机出站调用的鉴权与超时）
 
 ## 3. 系统概览
 
 Clawdroid 只有两个部署单元：
 
 1. **Clawdroid App**
-   - 承担 UI、任务编排、模型交互、无障碍、LSPosed 模块代码和 IPC 客户端。
+   - 承担 UI、任务编排、模型交互、无障碍、通知监听、本地工具、Assist MCP、Shizuku、LSPosed 模块代码和 IPC 客户端。
 
 2. **Clawdroid Magisk 模块**
    - 承担 Root 守护进程、启动脚本、配置、审计与高权限执行能力。
@@ -231,6 +234,13 @@ Clawdroid 至少跨越以下关键边界：
 6. **云端模型输出边界**
    - 模型输出不是可信执行指令，只能作为规划输入
 
+7. **Assist MCP / ADB 隧道边界**
+   - 手机侧 MCP Server 仅经 ADB forward 暴露到开发者本机；Token 缺失则拒绝
+   - 手机出站 `assist_*` 仅指向用户配置的协助端点，经 ADB reverse；默认关闭
+
+8. **Shizuku 边界**
+   - Shizuku 提供的是用户授权的中层 Shell，不是 Root；命令必须白名单且短超时
+
 ## 10. 攻击面清单
 
 ### 10.1 IPC 攻击面
@@ -272,6 +282,18 @@ Clawdroid 至少跨越以下关键边界：
 - 高频请求导致守护进程资源耗尽
 - 长时间截图或 Shell 执行阻塞队列
 - 订阅事件过多导致内存压力
+
+### 10.7 Assist MCP 与本地工具攻击面
+
+- 未授权本机进程在 ADB forward 存活期间扫描端口并猜测 Token
+- 恶意协助端点经 `assist_call_tool` 诱导手机执行非预期工具
+- 工具参数突破沙箱路径或绕过权限门（相机 / 通知 / 文件）
+- 模型或 MCP 调用链触发高并发硬件独占（相机录制等）拖垮主进程
+
+### 10.8 Shizuku 攻击面
+
+- 诱导用户永久授权后执行超白名单命令
+- 将 Shizuku 能力误当成 Root 并扩大文件/系统写面
 
 ## 11. 主要威胁与缓解措施
 

@@ -129,6 +129,8 @@
 | `inject_swipe` | `input.inject` |
 | `inject_keyevent` | `input.inject` |
 | `read_file_limited` | `file.read.limited` |
+| `write_file_limited` | `file.write.limited` |
+| `stat_file_limited` | `file.read.limited` |
 | `exec_shell_limited` | `shell.exec.limited` |
 | `subscribe_events` | `event.subscribe` |
 | `report_xposed_focus` | `event.report` |
@@ -138,7 +140,7 @@
 | `task_list` | `task.manage` |
 | `task_cancel` | `task.manage` |
 
-> 动作目录以 `ClawRuntime/runtime/internal/ipc/actions.go` 与 App 侧 `RuntimeActionCatalog` 为准；本文表与实现对齐。
+> 动作目录以 `ClawRuntime/runtime/internal/ipc/actions.go` 与 App 侧 `RuntimeActionCatalog` 为准（共 18 个动作）；CI 通过 `scripts/check_runtime_catalog.py` 做 set equality 校验。
 
 ## 5. Error Codes
 
@@ -149,9 +151,10 @@
 | 通用错误 | `0 - 999` | 协议、参数、超时、取消等基础错误 |
 | 认证错误 | `1000 - 1999` | 对端、包名、签名、令牌、会话、挑战失败 |
 | 能力错误 | `2000 - 2999` | Root、无障碍、截图或能力协商缺失 |
-| 执行错误 | `3000 - 3999` | 输入注入、Shell、文件读取等执行失败 |
+| 执行错误 | `3000 - 3999` | 输入注入、Shell、文件读写等执行失败 |
 | 适配错误 | `4000 - 4999` | Hook 失效、页面结构变化、版本不匹配 |
 | 系统错误 | `5000 - 5999` | 守护进程异常、ROM 不兼容、SELinux 拒绝 |
+| 任务错误 | `7000 - 7999` | 任务提交、查询、取消与队列状态 |
 
 ### 5.2 Frozen Base Error Codes
 
@@ -167,6 +170,7 @@
 | `5` | `ERR_CANCELLED` | 通用 | 请求被取消 |
 | `6` | `ERR_PAYLOAD_TOO_LARGE` | 通用 | 请求负载超过限制 |
 | `7` | `ERR_ACTION_NOT_ALLOWED` | 通用 | 动作不在允许列表中 |
+| `8` | `ERR_RATE_LIMITED` | 通用 | 请求频率超过限制 |
 | `1001` | `ERR_PEER_VERIFY_FAILED` | 认证 | 对端凭证校验失败 |
 | `1002` | `ERR_SIGNATURE_MISMATCH` | 认证 | 包签名摘要不匹配 |
 | `1003` | `ERR_CHALLENGE_FAILED` | 认证 | 挑战应答失败 |
@@ -181,12 +185,20 @@
 | `3003` | `ERR_SHELL_EXEC_FAILED` | 执行 | Shell 执行失败 |
 | `3004` | `ERR_FILE_OUT_OF_SCOPE` | 执行 | 请求路径超出白名单范围 |
 | `3005` | `ERR_FILE_READ_FAILED` | 执行 | 文件读取失败 |
+| `3006` | `ERR_FILE_WRITE_FAILED` | 执行 | 文件写入失败 |
 | `4001` | `ERR_ADAPTER_NOT_AVAILABLE` | 适配 | 目标应用适配模块不可用 |
 | `4002` | `ERR_TARGET_VERSION_UNSUPPORTED` | 适配 | 目标应用版本不受支持 |
 | `4003` | `ERR_TARGET_UI_CHANGED` | 适配 | 目标页面结构变化导致适配失效 |
 | `5001` | `ERR_SELINUX_DENIED` | 系统 | SELinux 拒绝访问 |
 | `5002` | `ERR_DAEMON_UNHEALTHY` | 系统 | 守护进程状态异常 |
 | `5003` | `ERR_ROM_UNSUPPORTED` | 系统 | 当前 ROM 行为不兼容 |
+| `7001` | `ERR_TASK_NOT_FOUND` | 任务 | 任务 ID 不存在 |
+| `7002` | `ERR_TASK_STATE_INVALID` | 任务 | 非法任务状态转换 |
+| `7003` | `ERR_TASK_SUBMIT_FAILED` | 任务 | 任务提交失败 |
+| `7004` | `ERR_TASK_CANCEL_FAILED` | 任务 | 任务取消失败 |
+| `7005` | `ERR_TASK_QUEUE_FULL` | 任务 | 任务队列已满 |
+
+> 错误码以 `ClawRuntime/runtime/internal/ipc/errors.go` 与 App 侧 `RuntimeErrorCodes` 为准；CI 同步校验。
 
 ## 6. Connection State Machine
 
@@ -278,7 +290,7 @@ Retrying -> Failed
 
 ## 8. Action Definitions
 
-本节冻结 `v1` 协议中的全部 8 个动作定义。
+本节冻结 `v1` 协议中的全部 18 个动作定义（与 `actions.go` 对齐）。
 
 ### 8.1 `ping`
 
@@ -472,6 +484,47 @@ Retrying -> Failed
 }
 ```
 
+### 8.6.1 `write_file_limited`
+
+- **Capability**: `file.write.limited`
+- **用途**: 在可写白名单路径内写入有限大小内容（覆盖或追加由实现约定）
+- **参数结构**:
+
+```json
+{
+  "path": "/data/local/tmp/clawdroid/out.txt",
+  "content_base64": "...",
+  "max_bytes": 65536
+}
+```
+
+- **参数范围**:
+  - `path`: 必须属于可写白名单
+  - `content_base64`: 解码后长度受 `max_bytes` 与守护上限约束
+  - `max_bytes`: `1 - 1048576`
+- **是否幂等**: 否
+- **是否可取消**: 否
+- **默认超时**: `3000 ms`
+- **审计级别**: 高
+- **失败码**: 越界 `3004`，写入失败 `3006`
+
+### 8.6.2 `stat_file_limited`
+
+- **Capability**: `file.read.limited`
+- **用途**: 在白名单路径内查询文件元数据（存在性、大小、mtime 等）
+- **参数结构**:
+
+```json
+{
+  "path": "/sdcard/Download/example.txt"
+}
+```
+
+- **是否幂等**: 是
+- **是否可取消**: 否
+- **默认超时**: `1500 ms`
+- **审计级别**: 中
+
 ### 8.7 `exec_shell_limited`
 
 - **Capability**: `shell.exec.limited`
@@ -625,16 +678,64 @@ Retrying -> Failed
 - **默认超时**: `1000 ms`
 - **审计级别**: 高
 
+### 8.11 `task_submit`
+
+- **Capability**: `task.manage`
+- **用途**: 提交多步 Runtime 任务（步骤为已知 IPC action 序列）
+- **参数结构**:
+
+```json
+{
+  "task_id": "demo-1",
+  "name": "health",
+  "steps": [
+    { "action": "ping", "args": {} }
+  ]
+}
+```
+
+- **是否幂等**: 否（同 `task_id` 重复提交可能失败）
+- **是否可取消**: 否（取消走 `task_cancel`）
+- **默认超时**: `3000 ms`
+- **审计级别**: 高
+- **失败码**: `7003` 提交失败，`7005` 队列满
+
+### 8.12 `task_get`
+
+- **Capability**: `task.manage`
+- **用途**: 查询单个任务快照
+- **参数结构**: `{ "task_id": "demo-1" }`
+- **是否幂等**: 是
+- **默认超时**: `1500 ms`
+- **失败码**: `7001` 未找到
+
+### 8.13 `task_list`
+
+- **Capability**: `task.manage`
+- **用途**: 列出近期任务摘要
+- **参数结构**: `{}` 或带可选 `limit`
+- **是否幂等**: 是
+- **默认超时**: `2000 ms`
+
+### 8.14 `task_cancel`
+
+- **Capability**: `task.manage`
+- **用途**: 取消尚未结束的任务
+- **参数结构**: `{ "task_id": "demo-1" }`
+- **是否幂等**: 否
+- **默认超时**: `2000 ms`
+- **失败码**: `7002` 非法状态，`7004` 取消失败
+
 ## 9. Protocol Constraints
 
 ### 9.1 Idempotency
 
-- `ping`、`get_capabilities`、`get_runtime_status`、`read_file_limited`、`subscribe_events` 视为幂等动作
-- `capture_screen`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`exec_shell_limited` 不视为幂等动作
+- 幂等：`ping`、`get_capabilities`、`get_runtime_status`、`read_file_limited`、`stat_file_limited`、`subscribe_events`、`task_get`、`task_list`
+- 非幂等：`capture_screen`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`write_file_limited`、`exec_shell_limited`、`report_xposed_focus`、`report_xposed_view`、`task_submit`、`task_cancel`
 
 ### 9.2 Cancellation
 
-- 不可取消动作：`ping`、`get_capabilities`、`get_runtime_status`、`inject_tap`、`inject_swipe`、`inject_keyevent`
+- 不可取消动作：`ping`、`get_capabilities`、`get_runtime_status`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`write_file_limited`、`stat_file_limited`、`task_get`、`task_list`、`task_submit`、`task_cancel`
 - 可取消动作：`capture_screen`、`read_file_limited`、`exec_shell_limited`、`subscribe_events`
 
 ### 9.3 Timeout

@@ -6,15 +6,15 @@ Param(
 
 $ErrorActionPreference = "Stop"
 
-Add-Type -AssemblyName System.IO.Compression
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $moduleDir = Join-Path $projectRoot "magisk"
 $outputPath = Join-Path $projectRoot $OutputZip
 $runtimeBinary = Join-Path $moduleDir "bin\\clawdroid-runtime"
 $runtimeGeneratedConfig = Join-Path $moduleDir "config\\runtime.generated.yaml"
 $syncSecretScript = Join-Path $PSScriptRoot "sync-shared-secret.ps1"
+$packScript = Join-Path $PSScriptRoot "pack_magisk_zip.py"
+$metaBinary = Join-Path $moduleDir "META-INF\\com\\google\\android\\update-binary"
+$metaScript = Join-Path $moduleDir "META-INF\\com\\google\\android\\updater-script"
 
 if (Test-Path $syncSecretScript) {
     $syncArgs = @{}
@@ -33,32 +33,16 @@ if (-not (Test-Path $runtimeBinary)) {
 if (-not (Test-Path $runtimeGeneratedConfig)) {
     throw "Generated runtime config missing: $runtimeGeneratedConfig. Run .\\scripts\\sync-shared-secret.ps1 first."
 }
+if (-not (Test-Path $metaBinary) -or -not (Test-Path $metaScript)) {
+    throw "Magisk META-INF installer missing under magisk/META-INF/com/google/android/"
+}
+if (-not (Test-Path $packScript)) {
+    throw "Missing packer: $packScript"
+}
 
 $outputDir = Split-Path -Parent $outputPath
 if ($outputDir -and -not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-}
-
-if (Test-Path $outputPath) {
-    Remove-Item -Force $outputPath
-}
-
-function Add-DirectoryToZip {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourceDirectory,
-        [Parameter(Mandatory = $true)]
-        [System.IO.Compression.ZipArchive]$Archive
-    )
-
-    $sourceRoot = [System.IO.Path]::GetFullPath($SourceDirectory)
-    $files = Get-ChildItem -Path $sourceRoot -Recurse -File
-    foreach ($file in $files) {
-        $fullName = [System.IO.Path]::GetFullPath($file.FullName)
-        $relativePath = $fullName.Substring($sourceRoot.Length).TrimStart('\', '/')
-        $entryName = $relativePath -replace '\\', '/'
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($Archive, $fullName, $entryName) | Out-Null
-    }
 }
 
 $stageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("clawdroid-magisk-stage-" + [guid]::NewGuid().ToString("N"))
@@ -79,11 +63,17 @@ try {
     }
     Copy-Item -Path $runtimeGeneratedConfig -Destination (Join-Path $stageDir "config\\runtime.yaml") -Force
 
-    $zip = [System.IO.Compression.ZipFile]::Open($outputPath, [System.IO.Compression.ZipArchiveMode]::Create)
-    try {
-        Add-DirectoryToZip -SourceDirectory $stageDir -Archive $zip
-    } finally {
-        $zip.Dispose()
+    # Drop empty placeholder trees that confuse some Magisk extractors.
+    foreach ($emptyDir in @("system", "zygisk")) {
+        $candidate = Join-Path $stageDir $emptyDir
+        if ((Test-Path $candidate) -and -not (Get-ChildItem $candidate -Force -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })) {
+            Remove-Item -Path $candidate -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    & python $packScript --stage $stageDir --output $outputPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "pack_magisk_zip.py failed with exit $LASTEXITCODE"
     }
 } finally {
     if (Test-Path $stageDir) {

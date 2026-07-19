@@ -16,8 +16,12 @@ import java.net.SocketException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.Semaphore
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Localhost MCP HTTP+SSE transport (2024-11-05 style) for ADB port-forward.
@@ -35,9 +39,12 @@ class McpHttpServer(
     private val bindLoopbackOnly: Boolean = true
 ) {
     private val running = AtomicBoolean(false)
-    private var executor = Executors.newCachedThreadPool()
+    private var executor = newWorkerPool()
     private val sessions = ConcurrentHashMap<String, SseSession>()
     private var serverSocket: ServerSocket? = null
+    // 原子许可池：取代「检查 size 再 put」的 TOCTOU，避免并发握手在 size 检查
+    // 与 sessions[sessionId]= 之间通过判定导致超出 MAX_SSE_SESSIONS 软上限。
+    private val sseSessionSemaphore = Semaphore(MAX_SSE_SESSIONS)
 
     val isRunning: Boolean get() = running.get()
     val listenPort: Int get() = port
@@ -47,7 +54,7 @@ class McpHttpServer(
             return
         }
         if (executor.isShutdown) {
-            executor = Executors.newCachedThreadPool()
+            executor = newWorkerPool()
         }
         val address = if (bindLoopbackOnly) {
             InetAddress.getByName("127.0.0.1")
@@ -64,7 +71,19 @@ class McpHttpServer(
                     } catch (_: SocketException) {
                         break
                     }
-                    executor.execute { handleClient(client) }
+                    try {
+                        executor.execute { handleClient(client) }
+                    } catch (_: java.util.concurrent.RejectedExecutionException) {
+                        runCatching {
+                            writeHttp(
+                                client.getOutputStream(),
+                                503,
+                                "text/plain; charset=utf-8",
+                                "server busy"
+                            )
+                        }
+                        runCatching { client.close() }
+                    }
                 }
             } finally {
                 running.set(false)
@@ -84,7 +103,12 @@ class McpHttpServer(
     private fun handleClient(socket: Socket) {
         socket.soTimeout = 60_000
         try {
-            val request = readHttpRequest(socket.getInputStream())
+            val request = try {
+                readHttpRequest(socket.getInputStream(), MAX_BODY_BYTES)
+            } catch (_: PayloadTooLargeException) {
+                writeHttp(socket.getOutputStream(), 413, "text/plain; charset=utf-8", "payload too large")
+                return
+            }
             val method = request.method
             val pathOnly = request.path
             val queryMap = request.query
@@ -105,10 +129,6 @@ class McpHttpServer(
                     handleSse(socket, headers)
                 }
                 method == "POST" && (pathOnly == "/message" || pathOnly == "/mcp") -> {
-                    if (request.body.size > 2 * 1024 * 1024) {
-                        writeHttp(socket.getOutputStream(), 413, "text/plain; charset=utf-8", "payload too large")
-                        return
-                    }
                     val body = String(request.body, StandardCharsets.UTF_8)
                     if (pathOnly == "/message") {
                         handleMessagePost(socket, queryMap, body)
@@ -130,6 +150,8 @@ class McpHttpServer(
         } catch (error: Throwable) {
             FaultIsolation.recordFault("mcp:http", error)
             runCatching { socket.close() }
+        } finally {
+            // Non-SSE paths close in writeHttp; SSE owns the socket until session end.
         }
     }
 
@@ -165,6 +187,13 @@ class McpHttpServer(
             writeHttp(socket.getOutputStream(), 403, "text/plain; charset=utf-8", "origin not allowed")
             return
         }
+        // 原子获取许可：tryAcquire 在并发下保证同时进入 SSE 循环的会话数不会
+        // 超过 MAX_SSE_SESSIONS。若已满则立即拒绝，避免在 sessions.size 检查
+        // 与 sessions[sessionId]= 之间产生竞态。
+        if (!sseSessionSemaphore.tryAcquire()) {
+            writeHttp(socket.getOutputStream(), 503, "text/plain; charset=utf-8", "too many sse sessions")
+            return
+        }
         val sessionId = newMcpSessionId()
         val out = socket.getOutputStream()
         val preamble = buildString {
@@ -195,6 +224,7 @@ class McpHttpServer(
         } finally {
             sessions.remove(sessionId)
             session.close()
+            sseSessionSemaphore.release()
         }
     }
 
@@ -295,6 +325,7 @@ class McpHttpServer(
             403 -> "Forbidden"
             404 -> "Not Found"
             413 -> "Payload Too Large"
+            503 -> "Service Unavailable"
             else -> "Error"
         }
         val header = buildString {
@@ -341,7 +372,7 @@ class McpHttpServer(
         "Access-Control-Allow-Methods" to "GET, POST, OPTIONS"
     )
 
-    private data class HttpRequest(
+    internal data class HttpRequest(
         val method: String,
         val path: String,
         val query: Map<String, String>,
@@ -352,8 +383,12 @@ class McpHttpServer(
     /**
      * Reads one HTTP request from a raw stream.
      * Avoids BufferedReader so Content-Length body bytes are not corrupted by char decoding.
+     * Rejects oversized Content-Length **before** allocating the body buffer.
      */
-    private fun readHttpRequest(input: InputStream): HttpRequest {
+    internal fun readHttpRequestForTest(input: InputStream, maxBodyBytes: Int = MAX_BODY_BYTES): HttpRequest =
+        readHttpRequest(input, maxBodyBytes)
+
+    private fun readHttpRequest(input: InputStream, maxBodyBytes: Int): HttpRequest {
         val headerBytes = readUntilHeaderEnd(input)
         val headerText = String(headerBytes, StandardCharsets.UTF_8)
         val lines = headerText.split("\r\n", "\n").filter { it.isNotEmpty() }
@@ -374,14 +409,29 @@ class McpHttpServer(
         }
         val pathOnly = target.substringBefore('?')
         val query = parseQuery(target.substringAfter('?', missingDelimiterValue = ""))
-        val length = headers["content-length"]?.toIntOrNull() ?: 0
-        require(length >= 0) { "negative content-length" }
-        val body = if (length == 0) {
+        val length = headers["content-length"]?.toLongOrNull() ?: 0L
+        require(length >= 0L) { "negative content-length" }
+        if (length > maxBodyBytes.toLong()) {
+            // Do not allocate; drain a small amount then abort so the peer can see 413.
+            drainBounded(input, maxDrainBytes = 64 * 1024)
+            throw PayloadTooLargeException(length, maxBodyBytes)
+        }
+        val body = if (length == 0L) {
             ByteArray(0)
         } else {
-            readExact(input, length)
+            readExact(input, length.toInt())
         }
         return HttpRequest(method, pathOnly, query, headers, body)
+    }
+
+    private fun drainBounded(input: InputStream, maxDrainBytes: Int) {
+        val buf = ByteArray(4096)
+        var remaining = maxDrainBytes
+        while (remaining > 0) {
+            val n = input.read(buf, 0, minOf(buf.size, remaining))
+            if (n <= 0) break
+            remaining -= n
+        }
     }
 
     private fun readUntilHeaderEnd(input: InputStream): ByteArray {
@@ -465,4 +515,36 @@ class McpHttpServer(
             runCatching { socket.close() }
         }
     }
+
+    companion object {
+        const val MAX_BODY_BYTES = 2 * 1024 * 1024
+        const val MAX_SSE_SESSIONS = 8
+        private const val WORKER_CORE = 2
+        private const val WORKER_MAX = 16
+        private const val WORKER_QUEUE = 32
+
+        private val threadSeq = AtomicInteger(0)
+
+        private fun newWorkerPool(): ThreadPoolExecutor {
+            return ThreadPoolExecutor(
+                WORKER_CORE,
+                WORKER_MAX,
+                60L,
+                TimeUnit.SECONDS,
+                LinkedBlockingQueue(WORKER_QUEUE),
+                { runnable ->
+                    Thread(runnable, "claw-mcp-${threadSeq.incrementAndGet()}").apply {
+                        isDaemon = true
+                    }
+                },
+                ThreadPoolExecutor.AbortPolicy()
+            )
+        }
+    }
 }
+
+internal class PayloadTooLargeException(
+    val contentLength: Long,
+    val maxBytes: Int
+) : IllegalArgumentException("content-length $contentLength exceeds max $maxBytes")
+

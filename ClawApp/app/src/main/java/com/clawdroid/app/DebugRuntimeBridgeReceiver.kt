@@ -22,6 +22,11 @@ import java.io.File
 
 class DebugRuntimeBridgeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // 该 Receiver 在 Manifest 中 exported=true 仅为了 ADB 调试便利；
+        // release 包里必须直接忽略，避免任意应用通过广播触发 chat_prompt 等特权操作。
+        if (!com.clawdroid.app.BuildConfig.DEBUG) {
+            return
+        }
         val pendingResult = goAsync()
         val appContext = context.applicationContext
         CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {

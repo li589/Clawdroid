@@ -19,6 +19,7 @@ internal class CapturePreviewStore {
     }
 
     fun publishDecoded(bytes: ByteArray): DecodedPreview? {
+        // Decode into ImageBitmap only; do not retain the source ByteArray in this store.
         val decoded = runCatching { decode(bytes) }.getOrNull()
         _preview.value = decoded?.image
         return decoded

@@ -27,7 +27,7 @@ import kotlin.coroutines.coroutineContext
 class ClawToolDispatcher(
     private val executor: ClawToolExecutor,
     private val eventBridge: EventBridge? = null,
-    private val previewLimitBytes: Int = 8 * 1024 * 1024,
+    private val previewLimitBytes: Int = 1 * 1024 * 1024,
     private val permissionGate: ToolPermissionGate? = null,
     private val appContext: Context? = null,
     private val services: ToolServiceRegistry = ToolServiceRegistry.EMPTY,
@@ -59,12 +59,15 @@ class ClawToolDispatcher(
     )
 
     private val agentRunner = ClawAgentRunner(this)
-    private val serializeMutex = Mutex()
+    private val deviceMutateMutex = Mutex()
+    private val captureMutex = Mutex()
+    private val agentMutex = Mutex()
     private val capabilityProbe = CapabilityProbe(executor)
 
-    private class HoldingSerializeLock :
-        AbstractCoroutineContextElement(HoldingSerializeLock) {
-        companion object Key : CoroutineContext.Key<HoldingSerializeLock>
+    private class HoldingToolLock(
+        val lanes: Set<ToolSerializeLane> = emptySet()
+    ) : AbstractCoroutineContextElement(HoldingToolLock) {
+        companion object Key : CoroutineContext.Key<HoldingToolLock>
     }
 
     @Volatile
@@ -95,8 +98,12 @@ class ClawToolDispatcher(
         tool: ClawTool,
         arguments: Map<String, Any?> = emptyMap()
     ): ClawToolCallResult {
-        val alreadyHolding = coroutineContext[HoldingSerializeLock] != null
-        val needsSerialize = !alreadyHolding && ToolExecutionPolicy.requiresSerialization(tool)
+        // 跟踪当前协程已持有的 lane 集合：只有当请求的 lane 与已持有的同一 lane
+        // 重叠时才跳过加锁（防止非重入 Mutex 自死锁），不同 lane 仍需各自加锁，
+        // 否则 RUN_AGENT 内嵌的 CAPTURE_SCREEN 会绕过 captureMutex，与另一个
+        // 调用方的 CAPTURE_SCREEN 并发写 @Volatile lastCapture 造成脏读。
+        val heldLanes = coroutineContext[HoldingToolLock]?.lanes ?: emptySet()
+        val lane = ToolExecutionPolicy.serializeLane(tool)
 
         suspend fun runBody(): ClawToolCallResult {
             coroutineContext.ensureActive()
@@ -114,12 +121,18 @@ class ClawToolDispatcher(
             }
         }
 
-        return when {
-            alreadyHolding -> runBody()
-            needsSerialize -> serializeMutex.withLock {
-                withContext(HoldingSerializeLock()) { runBody() }
+        val mutex = when (lane) {
+            ToolSerializeLane.None -> null
+            ToolSerializeLane.DeviceMutate -> deviceMutateMutex
+            ToolSerializeLane.Capture -> captureMutex
+            ToolSerializeLane.Agent -> agentMutex
+        }
+        return if (mutex == null || lane in heldLanes) {
+            runBody()
+        } else {
+            mutex.withLock {
+                withContext(HoldingToolLock(heldLanes + lane)) { runBody() }
             }
-            else -> runBody()
         }
     }
 

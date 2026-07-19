@@ -1,0 +1,10 @@
+# Copy this file to local.properties for repository-local settings.
+# This file should stay private and must not be committed.
+
+# Shared secret used by both ClawApp and ClawRuntime packaging scripts.
+clawdroid.runtime.sharedSecret=<64-char-random-secret>
+
+# Optional but recommended for release packages.
+# Comma-separated SHA256 signature digests accepted by ClawRuntime.
+# Example:
+# clawdroid.runtime.allowedSignatures=sha256:aaaaaaaa,sha256:bbbbbbbb

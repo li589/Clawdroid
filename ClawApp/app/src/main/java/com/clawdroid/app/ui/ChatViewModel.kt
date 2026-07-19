@@ -18,6 +18,7 @@ import com.clawdroid.app.chat.ChatPlannerContext
 import com.clawdroid.app.chat.ChatPromptPlan
 import com.clawdroid.app.chat.ChatPromptPlanner
 import com.clawdroid.app.chat.ChatTaskAction
+import com.clawdroid.app.chat.ChatTextLimits
 import com.clawdroid.app.chat.toAgentDefinition
 import com.clawdroid.app.fault.FaultCodes
 import com.clawdroid.app.fault.FaultIsolation
@@ -25,6 +26,7 @@ import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.skills.AgentStepListener
 import com.clawdroid.app.skills.ClawAgentCatalog
 import com.clawdroid.app.skills.ClawAgentRunner
+import com.clawdroid.app.skills.RuntimeTaskPoller
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolDispatcher
@@ -561,7 +563,7 @@ internal class ChatViewModel(
     ): String {
         val message = ChatMessage(
             role = role,
-            content = content,
+            content = ChatTextLimits.truncateForDisplay(content),
             attachmentLabel = attachmentLabel,
             state = state
         )
@@ -584,7 +586,7 @@ internal class ChatViewModel(
         val existing = messages[index]
         val updatedMessages = messages.toMutableList().apply {
             this[index] = existing.copy(
-                content = content,
+                content = ChatTextLimits.truncateForDisplay(content),
                 state = state,
                 attachmentLabel = attachmentLabel ?: existing.attachmentLabel
             )
@@ -593,8 +595,9 @@ internal class ChatViewModel(
     }
 
     private fun replaceMessages(messages: List<ChatMessage>) {
-        runCatching { ChatHistoryStore.save(appContext, messages) }
-        updateState { it.copy(messages = messages) }
+        val windowed = ChatTextLimits.windowMessages(messages)
+        runCatching { ChatHistoryStore.save(appContext, windowed) }
+        updateState { it.copy(messages = windowed) }
     }
 
     private suspend fun executeUnifiedAgentTask(
@@ -787,19 +790,23 @@ internal class ChatViewModel(
                         arguments = enrichedArgs.mapValues { (_, value) -> value },
                         ensureTaskUi = false,
                         finishTaskUi = false,
-                        bindRuntimeOnSubmit = false,
+                        // Bind Runtime task id so cancel / event sync reach the daemon task.
+                        bindRuntimeOnSubmit = true,
                         originPrompt = normalizedPrompt
                     )
                 }
                 val ok = !reply.startsWith("失败") && !reply.contains("任务中止")
                 ok to reply
             } else {
-                val result = dispatcher.execute(tool, enrichedArgs.mapValues { (_, value) -> value })
+                var result = dispatcher.execute(tool, enrichedArgs.mapValues { (_, value) -> value })
                 overviewController.applyChatToolEffects(tool, enrichedArgs, result)
                 if (result.captureArtifact != null) {
                     dispatcher.rememberCapture(result.captureArtifact)
                 }
                 syncRuntimeTaskTracking(tool, enrichedArgs, result, normalizedPrompt)
+                if (tool == ClawTool.TASK_SUBMIT && result.success) {
+                    result = awaitSubmittedRuntimeTask(dispatcher, result)
+                }
                 result.success to result.output
             }
             markTaskStepFinished(turnIndex, stepSuccess, stepOutput)
@@ -813,7 +820,7 @@ internal class ChatViewModel(
             val remainingTurns = maxTurns - turn
             if (remainingTurns <= 0) {
                 val allOk = steps.all { it.success }
-                finishTaskExecution(
+                finishAiLoopTaskExecution(
                     success = allOk,
                     summary = if (allOk) {
                         "AI 工具循环已结束（达到最大步数）。"
@@ -827,7 +834,7 @@ internal class ChatViewModel(
                     tool = tool,
                     arguments = enrichedArgs,
                     assistantMessage = assistantMessage,
-                    result = buildAiLoopTranscript(steps),
+                    result = ChatAiLoop.buildTranscript(steps),
                     reflectResultWithModel = true,
                     modelSettings = modelSettings,
                     onModelCallSuccess = onModelCallSuccess
@@ -848,7 +855,7 @@ internal class ChatViewModel(
                     it
                 },
                 onFailure = { error ->
-                    finishTaskExecution(
+                    finishAiLoopTaskExecution(
                         success = false,
                         summary = "AI 续步失败，已停止工具循环。"
                     )
@@ -860,7 +867,7 @@ internal class ChatViewModel(
                         buildAssistantReply(
                             assistantMessage,
                             "模型续步失败：${error.message ?: error::class.java.simpleName}",
-                            buildAiLoopTranscript(steps)
+                            ChatAiLoop.buildTranscript(steps)
                         ),
                         ChatMessageState.Final
                     )
@@ -872,7 +879,7 @@ internal class ChatViewModel(
             when (continuePlan) {
                 is AiAgentPlan.AssistantReply -> {
                     val allOk = steps.all { it.success }
-                    finishTaskExecution(
+                    finishAiLoopTaskExecution(
                         success = allOk,
                         summary = if (allOk) {
                             "AI 工具循环已完成。"
@@ -883,7 +890,7 @@ internal class ChatViewModel(
                     updateState { state -> state.copy(latestAiStatus = "AI 工具循环已完成") }
                     updateChatMessage(
                         replyMessageId,
-                        buildAssistantReply(assistantMessage, continuePlan.message, buildAiLoopTranscript(steps)),
+                        buildAssistantReply(assistantMessage, continuePlan.message, ChatAiLoop.buildTranscript(steps)),
                         ChatMessageState.Final
                     )
                     finishChat()
@@ -901,7 +908,7 @@ internal class ChatViewModel(
                         it.tool == continuePlan.tool && it.arguments == nextEnriched
                     }
                     if (duplicated) {
-                        finishTaskExecution(
+                        finishAiLoopTaskExecution(
                             success = steps.all { it.success },
                             summary = "AI 工具循环已停止（重复步骤）。"
                         )
@@ -911,7 +918,7 @@ internal class ChatViewModel(
                             buildAssistantReply(
                                 continuePlan.assistantMessage,
                                 "检测到重复工具步骤，已停止继续调用。",
-                                buildAiLoopTranscript(steps)
+                                ChatAiLoop.buildTranscript(steps)
                             ),
                             ChatMessageState.Final
                         )
@@ -992,6 +999,49 @@ internal class ChatViewModel(
 
             else -> arguments
         }
+    }
+
+    private suspend fun awaitSubmittedRuntimeTask(
+        dispatcher: ClawToolDispatcher,
+        submitResult: ClawToolCallResult
+    ): ClawToolCallResult {
+        val taskId = submitResult.runtimeTaskId?.takeIf { it.isNotBlank() }
+            ?: return submitResult
+        val awaited = RuntimeTaskPoller.awaitTerminal(
+            dispatcher = dispatcher,
+            taskId = taskId,
+            onSnapshot = { snapshot ->
+                if (uiState.value.taskExecution?.runtimeTaskId == snapshot.taskId) {
+                    applyRuntimeTaskSnapshot(snapshot)
+                }
+            }
+        )
+        return RuntimeTaskPoller.toToolResult(awaited, taskId).copy(
+            output = buildString {
+                append(submitResult.output.trim())
+                if (isNotEmpty()) append("\n\n")
+                append(awaited.output.trim())
+            }
+        )
+    }
+
+    /**
+     * Finish the AI-loop task card only when it is still local-owned.
+     * If a Runtime task id is bound and still Running, keep the card open for event sync.
+     */
+    private fun finishAiLoopTaskExecution(success: Boolean, summary: String) {
+        val task = uiState.value.taskExecution ?: return
+        if (task.status != ChatTaskProgressState.Running) {
+            return
+        }
+        val runtimeId = task.runtimeTaskId?.trim().orEmpty()
+        if (runtimeId.isNotEmpty()) {
+            updateTaskExecution { current ->
+                current.copy(summary = summary)
+            }
+            return
+        }
+        finishTaskExecution(success = success, summary = summary)
     }
 
     private fun syncRuntimeTaskTracking(
@@ -1096,20 +1146,6 @@ internal class ChatViewModel(
             }
             else -> result.output
         }
-    }
-
-    private fun buildAiLoopTranscript(steps: List<AiToolStepRecord>): String {
-        if (steps.isEmpty()) {
-            return "未执行任何工具步骤。"
-        }
-        return steps.mapIndexed { index, step ->
-            val status = if (step.success) "OK" else "FAIL"
-            buildString {
-                append("## Step ${index + 1}: ${step.tool.toolId} [$status]")
-                append('\n')
-                append(step.output.trim())
-            }
-        }.joinToString("\n\n")
     }
 
     private suspend fun finalizeToolReply(

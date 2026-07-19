@@ -31,6 +31,10 @@ import java.util.concurrent.atomic.AtomicReference
 class CameraRecordService(
     private val context: Context
 ) {
+    private companion object {
+        const val RECORD_SLEEP_CHUNK_MS = 200L
+    }
+
     @SuppressLint("MissingPermission")
     fun record(
         facing: String = "back",
@@ -69,6 +73,7 @@ class CameraRecordService(
             val size = chooseSize(videoSizes, maxDimension.coerceIn(320, 1920))
 
             val outDir = File(context.cacheDir, "camera").also { it.mkdirs() }
+            CacheDirPruner.prune(outDir)
             outFile = File(outDir, "record_${System.currentTimeMillis()}.mp4")
 
             recorder = createRecorder(size, outFile!!).also { it.prepare() }
@@ -145,9 +150,24 @@ class CameraRecordService(
             session!!.setRepeatingRequest(request, null, handler)
 
             recorder!!.start()
-            Thread.sleep(clampedDuration.toLong())
-            runCatching { recorder!!.stop() }
-                .onFailure { errorRef.compareAndSet(null, it.message ?: "recorder_stop_failed") }
+            // 将原本最长 15s 的 Thread.sleep 拆为短分片并在每段之间检查线程中断，
+            // 使父协程在 Dispatchers.IO 上发起的取消能尽快传达（kotlinx.coroutines
+            // 在 IO 线程上会触发 Thread.interrupt），避免录像线程在取消后仍阻塞
+            // 整段时长。recorder.stop() 始终在 finally 中执行，保证 MediaRecorder
+            // 状态机不被遗留在 RECORDING。
+            try {
+                val totalMs = clampedDuration.toLong()
+                var remaining = totalMs
+                while (remaining > 0L) {
+                    if (Thread.currentThread().isInterrupted) break
+                    val chunk = minOf(remaining, RECORD_SLEEP_CHUNK_MS)
+                    Thread.sleep(chunk)
+                    remaining -= chunk
+                }
+            } finally {
+                runCatching { recorder!!.stop() }
+                    .onFailure { errorRef.compareAndSet(null, it.message ?: "recorder_stop_failed") }
+            }
 
             closeQuietly(cameraDevice, session, recorder)
             cameraDevice = null

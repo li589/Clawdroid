@@ -29,6 +29,11 @@ func (l *Logger) Info(message string) {
 	log.Printf("INFO: %s", message)
 }
 
+// Warn logs without updating LastError (for expected client disconnect noise).
+func (l *Logger) Warn(message string) {
+	log.Printf("WARN: %s", message)
+}
+
 func (l *Logger) Error(message string) {
 	l.mu.Lock()
 	l.lastError = message

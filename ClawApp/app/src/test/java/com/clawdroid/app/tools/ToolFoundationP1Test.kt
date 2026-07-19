@@ -62,6 +62,17 @@ class ToolExecutionPolicyTest {
     }
 
     @Test
+    fun serializeLanes_splitAgentCaptureAndDevice() {
+        assertEquals(ToolSerializeLane.Agent, ToolExecutionPolicy.serializeLane(ClawTool.RUN_AGENT))
+        assertEquals(ToolSerializeLane.Capture, ToolExecutionPolicy.serializeLane(ClawTool.CAPTURE_SCREEN))
+        assertEquals(ToolSerializeLane.Capture, ToolExecutionPolicy.serializeLane(ClawTool.CAMERA_CAPTURE))
+        assertEquals(ToolSerializeLane.DeviceMutate, ToolExecutionPolicy.serializeLane(ClawTool.INJECT_TAP))
+        assertEquals(ToolSerializeLane.DeviceMutate, ToolExecutionPolicy.serializeLane(ClawTool.TASK_SUBMIT))
+        assertEquals(ToolSerializeLane.None, ToolExecutionPolicy.serializeLane(ClawTool.TASK_GET))
+        assertEquals(ToolSerializeLane.None, ToolExecutionPolicy.serializeLane(ClawTool.FILE_READ))
+    }
+
+    @Test
     fun registryEmpty_defaults() {
         val empty = ToolServiceRegistry.EMPTY
         assertNull(empty.files)

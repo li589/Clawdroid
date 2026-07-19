@@ -1,6 +1,7 @@
 package com.clawdroid.app.ai
 
 import android.content.Context
+import com.clawdroid.app.chat.ChatTextLimits
 import com.clawdroid.app.model.ModelApiClient
 import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.tools.ClawTool
@@ -46,7 +47,6 @@ internal sealed interface AiAgentPlan {
 
 internal object AiAgentOrchestrator {
     const val MAX_TOOL_LOOP_TURNS = 4
-    private const val MAX_STEP_OUTPUT_CHARS = 1800
 
     @Volatile
     private var appContext: Context? = null
@@ -235,11 +235,7 @@ internal object AiAgentOrchestrator {
     }
 
     internal fun truncateStepOutput(output: String): String {
-        val trimmed = output.trim()
-        if (trimmed.length <= MAX_STEP_OUTPUT_CHARS) {
-            return trimmed
-        }
-        return trimmed.take(MAX_STEP_OUTPUT_CHARS) + "\n...(truncated)"
+        return ChatTextLimits.truncateForContext(output)
     }
 
     suspend fun reflectToolResult(
@@ -314,15 +310,15 @@ internal object AiAgentOrchestrator {
             .ifBlank { "none" }
         return buildString {
             appendLine("用户原始请求:")
-            appendLine(input.originalPrompt)
+            appendLine(ChatTextLimits.truncateForContext(input.originalPrompt))
             appendLine()
             appendLine("执行工具:")
             appendLine("${input.tool.toolId} / ${input.tool.displayName}")
             appendLine("工具参数:")
-            appendLine(argumentSummary)
+            appendLine(ChatTextLimits.truncateForContext(argumentSummary))
             appendLine()
             appendLine("工具真实输出:")
-            appendLine(input.toolResult)
+            appendLine(ChatTextLimits.truncateForContext(input.toolResult))
             appendLine()
             appendLine("请给用户一个简短总结，并在必要时说明下一步建议。")
         }

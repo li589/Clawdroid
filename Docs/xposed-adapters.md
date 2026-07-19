@@ -1,6 +1,6 @@
 # LSPosed / Xposed 适配器契约
 
-路径根目录：`/data/local/tmp/clawdroid/xposed/`
+> 回归与优先级见 [下一步计划.md](下一步计划.md) P0 / P3。路径根目录：`/data/local/tmp/clawdroid/xposed/`
 
 ## adapters.json
 

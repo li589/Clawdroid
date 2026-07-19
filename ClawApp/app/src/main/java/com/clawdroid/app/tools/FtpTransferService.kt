@@ -34,6 +34,7 @@ class FtpTransferService(
         timeoutMs: Int = 15_000,
         protocol: String = "ftp"
     ): ClawToolCallResult {
+        CacheDirPruner.pruneNamedCache(context.cacheDir, "ftp")
         val operation = op.trim().lowercase()
         if (operation !in setOf("list", "get", "put")) {
             return ClawToolCallResult(
@@ -58,6 +59,13 @@ class FtpTransferService(
             port in 1..65535 -> port
             proto == "sftp" -> 22
             else -> 21
+        }
+
+        // Reject non-sandbox local paths before opening a network connection.
+        if (operation == "get" || operation == "put") {
+            val forWrite = operation == "get"
+            resolveSandboxFile(localPath, forWrite = forWrite)
+                ?: return sandboxPathError()
         }
 
         return when (proto) {

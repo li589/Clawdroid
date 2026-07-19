@@ -5,6 +5,7 @@ import com.clawdroid.app.chat.toAgentDefinition
 import com.clawdroid.app.chat.toAgentId
 import com.clawdroid.app.mcp.McpJsonRpcHandler
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
+import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolCatalog
@@ -212,7 +213,12 @@ class McpSkillAgentProtocolTest {
             """{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}"""
         )!!
         val prompts = JSONObject(response).getJSONObject("result").getJSONArray("prompts")
-        assertEquals(ClawSkillCatalog.all().size, prompts.length())
+        // prompts/list 合并输出 skill prompts（来自 ClawSkillCatalog）
+        // 与 builtin asset prompts（来自 ClawAssetPromptStore，当前 2 个：assist-mcp / tool-usage）。
+        assertEquals(
+            ClawSkillCatalog.all().size + ClawAssetPromptStore.builtinPromptIds().size,
+            prompts.length()
+        )
     }
 
     @Test

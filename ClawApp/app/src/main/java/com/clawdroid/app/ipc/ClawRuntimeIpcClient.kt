@@ -6,6 +6,7 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Build
 import com.clawdroid.app.runtime.RuntimeActionCatalog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -368,6 +369,9 @@ class ClawRuntimeIpcClient(
 
     @Volatile
     private var activeEventSocket: LocalSocket? = null
+
+    @Volatile
+    private var eventSubscriptionStopRequested: Boolean = false
 
     private val eventSocketLock = Any()
 
@@ -922,11 +926,10 @@ class ClawRuntimeIpcClient(
         require(events.isNotEmpty()) { "events must not be empty" }
 
         withContext(Dispatchers.IO) {
-            val socket = LocalSocket()
             val connectTimeoutMs = 5000
+            val socket = openAbstractSocket(connectTimeoutMs)
             try {
-                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), connectTimeoutMs)
-                socket.setSoTimeout(connectTimeoutMs)
+                socket.soTimeout = connectTimeoutMs
                 val reader = socket.inputStream
                 val writer = socket.outputStream
                 performHandshake(reader, writer)
@@ -983,18 +986,24 @@ class ClawRuntimeIpcClient(
         require(events.isNotEmpty()) { "events must not be empty" }
 
         withContext(Dispatchers.IO) {
+            eventSubscriptionStopRequested = false
             stopEventSubscription()
+            eventSubscriptionStopRequested = false
             var lastClosedReason = "socket_closed"
             var connected = false
 
             for (attempt in 0 until eventMaxReconnectAttempts) {
                 ensureActive()
-                val socket = LocalSocket()
-                registerActiveEventSocket(socket)
+                if (eventSubscriptionStopRequested) {
+                    lastClosedReason = "client_stop"
+                    break
+                }
                 val connectTimeoutMs = 5000
+                val socket = openAbstractSocket(connectTimeoutMs)
+                registerActiveEventSocket(socket)
                 try {
-                    socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), connectTimeoutMs)
-                    socket.setSoTimeout(connectTimeoutMs)
+                    // Handshake / subscribe reply need a finite SO timeout; streaming reads clear it after OK.
+                    socket.soTimeout = connectTimeoutMs
                     val reader = socket.inputStream
                     val writer = socket.outputStream
                     performHandshake(reader, writer)
@@ -1006,10 +1015,12 @@ class ClawRuntimeIpcClient(
                             requestId = newRequestId(),
                             timestamp = nowSeconds(),
                             action = RuntimeActionCatalog.SUBSCRIBE_EVENTS,
-                            args = mapOf("events" to events)
+                            args = mapOf("events" to JSONArray(events))
                         )
                     )
                     ensureSuccess(response, RuntimeActionCatalog.SUBSCRIBE_EVENTS)
+                    // Event stream may idle longer than handshake timeout.
+                    socket.soTimeout = 0
                     if (!connected) {
                         withContext(Dispatchers.Main) {
                             onStarted(
@@ -1042,8 +1053,22 @@ class ClawRuntimeIpcClient(
                             onEvent(eventFrame)
                         }
                     }
+                } catch (cancelled: CancellationException) {
+                    if (eventSubscriptionStopRequested) {
+                        lastClosedReason = "client_stop"
+                    } else if (
+                        lastClosedReason != "socket_closed" &&
+                        !lastClosedReason.startsWith("connection_error")
+                    ) {
+                        lastClosedReason = "client_stop"
+                    }
+                    throw cancelled
                 } catch (e: Exception) {
-                    lastClosedReason = "connection_error: ${e.message.orEmpty()}"
+                    if (eventSubscriptionStopRequested) {
+                        lastClosedReason = "client_stop"
+                        break
+                    }
+                    lastClosedReason = "connection_error: ${e.javaClass.simpleName}: ${e.message.orEmpty()}"
                 } finally {
                     val socketToClose: LocalSocket? = synchronized(eventSocketLock) {
                         if (activeEventSocket === socket) {
@@ -1056,6 +1081,10 @@ class ClawRuntimeIpcClient(
                     socketToClose?.close()
                 }
 
+                if (eventSubscriptionStopRequested) {
+                    lastClosedReason = "client_stop"
+                    break
+                }
                 if (attempt < eventMaxReconnectAttempts - 1) {
                     kotlinx.coroutines.delay(eventReconnectDelayMs)
                 }
@@ -1068,6 +1097,7 @@ class ClawRuntimeIpcClient(
     }
 
     fun stopEventSubscription() {
+        eventSubscriptionStopRequested = true
         val socketToClose = synchronized(eventSocketLock) {
             val socket = activeEventSocket ?: return
             activeEventSocket = null
@@ -1078,11 +1108,10 @@ class ClawRuntimeIpcClient(
 
     suspend fun probeSession(): Result<ClawRuntimeSessionProbeResult> = runCatching {
         withContext(Dispatchers.IO) {
-            val socket = LocalSocket()
             val connectTimeoutMs = 5000
+            val socket = openAbstractSocket(connectTimeoutMs)
             try {
-                socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT), connectTimeoutMs)
-                socket.setSoTimeout(connectTimeoutMs)
+                socket.soTimeout = connectTimeoutMs
                 val reader = socket.inputStream
                 val writer = socket.outputStream
                 val handshake = performHandshake(reader, writer)
@@ -1154,10 +1183,54 @@ class ClawRuntimeIpcClient(
         }
     }
 
-    private suspend fun send(request: ClawRuntimeRequest): ClawRuntimeResponse = withContext(Dispatchers.IO) {
-        val socket = LocalSocket()
+    /**
+     * Abstract UDS connect. Prefer the timed overload when the ROM supports it;
+     * MIUI/Android 13 on this device throws [UnsupportedOperationException] for
+     * `connect(address, timeout)`, so fall back to the untimed API.
+     *
+     * Important: after a failed timed connect, create a fresh [LocalSocket] —
+     * reusing the same instance can hang on some ROMs.
+     */
+    private fun openAbstractSocket(timeoutMs: Int): LocalSocket {
+        val address = LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT)
+        val timed = LocalSocket()
         try {
-            socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
+            timed.connect(address, timeoutMs)
+            return timed
+        } catch (_: UnsupportedOperationException) {
+            runCatching { timed.close() }
+        } catch (error: Exception) {
+            runCatching { timed.close() }
+            throw error
+        }
+        // 某些 Android 实现对 abstract socket 的 timed connect 抛 UnsupportedOperationException，
+        // 走无超时 connect 的回退路径。直接 untimed.connect(address) 在 Runtime 守护无响应时
+        // 会无限阻塞；此处用 CountDownLatch + 守护线程在超时后关闭 socket 以唤醒阻塞连接。
+        val untimed = LocalSocket()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val failureRef = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val connectThread = Thread({
+            try {
+                untimed.connect(address)
+            } catch (error: Throwable) {
+                failureRef.set(error)
+            } finally {
+                latch.countDown()
+            }
+        }, "claw-ipc-connect").apply { isDaemon = true }
+        connectThread.start()
+        if (!latch.await(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            runCatching { untimed.close() }
+            connectThread.interrupt()
+            throw java.io.IOException("local socket connect timed out after ${timeoutMs}ms")
+        }
+        failureRef.get()?.let { throw it }
+        return untimed
+    }
+
+    private suspend fun send(request: ClawRuntimeRequest): ClawRuntimeResponse = withContext(Dispatchers.IO) {
+        val socket = openAbstractSocket(timeoutMs = 5000)
+        try {
             val reader = socket.inputStream
             val writer = socket.outputStream
             performHandshake(reader, writer)
@@ -1361,7 +1434,47 @@ class ClawRuntimeIpcClient(
             put("timestamp", timestamp)
             put("action", action)
             put("capability", capability)
-            put("args", JSONObject(args))
+            put("args", args.toJsonObject())
+        }
+    }
+
+    private fun Map<String, Any?>.toJsonObject(): JSONObject {
+        val obj = JSONObject()
+        for ((key, value) in this) {
+            obj.put(key, value.toJsonValue())
+        }
+        return obj
+    }
+
+    private fun Any?.toJsonValue(): Any {
+        return when (this) {
+            null -> JSONObject.NULL
+            is JSONObject, is JSONArray -> this
+            is Map<*, *> -> {
+                val nested = JSONObject()
+                for ((k, v) in this) {
+                    if (k != null) {
+                        nested.put(k.toString(), v.toJsonValue())
+                    }
+                }
+                nested
+            }
+            is Collection<*> -> {
+                val arr = JSONArray()
+                for (item in this) {
+                    arr.put(item.toJsonValue())
+                }
+                arr
+            }
+            is Array<*> -> {
+                val arr = JSONArray()
+                for (item in this) {
+                    arr.put(item.toJsonValue())
+                }
+                arr
+            }
+            is Boolean, is Number, is String -> this
+            else -> toString()
         }
     }
 

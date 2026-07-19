@@ -23,6 +23,13 @@ import java.io.File
 class DebugRuntimeBridgeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 该 Activity 在 Manifest 中 exported=true 仅为了 ADB 调试便利；
+        // release 包里必须直接结束，避免任意应用通过 explicit Intent 触发
+        // exec_shell_limited / inject_tap / capture / chat_prompt 等特权操作。
+        if (!com.clawdroid.app.BuildConfig.DEBUG) {
+            finish()
+            return
+        }
         val statusView = TextView(this).apply {
             text = "Clawdroid debug bridge running..."
             setPadding(32, 48, 32, 48)

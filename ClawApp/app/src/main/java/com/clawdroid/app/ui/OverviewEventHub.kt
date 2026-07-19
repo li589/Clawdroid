@@ -5,6 +5,8 @@ import com.clawdroid.app.fault.safeLaunch
 import com.clawdroid.app.runtime.ClawRuntimeEventFrame
 import com.clawdroid.app.runtime.RuntimeEventService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Overview UI adapter over [RuntimeEventService].
@@ -18,14 +20,17 @@ internal class OverviewEventHub(
     private val onUnhandledError: (tag: String, message: String) -> Unit = { _, _ -> }
 ) {
     private val frameListener = RuntimeEventService.FrameListener { frame ->
-        onEventFrame(frame)
-        val line = "${formatEpochSeconds(frame.timestamp)}  ${summarizeEventFrame(frame)}"
-        updateEventState { current ->
-            current.copy(
-                eventLines = (listOf(line) + current.eventLines).take(24),
-                eventLogVersion = current.eventLogVersion + 1,
-                eventStreaming = true
-            )
+        // Fan-out may arrive on Default; hop to Main for UI state.
+        scope.launch(Dispatchers.Main.immediate) {
+            onEventFrame(frame)
+            val line = "${formatEpochSeconds(frame.timestamp)}  ${summarizeEventFrame(frame)}"
+            updateEventState { current ->
+                current.copy(
+                    eventLines = (listOf(line) + current.eventLines).take(24),
+                    eventLogVersion = current.eventLogVersion + 1,
+                    eventStreaming = true
+                )
+            }
         }
     }
 
@@ -55,6 +60,7 @@ internal class OverviewEventHub(
                 )
             }
             eventService.start(
+                forceRestart = true,
                 onStarted = { message ->
                     updateEventState {
                         it.copy(

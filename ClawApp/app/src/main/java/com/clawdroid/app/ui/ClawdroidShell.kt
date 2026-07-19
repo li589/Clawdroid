@@ -37,23 +37,18 @@ import com.clawdroid.app.runtime.RuntimeEventService
 import com.clawdroid.app.ai.AiAgentOrchestrator
 import com.clawdroid.app.skills.ClawSkillCatalog
 import com.clawdroid.app.tools.CapabilityProbe
-import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolDispatcher
 import com.clawdroid.app.tools.ClawToolExecutor
 import com.clawdroid.app.tools.LiveToolCapabilityStore
+import com.clawdroid.app.tools.RuntimeEventToolBridge
 import com.clawdroid.app.tools.ToolPermissionGate
 import com.clawdroid.app.tools.ToolServiceRegistry
-import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
 
 private val floatingNavReservedHeight = 108.dp
-private const val EVENT_BRIDGE_TIMEOUT_MS = 15_000L
 
 @Composable
 internal fun ClawdroidShell(
@@ -136,60 +131,7 @@ internal fun ClawdroidShell(
             ),
             appContext = context.applicationContext,
             services = toolServices,
-            eventBridge = ClawToolDispatcher.EventBridge { operation ->
-                try {
-                    withTimeout(EVENT_BRIDGE_TIMEOUT_MS) {
-                        suspendCancellableCoroutine { continuation ->
-                            when (operation.lowercase()) {
-                                "stop" -> runtimeEventService.stop {
-                                    if (continuation.isActive) {
-                                        continuation.resume(
-                                            ClawToolCallResult(success = true, output = "事件流已停止")
-                                        )
-                                    }
-                                }
-                                else -> runtimeEventService.start(
-                                    onStarted = { message ->
-                                        if (continuation.isActive) {
-                                            continuation.resume(
-                                                ClawToolCallResult(success = true, output = message)
-                                            )
-                                        }
-                                    },
-                                    onClosed = { reason ->
-                                        if (continuation.isActive) {
-                                            continuation.resume(
-                                                ClawToolCallResult(
-                                                    success = false,
-                                                    output = "事件流已关闭：$reason",
-                                                    error = reason
-                                                )
-                                            )
-                                        }
-                                    },
-                                    onFailure = { message ->
-                                        if (continuation.isActive) {
-                                            continuation.resume(
-                                                ClawToolCallResult(
-                                                    success = false,
-                                                    output = "事件订阅失败：$message",
-                                                    error = message
-                                                )
-                                            )
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                } catch (_: TimeoutCancellationException) {
-                    ClawToolCallResult(
-                        success = false,
-                        output = "事件桥接超时（${EVENT_BRIDGE_TIMEOUT_MS}ms）",
-                        error = "event_bridge_timeout"
-                    )
-                }
-            }
+            eventBridge = RuntimeEventToolBridge(runtimeEventService)
         )
     }
     DisposableEffect(overviewController, toolDispatcher) {

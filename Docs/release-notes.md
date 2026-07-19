@@ -1,5 +1,35 @@
 # Clawdroid Release Notes
 
+## Unreleased（`main` post-`v0.1.0`）
+
+> 相对已推送的 `v0.1.0` 基线，本地 `main` 已包含下列能力。正式打 tag 前应以 [下一步计划.md](下一步计划.md) P0/P1 验收为准。
+
+### 新增与增强
+
+- **AI Agent**：`AiAgentOrchestrator` 计划 → 工具环 → 总结；聊天侧 Model API 多供应商（OpenAI 兼容 / Anthropic / Gemini / DeepSeek / Kimi / Qwen 等）
+- **工具地基**：`ClawToolCatalog` / `ClawToolDispatcher` / `ToolServiceRegistry`；权限层级 `None` → `Root`；live capabilities 与事件解耦
+- **域工具**：`file_*`、`app_*`、`download_*`、`notification_list`、`web_preview` / `web_search`、`sandbox_shell`、`camera_capture` / `camera_record`、`sensor_read`、`gpu_npu_probe`、`ftp_transfer`
+- **Assist MCP**：手机 MCP Server（`clawdroid-assist`）+ 电脑协助端点客户端；见 [assist-mcp.md](assist-mcp.md)
+- **Shizuku**：状态 / 授权请求 / 白名单短命令执行
+- **Xposed 适配器**：Settings / Browser / Launcher / 自进程 marker；微信 `wechat_detail` 默认关闭；focus schema v2 + 浅层 view dump + ContentProvider 推送；见 [xposed-adapters.md](xposed-adapters.md)
+- **Runtime**：审查修复；`write_file_limited` / `stat_file_limited`；`report_xposed_*` 与 `task_*` 动作目录对齐
+- **工程**：`ClawdroidShell` 抽取；Overview 事件解耦；故障隔离与若干安全缺陷修复
+
+### 已知限制（Unreleased）
+
+- Assist MCP / 域工具联调清单尚未系统性勾选
+- 兼容矩阵仍仅一台完整真机证据
+- Agent 仍为短工具环，未完成与 Runtime `task_*` 的任务台闭环
+- CI App 任务当前以 `compileDebugKotlin` 为主，unit test 未强制进流水线
+
+### 建议验收入口
+
+- [下一步计划.md](下一步计划.md) P0
+- [assist-mcp.md](assist-mcp.md) 联调验收清单
+- [真机安装验收清单.md](真机安装验收清单.md)
+
+---
+
 ## `v0.1.0`
 
 ### 定位
@@ -44,7 +74,9 @@
 
 ### 后续方向
 
-- `v0.2`：稳定性与兼容矩阵完善
-- `v0.3`：Runtime 能力深化
-- `v0.4`：任务化执行与 Agent 闭环
-- `v0.5`：目标应用适配与生态治理
+路线图仍按能力成熟度划分；**实现上部分条目已提前开工**，以 [下一步计划.md](下一步计划.md) 的 P0→P3 为执行顺序：
+
+- `v0.2`：稳定性与兼容矩阵完善（第二台设备、CI unit test、冒烟收口）
+- `v0.3`：Runtime 能力深化（文件桥 / shell / 事件背压与限流）
+- `v0.4`：任务化执行与 Agent 闭环（聊天任务台 ↔ `task_*`）
+- `v0.5`：目标应用适配与生态治理（只读页面身份优先，深度自动化默认关闭）

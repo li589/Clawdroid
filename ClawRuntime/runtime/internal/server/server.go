@@ -142,10 +142,38 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("accept runtime connection: %w", acceptErr)
 		}
 
-		if err := s.handleConnection(ctx, conn); err != nil {
-			s.logger.Error(fmt.Sprintf("connection handling failed: %v", err))
-		}
+		// Concurrent connections: subscribe_events holds a long-lived socket.
+		// Handling Accept synchronously would HOL-block ping/version/health.
+		go func(c net.Conn) {
+			if err := s.handleConnection(ctx, c); err != nil {
+				// Short-lived App RPC sockets often close before the daemon finishes
+				// writing; treat EPIPE/reset as expected noise, not a session outage.
+				if isBenignClientDisconnect(err) {
+					s.logger.Warn(fmt.Sprintf("client disconnected during request: %v", err))
+				} else {
+					s.logger.Error(fmt.Sprintf("connection handling failed: %v", err))
+				}
+			}
+		}(conn)
 	}
+}
+
+func isBenignClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 显式哨兵错误：客户端正常关连接 / 服务端 shutdown / 握手阶段半读 EOF。
+	// errors.Is 可穿透 fmt.Errorf("...: %w", err) 的包装。
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "use of closed network connection")
 }
 
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {

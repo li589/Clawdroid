@@ -2,6 +2,7 @@ package com.clawdroid.app.ui
 
 import com.clawdroid.app.runtime.ClawRuntimeEventFrame
 import com.clawdroid.app.runtime.ClawRuntimeEventSubscriptionStarted
+import com.clawdroid.app.runtime.RuntimeEventService
 import com.clawdroid.app.tools.LiveToolCapabilityStore
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -9,6 +10,7 @@ import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -52,7 +54,14 @@ class OverviewControllerEventsTest {
             runtimeClient = runtimeClient,
             toolExecutor = toolExecutor,
             previewLimitBytes = 1024,
-            autoStart = false
+            autoStart = false,
+            // 注入与 Main 同一 TestDispatcher 的 eventService，
+            // 让 fan-out 协程可被 advanceUntilIdle() 推进到 listener 回调。
+            eventService = RuntimeEventService(
+                runtimeClient = runtimeClient,
+                scope = backgroundScope,
+                fanoutDispatcher = mainDispatcherRule.dispatcher
+            )
         )
         controller.startContinuousSubscription()
         advanceUntilIdle()
@@ -84,6 +93,9 @@ class OverviewControllerEventsTest {
             )
         } coAnswers {
             onStartedSlot.captured.invoke(eventSubscriptionStarted(subscribed = listOf("window_changed")))
+            // 生产环境 Runtime 事件以秒级间隔到达；fanout 是 CONFLATED 通道，
+            // 同步连发 25 帧只会保留最后一帧。用 yield() 让消费者在每帧之间
+            // 有机会取出并派发给 listener，从而真实模拟事件流并验证 24 行截断逻辑。
             repeat(25) { index ->
                 onEventSlot.captured.invoke(
                     eventFrame(
@@ -94,6 +106,7 @@ class OverviewControllerEventsTest {
                         )
                     )
                 )
+                yield()
             }
         }
 
@@ -102,7 +115,12 @@ class OverviewControllerEventsTest {
             runtimeClient = runtimeClient,
             toolExecutor = toolExecutor,
             previewLimitBytes = 1024,
-            autoStart = false
+            autoStart = false,
+            eventService = RuntimeEventService(
+                runtimeClient = runtimeClient,
+                scope = backgroundScope,
+                fanoutDispatcher = mainDispatcherRule.dispatcher
+            )
         )
         controller.applyDebugLongOverviewSeed()
 
@@ -165,7 +183,12 @@ class OverviewControllerEventsTest {
             runtimeClient = runtimeClient,
             toolExecutor = toolExecutor,
             previewLimitBytes = 1024,
-            autoStart = false
+            autoStart = false,
+            eventService = RuntimeEventService(
+                runtimeClient = runtimeClient,
+                scope = backgroundScope,
+                fanoutDispatcher = mainDispatcherRule.dispatcher
+            )
         )
 
         controller.startContinuousSubscription()

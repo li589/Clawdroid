@@ -197,6 +197,7 @@ class CameraCaptureService(
             }
 
             val outDir = File(context.cacheDir, "camera").also { it.mkdirs() }
+            CacheDirPruner.prune(outDir)
             val outFile = File(outDir, "capture_${System.currentTimeMillis()}.jpg")
             FileOutputStream(outFile).use { it.write(jpeg) }
             val chosen = sizeRef.get() ?: size

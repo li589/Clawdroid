@@ -208,7 +208,7 @@ internal object ChatPromptPlanner {
         currentPrompt: String,
         recentChat: List<ChatHistoryTurn>,
         maxTurns: Int = 6,
-        maxCharsPerTurn: Int = 400
+        maxCharsPerTurn: Int = ChatTextLimits.MAX_HISTORY_TURN_CHARS
     ): String {
         if (recentChat.isEmpty()) {
             return currentPrompt
@@ -216,7 +216,7 @@ internal object ChatPromptPlanner {
         return buildString {
             appendLine("最近对话（供理解指代，不要复述）：")
             recentChat.takeLast(maxTurns).forEach { turn ->
-                val clipped = turn.content.trim().take(maxCharsPerTurn)
+                val clipped = ChatTextLimits.truncateForContext(turn.content, maxCharsPerTurn)
                 if (clipped.isNotBlank()) {
                     appendLine("- ${turn.role}: $clipped")
                 }

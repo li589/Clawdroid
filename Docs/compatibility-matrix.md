@@ -112,3 +112,7 @@
 ### 下一步扩展清单
 
 - 将下一台设备加入矩阵，优先覆盖非 MIUI 或非 Magisk 组合
+- 同设备补一轮 Unreleased 能力冒烟：Assist MCP、域工具、Xposed focus/view（见 [下一步计划.md](下一步计划.md) P0）
+  - **2026-07-18 P0 部分完成**：Assist MCP + 多数域工具已在 `7710a01f` 通过；Xposed 因 APK 重装后未重新授权而未验；细节见 [assist-mcp.md](assist-mcp.md)
+- 将设备端 Magisk Runtime 升级到与当前源码一致（补齐 `am force-stop` 参数化白名单与扩展 capability）
+- CI 强制 `:app:testDebugUnitTest` 后，在本摘要更新构建验证一行

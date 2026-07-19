@@ -44,6 +44,10 @@ data class DownloadTask(
 class ToolDownloadService(
     private val context: Context
 ) {
+    companion object {
+        private const val MAX_FINISHED_TASKS = 40
+    }
+
     private val tasks = ConcurrentHashMap<String, DownloadTask>()
     private val cancelFlags = ConcurrentHashMap<String, Boolean>()
 
@@ -54,6 +58,8 @@ class ToolDownloadService(
         resume: Boolean,
         threads: Int = 1
     ): ClawToolCallResult {
+        pruneFinishedTasks()
+        CacheDirPruner.pruneNamedCache(context.cacheDir, "downloads")
         val trimmedUrl = url.trim()
         if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
             return ClawToolCallResult(false, "失败: 仅支持 http/https", error = "invalid_url")
@@ -155,6 +161,20 @@ class ToolDownloadService(
             }
         } finally {
             task.updatedAtMs = System.currentTimeMillis()
+            pruneFinishedTasks()
+        }
+    }
+
+    private fun pruneFinishedTasks(keep: Int = MAX_FINISHED_TASKS) {
+        val finished = tasks.values.filter {
+            it.state == DownloadState.Completed ||
+                it.state == DownloadState.Failed ||
+                it.state == DownloadState.Cancelled
+        }.sortedByDescending { it.updatedAtMs }
+        if (finished.size <= keep) return
+        finished.drop(keep).forEach { stale ->
+            tasks.remove(stale.id)
+            cancelFlags.remove(stale.id)
         }
     }
 

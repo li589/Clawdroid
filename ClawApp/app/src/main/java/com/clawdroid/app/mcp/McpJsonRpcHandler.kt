@@ -28,6 +28,8 @@ class McpJsonRpcHandler(
     companion object {
         const val PROTOCOL_VERSION = "2024-11-05"
         const val JSONRPC = "2.0"
+        /** Inline image Base64 only for small previews; larger captures return path metadata. */
+        const val MAX_INLINE_IMAGE_BYTES = 64 * 1024
         private val SUPPORTED_PROTOCOL_VERSIONS = setOf(
             "2024-11-05",
             "2025-03-26"
@@ -405,8 +407,27 @@ class McpJsonRpcHandler(
                     .put("text", "shell_output:\n$shell")
             )
         }
-        result.previewBytes?.takeIf { it.isNotEmpty() }?.let { bytes ->
-            val mime = when (result.captureArtifact?.format?.lowercase()) {
+        val artifact = result.captureArtifact
+        val previewBytes = result.previewBytes
+        if (artifact != null) {
+            content.put(
+                JSONObject()
+                    .put("type", "text")
+                    .put(
+                        "text",
+                        buildString {
+                            append("capture_path=")
+                            append(artifact.imagePath)
+                            append(" format=")
+                            append(artifact.format)
+                            append(" bytes=")
+                            append(artifact.fileSize)
+                        }
+                    )
+            )
+        }
+        previewBytes?.takeIf { it.isNotEmpty() && it.size <= MAX_INLINE_IMAGE_BYTES }?.let { bytes ->
+            val mime = when (artifact?.format?.lowercase()) {
                 "jpg", "jpeg" -> "image/jpeg"
                 else -> "image/png"
             }
@@ -417,6 +438,15 @@ class McpJsonRpcHandler(
                     .put("data", Base64.getEncoder().encodeToString(bytes))
             )
         }
+        val errorEnvelope = if (result.success) {
+            JSONObject.NULL
+        } else {
+            JSONObject()
+                .put("domain", "tool")
+                .put("code", result.error ?: "tool_failed")
+                .put("message", result.output.take(500))
+                .put("retryable", false)
+        }
         return JSONObject()
             .put("content", content)
             .put("isError", !result.success)
@@ -426,6 +456,8 @@ class McpJsonRpcHandler(
                     .put("requestId", requestId?.toString() ?: JSONObject.NULL)
                     .put("correlationId", correlationId)
                     .put("error", result.error ?: JSONObject.NULL)
+                    .put("errorEnvelope", errorEnvelope)
+                    .put("capturePath", artifact?.imagePath ?: JSONObject.NULL)
             )
     }
 

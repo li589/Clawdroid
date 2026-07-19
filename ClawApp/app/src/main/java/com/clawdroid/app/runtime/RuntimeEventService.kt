@@ -3,21 +3,28 @@ package com.clawdroid.app.runtime
 import com.clawdroid.app.fault.FaultIsolation
 import com.clawdroid.app.fault.safeLaunch
 import com.clawdroid.app.tools.LiveToolCapabilityStore
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * Process-scoped Runtime event subscription.
- * Owns the single [ClawRuntimeClient.startEventSubscription] job and fans frames to listeners.
+ * Owns the single [ClawRuntimeClient.startEventSubscription] job and fans frames to listeners
+ * via a conflated channel so UI work cannot back-pressure the IPC read loop.
  * Updates [LiveToolCapabilityStore] on `capability_changed` before fan-out.
  */
 class RuntimeEventService(
     private val runtimeClient: ClawRuntimeClient,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    // Fan-out 通过单独的 dispatcher 跑离线消费，避免阻塞 IPC 读循环；
+    // 测试可注入 TestDispatcher 以便 advanceUntilIdle() 推进 fan-out 协程。
+    private val fanoutDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) {
     fun interface FrameListener {
         fun onFrame(frame: ClawRuntimeEventFrame)
@@ -25,6 +32,10 @@ class RuntimeEventService(
 
     private val listeners = CopyOnWriteArraySet<FrameListener>()
     private var subscriptionJob: Job? = null
+    private var fanoutJob: Job? = null
+    private val fanout = Channel<ClawRuntimeEventFrame>(
+        capacity = Channel.CONFLATED
+    )
 
     @Volatile
     var streaming: Boolean = false
@@ -34,6 +45,16 @@ class RuntimeEventService(
     var statusText: String = "未订阅"
         private set
 
+    init {
+        fanoutJob = scope.launch(fanoutDispatcher) {
+            for (frame in fanout) {
+                listeners.forEach { listener ->
+                    runCatching { listener.onFrame(frame) }
+                }
+            }
+        }
+    }
+
     fun addListener(listener: FrameListener) {
         listeners.add(listener)
     }
@@ -42,7 +63,13 @@ class RuntimeEventService(
         listeners.remove(listener)
     }
 
+    /**
+     * @param forceRestart when false (default), an already-live subscription is reused and
+     * [onStarted] is invoked immediately without tearing down the socket. Overview UI may pass
+     * true to force a clean reconnect.
+     */
     fun start(
+        forceRestart: Boolean = false,
         onStarted: ((String) -> Unit)? = null,
         onClosed: ((String) -> Unit)? = null,
         onFailure: ((String) -> Unit)? = null
@@ -56,6 +83,13 @@ class RuntimeEventService(
                 onFailure?.invoke(message)
             }
         ) {
+            if (!forceRestart && streaming && subscriptionJob?.isActive == true) {
+                val message = statusText.takeIf {
+                    it.isNotBlank() && it != "未订阅" && !it.startsWith("已停止")
+                } ?: "事件流已在运行。"
+                onStarted?.invoke(message)
+                return@safeLaunch
+            }
             subscriptionJob?.cancelAndJoin()
             runtimeClient.stopEventSubscription()
             streaming = true
@@ -76,9 +110,8 @@ class RuntimeEventService(
                             if (frame.event == "capability_changed") {
                                 LiveToolCapabilityStore.updateFromEventData(frame.data)
                             }
-                            listeners.forEach { listener ->
-                                runCatching { listener.onFrame(frame) }
-                            }
+                            // Drop oldest when UI/listeners are slow; never block IPC reader.
+                            fanout.trySend(frame)
                         },
                         onClosed = { reason ->
                             streaming = false
