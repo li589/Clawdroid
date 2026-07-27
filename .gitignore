@@ -38,11 +38,21 @@ ClawRuntime/magisk/config/runtime.generated.yaml
 # These contain local config (shared secret, signatures) and must not be committed.
 ClawRuntime/dist/
 ClawRuntime/magisk/bin/
+ClawRuntime/runtime/cmd/runtime/runtime.exe
+ClawRuntime/runtime/cmd/runtime/*.exe
 
 # Logs and temporary outputs
 *.log
 *.tmp
 *.bak
+
+# Local debug / scratch files (not part of the source tree)
+debug-device-ui-review.md
+find_class.ps1
+
+# Local reference clones of upstream projects (nested git repos, kept locally)
+GitSource/LSPosed1.9.2_archived/LSPosed/
+GitSource/Zygisk/NeoZygisk/
 
 # Python cache
 __pycache__/
