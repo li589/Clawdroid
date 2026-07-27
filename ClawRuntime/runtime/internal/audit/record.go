@@ -70,6 +70,7 @@ var auditLevelOfAction = map[string]AuditLevel{
 	"read_file_limited":   AuditLevelMedium,
 	"write_file_limited":  AuditLevelHigh,
 	"stat_file_limited":   AuditLevelLow,
+	"list_dir_limited":    AuditLevelLow,
 	"inject_tap":          AuditLevelHigh,
 	"inject_swipe":        AuditLevelHigh,
 	"exec_shell_limited":  AuditLevelHigh,
@@ -222,24 +223,40 @@ func (fl *FileLogger) openWriter(level AuditLevel, dateStr string) error {
 func (fl *FileLogger) rotate(level AuditLevel, dateStr string) {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	if fl.currentDate == dateStr && fl.writers[level] != nil {
+	sw := fl.writers[level]
+	if sw == nil {
 		return
 	}
-	if fl.writers[level] != nil {
-		fl.writers[level].mu.Lock()
-		_ = fl.writers[level].file.Close()
-		fl.writers[level].mu.Unlock()
-		delete(fl.writers, level)
-	}
-	filename := fmt.Sprintf("audit-%s-%s.jsonl", level, dateStr)
-	path := filepath.Join(fl.auditDir, filename)
+	sw.mu.Lock()
+	_ = sw.file.Close()
+	sw.mu.Unlock()
+	delete(fl.writers, level)
+
+	baseName := fmt.Sprintf("audit-%s-%s.jsonl", level, dateStr)
+	path := filepath.Join(fl.auditDir, baseName)
+	rotated := filepath.Join(fl.auditDir, fmt.Sprintf("audit-%s-%s-%d.jsonl", level, dateStr, time.Now().Unix()))
+	_ = os.Rename(path, rotated)
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		fl.setLastError("rotate: " + err.Error())
+		fl.setLastError("rotate reopen: " + err.Error())
 		return
 	}
-	fl.writers[level] = &syncFileWriter{file: f}
+	fl.writers[level] = &syncFileWriter{file: f, size: 0}
 	fl.currentDate = dateStr
+	fl.pruneRotatedLocked(level, dateStr, 3)
+}
+
+func (fl *FileLogger) pruneRotatedLocked(level AuditLevel, dateStr string, keep int) {
+	pattern := filepath.Join(fl.auditDir, fmt.Sprintf("audit-%s-%s-*.jsonl", level, dateStr))
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		_ = os.Remove(old)
+	}
 }
 
 func (fl *FileLogger) Close() error {

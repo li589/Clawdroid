@@ -98,6 +98,21 @@ func (r *Registry) Cancel(sessionID, taskID string) bool {
 	return false
 }
 
+// Remove deletes a task from the registry (used when Submit fails after insert).
+func (r *Registry) Remove(sessionID, taskID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sessionTasks := r.sessions[sessionID]
+	if sessionTasks == nil {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	if _, ok := sessionTasks[taskID]; !ok {
+		return fmt.Errorf("task %q not found in session %q", taskID, sessionID)
+	}
+	delete(sessionTasks, taskID)
+	return nil
+}
+
 // CloseSession removes all tasks for a session.
 func (r *Registry) CloseSession(sessionID string) {
 	r.mu.Lock()

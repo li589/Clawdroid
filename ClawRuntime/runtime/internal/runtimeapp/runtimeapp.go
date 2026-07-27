@@ -44,10 +44,12 @@ func Run() {
 		log.Fatalf("failed to create audit logger: %v", err)
 	}
 	defer logger.Close()
+	logger.SetMinLevel(audit.ParseLogLevel(cfg.LogLevel))
 
 	audit.SetVersionInfo(server.DaemonVersion, server.DaemonBuildTime)
 	logger.Info("runtime config loaded from: " + *configPath)
 	logger.Info("audit log directory: " + auditDir)
+	logger.Info("log_level=" + cfg.LogLevel)
 
 	srv := server.New(cfg, logger)
 

@@ -121,6 +121,38 @@ var allowedShellCommands = map[string]shellCommandTemplate{
 		Name:        "pm list packages -3",
 		CommandArgs: []string{"pm", "list", "packages", "-3"},
 	},
+	"pm path com.termux": {
+		Name:        "pm path com.termux",
+		CommandArgs: []string{"pm", "path", "com.termux"},
+	},
+	"pm list packages com.termux": {
+		Name:        "pm list packages com.termux",
+		CommandArgs: []string{"pm", "list", "packages", "com.termux"},
+	},
+	"cmd package path com.termux": {
+		Name:        "cmd package path com.termux",
+		CommandArgs: []string{"cmd", "package", "path", "com.termux"},
+	},
+	"ls /data/data/com.termux": {
+		Name:        "ls /data/data/com.termux",
+		CommandArgs: []string{"ls", "/data/data/com.termux"},
+	},
+	"ls /data/data/com.termux/files": {
+		Name:        "ls /data/data/com.termux/files",
+		CommandArgs: []string{"ls", "/data/data/com.termux/files"},
+	},
+	"ls /data/data/com.termux/files/usr/bin": {
+		Name:        "ls /data/data/com.termux/files/usr/bin",
+		CommandArgs: []string{"ls", "/data/data/com.termux/files/usr/bin"},
+	},
+	"reboot": {
+		Name:        "reboot",
+		CommandArgs: []string{"reboot"},
+	},
+	"svc power reboot": {
+		Name:        "svc power reboot",
+		CommandArgs: []string{"svc", "power", "reboot"},
+	},
 }
 
 var sortedAllowedShellCommands []string
@@ -183,7 +215,59 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		}
 	}
 
+	// Reboot tears down the device before command.Run() can return; ack first then fire.
+	if isFireAndForgetShell(template.Name) {
+		job := s.shellJobs.begin(sess.id, args.Command, template.Name)
+		s.logger.Info(fmt.Sprintf("exec_shell_limited fire-and-forget: session=%s command=%q job=%s", sess.id, args.Command, job.ID))
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			cmd := exec.Command(template.CommandArgs[0], template.CommandArgs[1:]...)
+			_ = cmd.Start()
+			s.shellJobs.finish(job.ID, "succeeded", 0, "reboot accepted", "", false, false, 0)
+		}()
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        true,
+			Code:      ipc.CodeOK,
+			Message:   "reboot accepted; device will restart shortly",
+			Data: mergeData(s.sessionData(sess), map[string]interface{}{
+				"command":          rawCommand,
+				"template_name":    template.Name,
+				"allowed_commands": sortedAllowedShellCommands,
+				"timeout_ms":       args.TimeoutMS,
+				"duration_ms":      0,
+				"exit_code":        0,
+				"stdout":           "reboot accepted",
+				"stderr":           "",
+				"fire_and_forget":  true,
+				"job_id":           job.ID,
+			}),
+		}
+	}
+
+	job := s.shellJobs.begin(sess.id, args.Command, template.Name)
 	result, execErr := executeLimitedShell(template.CommandArgs, args.TimeoutMS)
+	state := "succeeded"
+	if execErr != nil {
+		state = "failed"
+		if result.TimedOut {
+			state = "timeout"
+		}
+	}
+	finished := s.shellJobs.finish(
+		job.ID,
+		state,
+		result.ExitCode,
+		result.Stdout,
+		result.Stderr,
+		result.StdoutTruncated || result.StderrTruncated,
+		result.TimedOut,
+		result.DurationMS,
+	)
+	jobID := job.ID
+	if finished != nil {
+		jobID = finished.ID
+	}
 	if execErr != nil {
 		code := ipc.CodeErrShellExecFailed
 		if result.TimedOut {
@@ -206,11 +290,12 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 				"stdout_truncated":   result.StdoutTruncated,
 				"stderr_truncated":   result.StderrTruncated,
 				"timed_out":          result.TimedOut,
+				"job_id":             jobID,
 			}),
 		}
 	}
 
-	s.logger.Info(fmt.Sprintf("exec_shell_limited success: session=%s command=%q exit=%d", sess.id, args.Command, result.ExitCode))
+	s.logger.Info(fmt.Sprintf("exec_shell_limited success: session=%s command=%q exit=%d job=%s", sess.id, args.Command, result.ExitCode, jobID))
 
 	return ipc.Response{
 		RequestID: req.RequestID,
@@ -229,6 +314,88 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 			"stdout_truncated": result.StdoutTruncated,
 			"stderr_truncated": result.StderrTruncated,
 			"timed_out":        result.TimedOut,
+			"job_id":           jobID,
+		}),
+	}
+}
+
+func (s *Server) handleShellJobList(sess *session, req ipc.Request) ipc.Response {
+	if !s.cfg.ShellEnabled {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrShellDenied,
+			Message:   "shell capability disabled",
+			Data:      s.sessionData(sess),
+		}
+	}
+	limit := 16
+	if v, ok := req.Args["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+	}
+	return ipc.Response{
+		RequestID: req.RequestID,
+		OK:        true,
+		Code:      ipc.CodeOK,
+		Message:   ipc.ErrorMessage(ipc.CodeOK),
+		Data: mergeData(s.sessionData(sess), map[string]interface{}{
+			"jobs":  s.shellJobs.snapshotMaps(limit),
+			"limit": limit,
+		}),
+	}
+}
+
+func (s *Server) handleShellJobGet(sess *session, req ipc.Request) ipc.Response {
+	if !s.cfg.ShellEnabled {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrShellDenied,
+			Message:   "shell capability disabled",
+			Data:      s.sessionData(sess),
+		}
+	}
+	jobID, _ := req.Args["job_id"].(string)
+	if jobID == "" {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrInvalidRequest,
+			Message:   "missing required field: job_id",
+			Data:      s.sessionData(sess),
+		}
+	}
+	job, ok := s.shellJobs.get(jobID)
+	if !ok {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrInvalidRequest,
+			Message:   "shell job not found",
+			Data:      s.sessionData(sess),
+		}
+	}
+	return ipc.Response{
+		RequestID: req.RequestID,
+		OK:        true,
+		Code:      ipc.CodeOK,
+		Message:   ipc.ErrorMessage(ipc.CodeOK),
+		Data: mergeData(s.sessionData(sess), map[string]interface{}{
+			"job": map[string]interface{}{
+				"job_id":              job.ID,
+				"session_id":          job.SessionID,
+				"command":             job.Command,
+				"template_name":       job.TemplateName,
+				"state":               job.State,
+				"exit_code":           job.ExitCode,
+				"stdout_tail":         job.StdoutTail,
+				"stderr_tail":         job.StderrTail,
+				"truncated":           job.Truncated,
+				"timed_out":           job.TimedOut,
+				"duration_ms":         job.DurationMS,
+				"started_at_epoch_ms": job.StartedAt,
+				"ended_at_epoch_ms":   job.EndedAt,
+			},
 		}),
 	}
 }
@@ -270,6 +437,48 @@ func resolveParameterizedShell(command string) (shellCommandTemplate, bool) {
 					return nil, false
 				}
 				return []string{"pm", "path", pkg}, true
+			},
+		},
+		{
+			prefix: "cmd package path ",
+			name:   "cmd package path",
+			args: func(rest string) ([]string, bool) {
+				pkg := strings.TrimSpace(rest)
+				if !androidPackageRegex.MatchString(pkg) {
+					return nil, false
+				}
+				return []string{"cmd", "package", "path", pkg}, true
+			},
+		},
+		{
+			prefix: "pm list packages ",
+			name:   "pm list packages",
+			args: func(rest string) ([]string, bool) {
+				filter := strings.TrimSpace(rest)
+				if filter == "" || strings.HasPrefix(filter, "-") {
+					return nil, false
+				}
+				for _, r := range filter {
+					ok := (r >= 'a' && r <= 'z') ||
+						(r >= 'A' && r <= 'Z') ||
+						(r >= '0' && r <= '9') ||
+						r == '.' || r == '_'
+					if !ok {
+						return nil, false
+					}
+				}
+				return []string{"pm", "list", "packages", filter}, true
+			},
+		},
+		{
+			prefix: "ls /data/data/",
+			name:   "ls /data/data/<pkg>",
+			args: func(rest string) ([]string, bool) {
+				pkg := strings.TrimSpace(rest)
+				if !androidPackageRegex.MatchString(pkg) || strings.Contains(pkg, "/") || strings.Contains(pkg, "..") {
+					return nil, false
+				}
+				return []string{"ls", "/data/data/" + pkg}, true
 			},
 		},
 		{
@@ -406,4 +615,13 @@ func allowedShellCommandList() []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func isFireAndForgetShell(templateName string) bool {
+	switch templateName {
+	case "reboot", "svc power reboot":
+		return true
+	default:
+		return false
+	}
 }

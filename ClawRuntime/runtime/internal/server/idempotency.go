@@ -13,6 +13,7 @@ var idempotentActions = map[string]struct{}{
 	ipc.ActionGetRuntimeStatus: {},
 	ipc.ActionReadFileLimited:  {},
 	ipc.ActionStatFileLimited:  {},
+	ipc.ActionListDirLimited:   {},
 	ipc.ActionSubscribeEvents:  {},
 }
 

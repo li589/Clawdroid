@@ -21,6 +21,23 @@ mkdir -p "$LOG_DIR"
 mkdir -p "$AUDIT_DIR"
 mkdir -p "$WEBROOT_DIR"
 
+# Bound service log growth: rotate when > 5MB, keep one backup.
+rotate_service_log() {
+  max_bytes=5242880
+  if [ ! -f "$LOG_FILE" ]; then
+    return
+  fi
+  size="$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')"
+  case "$size" in
+    ''|*[!0-9]*) return ;;
+  esac
+  if [ "$size" -gt "$max_bytes" ]; then
+    mv "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null
+    rm -f "${LOG_FILE}.2" 2>/dev/null
+  fi
+}
+rotate_service_log
+
 BIN_FILE="$RUNTIME_BIN"
 CONFIG_PATH="$CONFIG_FILE"
 

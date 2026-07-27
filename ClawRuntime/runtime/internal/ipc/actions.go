@@ -14,6 +14,7 @@ const (
 	ActionReadFileLimited   = "read_file_limited"
 	ActionWriteFileLimited  = "write_file_limited"
 	ActionStatFileLimited   = "stat_file_limited"
+	ActionListDirLimited    = "list_dir_limited"
 	ActionExecShellLimited  = "exec_shell_limited"
 	ActionSubscribeEvents   = "subscribe_events"
 	ActionReportXposedFocus = "report_xposed_focus"
@@ -22,6 +23,8 @@ const (
 	ActionTaskGet           = "task_get"
 	ActionTaskList          = "task_list"
 	ActionTaskCancel        = "task_cancel"
+	ActionShellJobList      = "shell_job_list"
+	ActionShellJobGet       = "shell_job_get"
 )
 
 const (
@@ -49,14 +52,17 @@ var ActionCapability = map[string]string{
 	ActionReadFileLimited:  CapabilityFileReadLimited,
 	ActionWriteFileLimited: CapabilityFileWriteLimited,
 	ActionStatFileLimited:  CapabilityFileReadLimited,
+	ActionListDirLimited:   CapabilityFileReadLimited,
 	ActionExecShellLimited: CapabilityShellExecLimited,
 	ActionSubscribeEvents:  CapabilityEventSubscribe,
 	ActionReportXposedFocus: CapabilityEventReport,
 	ActionReportXposedView:  CapabilityEventReport,
-	ActionTaskSubmit:       CapabilityTaskManage,
-	ActionTaskGet:          CapabilityTaskManage,
-	ActionTaskList:         CapabilityTaskManage,
-	ActionTaskCancel:       CapabilityTaskManage,
+	ActionTaskSubmit:        CapabilityTaskManage,
+	ActionTaskGet:           CapabilityTaskManage,
+	ActionTaskList:          CapabilityTaskManage,
+	ActionTaskCancel:        CapabilityTaskManage,
+	ActionShellJobList:      CapabilityShellExecLimited,
+	ActionShellJobGet:       CapabilityShellExecLimited,
 }
 
 func ExpectedCapability(action string) (string, bool) {

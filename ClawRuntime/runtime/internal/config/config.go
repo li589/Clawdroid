@@ -15,6 +15,8 @@ type Config struct {
 	RequestTimeoutMS   int
 	MaxPayloadBytes    int
 	RateLimitPerMinute int
+	MaxConcurrentTasks int
+	MaxInflightTasks   int
 	AuthSharedSecret   string
 	AllowedPackages    []string
 	AllowedSignatures  []string
@@ -38,10 +40,12 @@ func Default() Config {
 		// Must fit base64(file chunk) + JSON wrapper for read_file_limited responses.
 		MaxPayloadBytes:    2 * 1024 * 1024,
 		RateLimitPerMinute: 120,
+		MaxConcurrentTasks: 8,
+		MaxInflightTasks:   32,
 		AuthSharedSecret:   "",
 		AllowedPackages:    []string{"com.clawdroid.app", "com.clawdroid.app.debug"},
 		AllowedSignatures:  []string{},
-		ReadonlyWhitelist:  []string{"/sdcard/Pictures", "/sdcard/Download"},
+		ReadonlyWhitelist:  []string{"/sdcard", "/storage/emulated/0", "/sdcard/Pictures", "/sdcard/Download"},
 		TimestampSkewSec:   120,
 		ChallengeTTLSec:    30,
 		SessionTTLSec:      300,
@@ -103,6 +107,10 @@ func Load(path string) (Config, error) {
 			cfg.MaxPayloadBytes = parseInt(value, cfg.MaxPayloadBytes)
 		case "runtime.rate_limit_per_minute":
 			cfg.RateLimitPerMinute = parseInt(value, cfg.RateLimitPerMinute)
+		case "runtime.max_concurrent_tasks":
+			cfg.MaxConcurrentTasks = parseInt(value, cfg.MaxConcurrentTasks)
+		case "runtime.max_inflight_tasks":
+			cfg.MaxInflightTasks = parseInt(value, cfg.MaxInflightTasks)
 		case "runtime.log_level":
 			cfg.LogLevel = value
 		case "runtime.audit_dir":

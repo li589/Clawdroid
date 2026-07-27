@@ -31,6 +31,7 @@ type Server struct {
 	signaturePrefixMap map[string]struct{}
 	idempotencyCache   *idempotencyCache
 	taskScheduler      *task.Scheduler
+	shellJobs          *shellJobTracker
 
 	sessionsMu sync.RWMutex
 	sessions   map[string]*session // sessionID -> session (only active sessions)
@@ -65,10 +66,14 @@ func New(cfg config.Config, logger *audit.Logger) *Server {
 		logger:             logger,
 		signaturePrefixMap: sigMap,
 		idempotencyCache:   newIdempotencyCache(),
+		shellJobs:          newShellJobTracker(),
 		startedAt:          time.Now(),
 		eventSubs:          make(map[chan struct{}]struct{}),
 	}
-	s.taskScheduler = task.NewScheduler(s, s.onTaskStateChange)
+	s.taskScheduler = task.NewSchedulerWithOptions(s, s.onTaskStateChange, task.SchedulerOptions{
+		MaxConcurrent: cfg.MaxConcurrentTasks,
+		MaxInflight:   cfg.MaxInflightTasks,
+	})
 	return s
 }
 
@@ -328,7 +333,15 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 
+		// Long-running sync actions: clear deadline so RequestTimeoutMS does not kill shell/capture.
+		longAction := req.Action == "exec_shell_limited" || req.Action == "capture_screen"
+		if longAction {
+			_ = conn.SetDeadline(time.Time{})
+		}
 		response := s.handleRequest(sess, req)
+		if longAction {
+			_ = conn.SetDeadline(deadlineFromMS(s.cfg.RequestTimeoutMS))
+		}
 		s.idempotencyCache.put(req.Action, req.RequestID, sess.id, response)
 		mergedResp := response
 		mergedResp.Data = mergeData(s.sessionData(sess), response.Data)

@@ -301,6 +301,151 @@ func (s *Server) handleStatFileLimited(sess *session, req ipc.Request) ipc.Respo
 	}
 }
 
+type listDirArgs struct {
+	Path   string `json:"path"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+func (s *Server) handleListDirLimited(sess *session, req ipc.Request) ipc.Response {
+	if !s.cfg.FileBridgeEnabled {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrFileOutOfScope,
+			Message:   "file bridge disabled",
+			Data:      s.sessionData(sess),
+		}
+	}
+
+	args, err := parseListDirArgs(req.Args)
+	if err != nil {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrInvalidRequest,
+			Message:   err.Error(),
+			Data:      s.sessionData(sess),
+		}
+	}
+
+	resolvedPath, err := s.resolveAllowedReadPath(args.Path)
+	if err != nil {
+		s.reportServerError("list_dir_limited denied: %v", err)
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrFileOutOfScope,
+			Message:   err.Error(),
+			Data:      s.sessionData(sess),
+		}
+	}
+
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrFileReadFailed,
+			Message:   fmt.Sprintf("stat failed: %v", err),
+			Data:      s.sessionData(sess),
+		}
+	}
+	if !info.IsDir() {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrInvalidRequest,
+			Message:   "path is not a directory",
+			Data:      s.sessionData(sess),
+		}
+	}
+
+	entries, err := os.ReadDir(resolvedPath)
+	if err != nil {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrFileReadFailed,
+			Message:   fmt.Sprintf("readdir failed: %v", err),
+			Data:      s.sessionData(sess),
+		}
+	}
+
+	total := len(entries)
+	start := args.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := start + args.Limit
+	if end > total {
+		end = total
+	}
+
+	items := make([]map[string]interface{}, 0, end-start)
+	for _, entry := range entries[start:end] {
+		item := map[string]interface{}{
+			"name":   entry.Name(),
+			"is_dir": entry.IsDir(),
+		}
+		if fi, fiErr := entry.Info(); fiErr == nil {
+			item["size"] = fi.Size()
+			item["mtime_ms"] = fi.ModTime().UnixMilli()
+		} else {
+			item["size"] = int64(0)
+			item["mtime_ms"] = int64(0)
+		}
+		items = append(items, item)
+	}
+
+	return ipc.Response{
+		RequestID: req.RequestID,
+		OK:        true,
+		Code:      ipc.CodeOK,
+		Message:   ipc.ErrorMessage(ipc.CodeOK),
+		Data: mergeData(s.sessionData(sess), map[string]interface{}{
+			"path":       resolvedPath,
+			"offset":     start,
+			"limit":      args.Limit,
+			"total":      total,
+			"truncated": start+len(items) < total,
+			"entries":    items,
+		}),
+	}
+}
+
+func parseListDirArgs(args map[string]interface{}) (listDirArgs, error) {
+	listArgs := listDirArgs{
+		Offset: 0,
+		Limit:  100,
+	}
+	if value, ok := args["path"].(string); ok {
+		listArgs.Path = strings.TrimSpace(value)
+	}
+	if value, ok := args["offset"].(float64); ok {
+		listArgs.Offset = int(value)
+	}
+	if value, ok := args["limit"].(float64); ok {
+		listArgs.Limit = int(value)
+	}
+	if listArgs.Path == "" {
+		return listArgs, fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(listArgs.Path) {
+		return listArgs, fmt.Errorf("path must be absolute")
+	}
+	if listArgs.Offset < 0 {
+		return listArgs, fmt.Errorf("offset must be >= 0")
+	}
+	if listArgs.Limit < 1 || listArgs.Limit > 500 {
+		return listArgs, fmt.Errorf("limit must be between 1 and 500")
+	}
+	return listArgs, nil
+}
+
 func parseWriteFileArgs(args map[string]interface{}) (writeFileArgs, error) {
 	writeArgs := writeFileArgs{}
 	if value, ok := args["path"].(string); ok {
@@ -453,7 +598,14 @@ func (s *Server) allowedReadRoots() []string {
 	roots = append(roots, s.cfg.ReadonlyWhitelist...)
 
 	if runtime.GOOS == "android" || runtime.GOOS == "linux" {
-		roots = append(roots, "/sdcard/Download")
+		// Shared storage roots. /sdcard is usually a symlink to /storage/emulated/0;
+		// both are listed so resolved paths stay in-scope after EvalSymlinks.
+		roots = append(roots,
+			"/sdcard",
+			"/storage/emulated/0",
+			"/sdcard/Download",
+			"/sdcard/Pictures",
+		)
 	}
 
 	return uniqueNonEmptyPaths(roots)
@@ -487,11 +639,13 @@ func resolveAllowedRoot(root string) (string, error) {
 	return resolvedRoot, nil
 }
 
+// resolveNonSymlinkPath resolves symlinks to a canonical path. Escape safety is
+// enforced by the caller comparing the result against EvalSymlink'd allowed roots
+// (see resolveAllowedPath). Rejecting every symlink outright breaks Android
+// shared-storage roots such as /sdcard -> /storage/emulated/0.
 func resolveNonSymlinkPath(path string) (string, error) {
-	info, err := os.Lstat(path)
+	_, err := os.Lstat(path)
 	switch {
-	case err == nil && info.Mode()&os.ModeSymlink != 0:
-		return "", fmt.Errorf("symlink targets are not allowed")
 	case err == nil:
 		resolvedPath, evalErr := filepath.EvalSymlinks(path)
 		if evalErr != nil {

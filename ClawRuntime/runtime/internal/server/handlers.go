@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -78,6 +79,9 @@ func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
 	case ipc.ActionStatFileLimited:
 		s.finalizeCapabilityState(sess)
 		return s.handleStatFileLimited(sess, req)
+	case ipc.ActionListDirLimited:
+		s.finalizeCapabilityState(sess)
+		return s.handleListDirLimited(sess, req)
 	case ipc.ActionInjectTap:
 		s.finalizeCapabilityState(sess)
 		return s.handleInjectTap(sess, req)
@@ -90,6 +94,12 @@ func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
 	case ipc.ActionExecShellLimited:
 		s.finalizeCapabilityState(sess)
 		return s.handleExecShellLimited(sess, req)
+	case ipc.ActionShellJobList:
+		s.finalizeCapabilityState(sess)
+		return s.handleShellJobList(sess, req)
+	case ipc.ActionShellJobGet:
+		s.finalizeCapabilityState(sess)
+		return s.handleShellJobGet(sess, req)
 	case ipc.ActionTaskSubmit:
 		s.finalizeCapabilityState(sess)
 		return s.handleTaskSubmit(sess, req)
@@ -126,6 +136,13 @@ func (s *Server) handleGetRuntimeStatus(sess *session, req ipc.Request) ipc.Resp
 		"allowed_shell_commands": sortedAllowedShellCommands,
 		"allowed_keyevents":      allowedKeyeventList(),
 		"actions":                sortedActionNames(),
+		"task_scheduler": map[string]interface{}{
+			"max_concurrent_tasks": s.taskScheduler.Options().MaxConcurrent,
+			"max_inflight_tasks":   s.taskScheduler.Options().MaxInflight,
+			"inflight":             s.taskScheduler.InflightCount(),
+			"running":              s.taskScheduler.RunningCount(),
+		},
+		"recent_shell_jobs": s.shellJobs.snapshotMaps(8),
 	}))
 	if sess.degradedReason != "" {
 		data["degraded_reason"] = sess.degradedReason
@@ -243,12 +260,20 @@ func (s *Server) handleTaskSubmit(sess *session, req ipc.Request) ipc.Response {
 	t.SessionID = sess.id // Ensure task is owned by this session.
 
 	if err := s.taskScheduler.Submit(context.Background(), t); err != nil {
+		code := ipc.CodeErrTaskSubmitFailed
+		if errors.Is(err, task.ErrQueueFull) {
+			code = ipc.CodeErrTaskQueueFull
+		}
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
-			Code:      ipc.CodeErrTaskSubmitFailed,
+			Code:      code,
 			Message:   err.Error(),
-			Data:      s.sessionData(sess),
+			Data: mergeData(s.sessionData(sess), map[string]interface{}{
+				"max_concurrent_tasks": s.taskScheduler.Options().MaxConcurrent,
+				"max_inflight_tasks":   s.taskScheduler.Options().MaxInflight,
+				"inflight":             s.taskScheduler.InflightCount(),
+			}),
 		}
 	}
 

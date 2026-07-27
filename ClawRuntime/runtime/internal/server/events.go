@@ -229,25 +229,43 @@ func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
 	}
 }
 
-// taskStateForSession returns the most relevant task state snapshot for a session.
-// Priority: running task > queued task > most recent completed task.
+// taskStateForSession returns a multi-task snapshot for parallel agent monitoring.
+// Includes active_tasks (running+queued) plus the primary chosen task for back-compat.
 func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
 	tasks := s.taskScheduler.Registry().List(sessionID)
 	if len(tasks) == 0 {
 		return map[string]interface{}{
-			"session_id": sessionID,
-			"phase":     "idle",
-			"task_count": 0,
+			"session_id":   sessionID,
+			"phase":        "idle",
+			"task_count":   0,
+			"active_tasks": []map[string]interface{}{},
+			"running":      0,
+			"queued":       0,
 		}
 	}
 
-	// Find running, queued, then most recent.
 	var running, queued, latest *task.Task
+	active := make([]map[string]interface{}, 0, 8)
+	runningCount := 0
+	queuedCount := 0
 	for _, t := range tasks {
-		if t.State == task.TaskStateRunning {
+		switch t.State {
+		case task.TaskStateRunning:
 			running = t
-		} else if t.State == task.TaskStateQueued {
+			runningCount++
+			if len(active) < 12 {
+				snap := t.StateSnapshot()
+				snap["phase"] = string(t.State)
+				active = append(active, snap)
+			}
+		case task.TaskStateQueued, task.TaskStateCreated:
 			queued = t
+			queuedCount++
+			if len(active) < 12 {
+				snap := t.StateSnapshot()
+				snap["phase"] = string(t.State)
+				active = append(active, snap)
+			}
 		}
 		if latest == nil || t.CreatedAt.After(latest.CreatedAt) {
 			latest = t
@@ -266,6 +284,15 @@ func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
 	snapshot["phase"] = string(chosen.State)
 	snapshot["session_id"] = sessionID
 	snapshot["task_count"] = len(tasks)
+	snapshot["active_tasks"] = active
+	snapshot["running"] = runningCount
+	snapshot["queued"] = queuedCount
+	snapshot["scheduler"] = map[string]interface{}{
+		"max_concurrent": s.taskScheduler.Options().MaxConcurrent,
+		"max_inflight":   s.taskScheduler.Options().MaxInflight,
+		"inflight":       s.taskScheduler.InflightCount(),
+	}
+	snapshot["recent_shell_jobs"] = s.shellJobs.snapshotMaps(4)
 	return snapshot
 }
 

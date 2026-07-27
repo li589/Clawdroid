@@ -2,12 +2,16 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"sync"
 	"time"
 )
+
+// ErrQueueFull is returned when concurrent/queued tasks exceed scheduler limits.
+var ErrQueueFull = errors.New("task queue full")
 
 // StepExecutor is the interface for executing individual IPC actions.
 type StepExecutor interface {
@@ -17,26 +21,58 @@ type StepExecutor interface {
 // StateChangeHandler is called whenever a task transitions state.
 type StateChangeHandler func(taskID string, oldState, newState TaskState, snapshot map[string]interface{})
 
-// Scheduler manages task execution.
-type Scheduler struct {
-	registry      *Registry
-	executor     StepExecutor
-	onStateChange StateChangeHandler
-
-	// taskMu protects running map and terminal state updates.
-	// It is NOT held during step execution to avoid blocking the executor.
-	taskMu sync.RWMutex
-	running map[string]context.CancelFunc // taskID -> cancel function
-	closed   bool
+// SchedulerOptions bounds parallel multi-agent / multi-task execution.
+type SchedulerOptions struct {
+	// MaxConcurrent is the number of tasks that may run steps at once (default 8).
+	MaxConcurrent int
+	// MaxInflight is running + waiting-for-slot tasks (default 32). Excess Submit → ErrQueueFull.
+	MaxInflight int
 }
 
-// NewScheduler creates a new task scheduler.
+func (o SchedulerOptions) normalized() SchedulerOptions {
+	if o.MaxConcurrent <= 0 {
+		o.MaxConcurrent = 8
+	}
+	if o.MaxInflight <= 0 {
+		o.MaxInflight = 32
+	}
+	if o.MaxInflight < o.MaxConcurrent {
+		o.MaxInflight = o.MaxConcurrent
+	}
+	return o
+}
+
+// Scheduler manages task execution with bounded parallelism for multi-agent workloads.
+type Scheduler struct {
+	registry      *Registry
+	executor      StepExecutor
+	onStateChange StateChangeHandler
+	opts          SchedulerOptions
+
+	// taskMu protects running map, inflight counter, and terminal state updates.
+	// It is NOT held during step execution to avoid blocking the executor.
+	taskMu      sync.RWMutex
+	running     map[string]context.CancelFunc // taskID -> cancel function
+	inflight    int
+	workerSlots chan struct{}
+	closed      bool
+}
+
+// NewScheduler creates a new task scheduler with default concurrency bounds.
 func NewScheduler(executor StepExecutor, onStateChange StateChangeHandler) *Scheduler {
+	return NewSchedulerWithOptions(executor, onStateChange, SchedulerOptions{})
+}
+
+// NewSchedulerWithOptions creates a scheduler with explicit concurrency bounds.
+func NewSchedulerWithOptions(executor StepExecutor, onStateChange StateChangeHandler, opts SchedulerOptions) *Scheduler {
+	opts = opts.normalized()
 	return &Scheduler{
 		registry:      NewRegistry(),
-		executor:     executor,
+		executor:      executor,
 		onStateChange: onStateChange,
-		running:      make(map[string]context.CancelFunc),
+		opts:          opts,
+		running:       make(map[string]context.CancelFunc),
+		workerSlots:   make(chan struct{}, opts.MaxConcurrent),
 	}
 }
 
@@ -45,7 +81,26 @@ func (s *Scheduler) Registry() *Registry {
 	return s.registry
 }
 
-// Submit submits a new task and starts its execution immediately.
+// Options returns the effective concurrency options.
+func (s *Scheduler) Options() SchedulerOptions {
+	return s.opts
+}
+
+// InflightCount returns running + queued-waiting tasks.
+func (s *Scheduler) InflightCount() int {
+	s.taskMu.RLock()
+	defer s.taskMu.RUnlock()
+	return s.inflight
+}
+
+// RunningCount returns tasks currently holding a worker slot.
+func (s *Scheduler) RunningCount() int {
+	s.taskMu.RLock()
+	defer s.taskMu.RUnlock()
+	return len(s.running)
+}
+
+// Submit submits a new task and starts its execution when a worker slot is free.
 func (s *Scheduler) Submit(ctx context.Context, t *Task) error {
 	if t.ID == "" {
 		return fmt.Errorf("task ID is required")
@@ -66,15 +121,43 @@ func (s *Scheduler) Submit(ctx context.Context, t *Task) error {
 	s.taskMu.Lock()
 	if s.closed {
 		s.taskMu.Unlock()
+		_ = s.registry.Remove(t.SessionID, t.ID)
 		return fmt.Errorf("scheduler is closed")
 	}
+	if s.inflight >= s.opts.MaxInflight {
+		s.taskMu.Unlock()
+		_ = s.registry.Remove(t.SessionID, t.ID)
+		return ErrQueueFull
+	}
+	s.inflight++
 	s.transitionLocked(t, TaskStateQueued)
 	t.QueuedAt = time.Now()
 	s.taskMu.Unlock()
 
-	go s.runTask(t)
-
+	go s.dispatchTask(t)
 	return nil
+}
+
+func (s *Scheduler) dispatchTask(t *Task) {
+	// Wait for a concurrency slot so multiple agents can run in parallel up to MaxConcurrent.
+	s.workerSlots <- struct{}{}
+	defer func() {
+		<-s.workerSlots
+		s.taskMu.Lock()
+		if s.inflight > 0 {
+			s.inflight--
+		}
+		s.taskMu.Unlock()
+	}()
+
+	s.taskMu.RLock()
+	closed := s.closed
+	s.taskMu.RUnlock()
+	if closed {
+		s.transition(t, TaskStateCancelled)
+		return
+	}
+	s.runTask(t)
 }
 
 // Cancel requests cancellation of a running task.
@@ -159,7 +242,6 @@ func (s *Scheduler) runTask(t *Task) {
 
 func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 	for {
-		// Single atomic update to check completion and cancellation.
 		err := s.registry.Update(t.SessionID, t.ID, func(task *Task) error {
 			if task.CurrentStep >= len(task.Steps) {
 				return fmt.Errorf("all steps completed")
@@ -170,22 +252,18 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 			return nil
 		})
 		if err != nil {
-			// Determine exit reason and transition to terminal state.
 			curTask, ok := s.registry.Get(t.SessionID, t.ID)
 			if !ok {
 				return
 			}
 			if curTask.CurrentStep >= len(curTask.Steps) {
-				// All steps completed normally.
 				s.transition(curTask, TaskStateSucceeded)
 			}
-			// Otherwise cancelled or already terminal — nothing to do.
 			return
 		}
 
 		curTask, ok := s.registry.Get(t.SessionID, t.ID)
 		if !ok || curTask.CurrentStep >= len(curTask.Steps) {
-			// Safety check; the Update above should have caught this.
 			return
 		}
 		step := curTask.Steps[curTask.CurrentStep]
@@ -198,19 +276,15 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 		})
 
 		if !result.OK {
-			// Retry policy is handled entirely inside executeStepWithRetry;
-			// handleStepFailure is called only for non-retry failure policies.
 			if step.OnFailure != StepPolicyRetry {
 				if !s.handleStepFailure(curTask, step, result) {
 					return
 				}
 			} else {
-				// Context cancellation takes precedence over retry failure.
 				if result.Code == -1 {
 					s.transition(curTask, TaskStateCancelled)
 					return
 				}
-				// Retry exhausted: record the failure and transition to Failed.
 				s.registry.Update(t.SessionID, t.ID, func(task *Task) error {
 					task.Error = result.Message
 					task.ErrorCode = result.Code
@@ -224,7 +298,6 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 				task.CurrentStep++
 				return nil
 			})
-			// Task remains in Running state; no self-transition needed.
 		}
 	}
 }
@@ -260,8 +333,6 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 			return result
 		}
 
-		// Wait with exponential backoff before retrying.
-		// Do not transition to Retrying state — step-level retry stays within Running.
 		select {
 		case <-ctx.Done():
 			result.Code = -1
@@ -275,10 +346,7 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 	}
 }
 
-// handleStepFailure processes a failed step.
-// Returns true if execution should continue, false if the task reached a terminal state.
 func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) bool {
-	// Context cancellation takes precedence over step failure.
 	if result.Code == -1 {
 		s.transition(t, TaskStateCancelled)
 		return false
@@ -299,7 +367,6 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 			t.CurrentStep++
 			return nil
 		})
-		// Task remains in Running state.
 		return true
 
 	case StepPolicyCompensate:
@@ -313,7 +380,6 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 		return false
 
 	case StepPolicyRetry:
-		// Already handled in executeStepWithRetry; should not reach here
 		return true
 
 	default:
@@ -328,12 +394,10 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 }
 
 func (s *Scheduler) runCompensation(ctx context.Context, t *Task) {
-	// Read the latest task snapshot from registry to avoid stale StepResults.
 	curTask, ok := s.registry.Get(t.SessionID, t.ID)
 	if !ok {
 		return
 	}
-	// Iterate in reverse order over the latest results.
 	for i := len(curTask.StepResults) - 1; i >= 0; i-- {
 		result := curTask.StepResults[i]
 		step := curTask.Steps[result.StepIndex]

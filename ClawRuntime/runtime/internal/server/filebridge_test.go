@@ -46,12 +46,55 @@ func TestResolveAllowedReadPathRejectsRelativePath(t *testing.T) {
 	}
 }
 
-func TestResolveAllowedReadPathRejectsSymlinkEscape(t *testing.T) {
+func TestResolveAllowedReadPathAllowsSymlinkInsideRoot(t *testing.T) {
 	t.Parallel()
 
 	baseDir := t.TempDir()
 	allowedRoot := filepath.Join(baseDir, "allowed")
-	outsideRoot := filepath.Join(baseDir, "outside")
+	if err := os.MkdirAll(allowedRoot, 0o700); err != nil {
+		t.Fatalf("mkdir allowed root: %v", err)
+	}
+	realFile := filepath.Join(allowedRoot, "note.txt")
+	if err := os.WriteFile(realFile, []byte("ok"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	linkPath := filepath.Join(allowedRoot, "note-link.txt")
+	if err := os.Symlink(realFile, linkPath); err != nil {
+		lowerError := strings.ToLower(err.Error())
+		if strings.Contains(lowerError, "privilege") || strings.Contains(lowerError, "not permitted") {
+			t.Skipf("symlink not available on this environment: %v", err)
+		}
+		t.Skipf("unable to create symlink in test environment: %v", err)
+	}
+
+	srv := &Server{
+		cfg: config.Config{
+			AuditDir:          filepath.Join(baseDir, "audit"),
+			ReadonlyWhitelist: []string{allowedRoot},
+		},
+	}
+
+	resolved, err := srv.resolveAllowedReadPath(linkPath)
+	if err != nil {
+		t.Fatalf("expected in-root symlink to be allowed: %v", err)
+	}
+	if resolved != realFile {
+		// EvalSymlinks may return equivalent canonical form.
+		realResolved, _ := filepath.EvalSymlinks(realFile)
+		if resolved != realResolved {
+			t.Fatalf("unexpected resolved path: got %q want %q", resolved, realFile)
+		}
+	}
+}
+
+func TestResolveAllowedReadPathRejectsSymlinkEscape(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	// Must sit outside AuditDir's parent (baseDir), because allowedReadRoots()
+	// always includes that parent directory for runtime-owned files.
+	outsideRoot := t.TempDir()
+	allowedRoot := filepath.Join(baseDir, "allowed")
 	if err := os.MkdirAll(allowedRoot, 0o700); err != nil {
 		t.Fatalf("mkdir allowed root: %v", err)
 	}
