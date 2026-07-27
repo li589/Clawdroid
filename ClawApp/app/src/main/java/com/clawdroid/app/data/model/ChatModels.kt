@@ -15,14 +15,28 @@ internal enum class ChatMessageState {
     Terminated
 }
 
+internal data class ChatMedia(
+    val uri: String,
+    val mimeType: String,
+    val width: Int = 0,
+    val height: Int = 0
+) {
+    val isVideo: Boolean
+        get() = mimeType.startsWith("video/", ignoreCase = true)
+}
+
 internal data class ChatMessage(
     val id: String = newChatMessageId(),
     val role: ChatRole,
     val content: String,
     val attachmentLabel: String? = null,
     val createdAtEpochMs: Long = System.currentTimeMillis(),
-    val state: ChatMessageState = ChatMessageState.Final
-)
+    val state: ChatMessageState = ChatMessageState.Final,
+    val media: List<ChatMedia> = emptyList()
+) {
+    val hasMedia: Boolean
+        get() = media.isNotEmpty()
+}
 
 internal fun newChatMessageId(): String {
     return "msg-${System.currentTimeMillis()}-${(0..9999).random()}"

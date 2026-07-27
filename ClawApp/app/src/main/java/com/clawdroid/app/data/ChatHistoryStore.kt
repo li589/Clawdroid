@@ -3,6 +3,7 @@ package com.clawdroid.app.data
 import android.content.Context
 import com.clawdroid.app.chat.ChatTaskAction
 import com.clawdroid.app.chat.ChatTextLimits
+import com.clawdroid.app.data.model.ChatMedia
 import com.clawdroid.app.data.model.ChatMessage
 import com.clawdroid.app.data.model.ChatMessageState
 import com.clawdroid.app.data.model.ChatRole
@@ -43,7 +44,8 @@ internal object ChatHistoryStore {
                                 .let { state ->
                                     ChatMessageState.entries.firstOrNull { it.name == state }
                                         ?: ChatMessageState.Final
-                                }
+                                },
+                            media = decodeMediaList(item.optJSONArray("media"))
                         ).asTerminated()
                     )
                 }
@@ -62,6 +64,9 @@ internal object ChatHistoryStore {
                     put("attachment_label", message.attachmentLabel ?: "")
                     put("created_at_epoch_ms", message.createdAtEpochMs)
                     put("state", message.state.name)
+                    if (message.media.isNotEmpty()) {
+                        put("media", encodeMediaList(message.media))
+                    }
                 }
             )
         }
@@ -76,6 +81,42 @@ internal object ChatHistoryStore {
             .edit()
             .remove(keyMessages)
             .apply()
+    }
+
+    private fun decodeMediaList(raw: JSONArray?): List<ChatMedia> {
+        raw ?: return emptyList()
+        return runCatching {
+            buildList {
+                for (index in 0 until raw.length()) {
+                    val item = raw.optJSONObject(index) ?: continue
+                    val uri = item.optString("uri")
+                    if (uri.isBlank()) continue
+                    add(
+                        ChatMedia(
+                            uri = uri,
+                            mimeType = item.optString("mime_type").ifBlank { "image/*" },
+                            width = item.optInt("width", 0),
+                            height = item.optInt("height", 0)
+                        )
+                    )
+                }
+            }
+        }.getOrElse { emptyList() }
+    }
+
+    private fun encodeMediaList(media: List<ChatMedia>): JSONArray {
+        val payload = JSONArray()
+        media.forEach { item ->
+            payload.put(
+                JSONObject().apply {
+                    put("uri", item.uri)
+                    put("mime_type", item.mimeType)
+                    put("width", item.width)
+                    put("height", item.height)
+                }
+            )
+        }
+        return payload
     }
 }
 

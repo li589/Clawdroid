@@ -4,6 +4,7 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -105,10 +106,11 @@ internal fun ClawdroidShell(
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            chatViewModel.onImagePicked(uri)
+            val mimeType = context.contentResolver.getType(uri) ?: "image/*"
+            chatViewModel.onImagePicked(uri, mimeType)
         }
     }
 
@@ -241,7 +243,9 @@ internal fun ClawdroidShell(
         voiceInputLauncher.launch(intent)
     })
     val latestImageClick = rememberUpdatedState(newValue = {
-        imagePickerLauncher.launch("image/*")
+        imagePickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+        )
     })
     val chatConsoleActions = remember(
         chatViewModel,

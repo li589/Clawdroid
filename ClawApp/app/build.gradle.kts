@@ -161,6 +161,11 @@ dependencies {
     implementation("com.mikepenz:multiplatform-markdown-renderer:0.26.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.26.0")
     implementation("androidx.webkit:webkit:1.11.0")
+    // Coil for image/GIF loading
+    implementation("io.coil-kt:coil-compose:2.6.0")
+    // Media3 for video playback
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("io.mockk:mockk:1.13.12")

@@ -20,6 +20,7 @@ import com.clawdroid.app.chat.MemoryGraphStore
 import com.clawdroid.app.data.AppSettingsStore
 import com.clawdroid.app.data.ChatSessionSummary
 import com.clawdroid.app.data.model.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.ChatMedia
 import com.clawdroid.app.data.model.ChatMessage
 import com.clawdroid.app.data.model.ChatMessageState
 import com.clawdroid.app.data.model.ChatRole
@@ -66,6 +67,7 @@ internal data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val pendingImageLabel: String? = null,
     val pendingImageUri: android.net.Uri? = null,
+    val pendingImageMimeType: String? = null,
     val chatBusy: Boolean = false,
     val latestAiStatus: String = "规则优先，模型待命",
     val taskExecution: ChatTaskExecutionState? = null,
@@ -245,19 +247,20 @@ internal class ChatViewModel(
         updateState { it.copy(input = normalized) }
     }
 
-    fun onImagePicked(uri: android.net.Uri) {
+    fun onImagePicked(uri: android.net.Uri, mimeType: String? = null) {
         val label = uri.lastPathSegment?.takeIf { it.isNotBlank() } ?: uri.toString()
         updateState {
             it.copy(
                 pendingImageUri = uri,
-                pendingImageLabel = label
+                pendingImageLabel = label,
+                pendingImageMimeType = mimeType
             )
         }
     }
 
     fun clearPendingImage() {
         updateState {
-            it.copy(pendingImageUri = null, pendingImageLabel = null)
+            it.copy(pendingImageUri = null, pendingImageLabel = null, pendingImageMimeType = null)
         }
     }
 
@@ -419,13 +422,23 @@ internal class ChatViewModel(
         resetTurnApiBudget()
         val attachmentLabel = uiState.value.pendingImageLabel
         val attachmentUri = uiState.value.pendingImageUri
+        val attachmentMimeType = uiState.value.pendingImageMimeType
+        val userMedia = attachmentUri?.let { uri ->
+            listOf(ChatMedia(uri = uri.toString(), mimeType = attachmentMimeType ?: "image/*"))
+        } ?: emptyList()
         val userText = normalized.ifBlank { "（附图）" }
-        val userMessageId = appendChat(ChatRole.User, userText, attachmentLabel)
+        val userMessageId = appendChat(
+            role = ChatRole.User,
+            content = userText,
+            attachmentLabel = attachmentLabel,
+            media = userMedia
+        )
         updateState {
             it.copy(
                 input = "",
                 pendingImageLabel = null,
                 pendingImageUri = null,
+                pendingImageMimeType = null,
                 chatBusy = true
             )
         }
@@ -669,13 +682,15 @@ internal class ChatViewModel(
         role: ChatRole,
         content: String,
         attachmentLabel: String? = null,
-        state: ChatMessageState = ChatMessageState.Final
+        state: ChatMessageState = ChatMessageState.Final,
+        media: List<ChatMedia> = emptyList()
     ): String {
         val message = ChatMessage(
             role = role,
             content = ChatTextLimits.truncateForDisplay(content),
             attachmentLabel = attachmentLabel,
-            state = state
+            state = state,
+            media = media
         )
         val updatedMessages = uiState.value.messages + message
         replaceMessages(

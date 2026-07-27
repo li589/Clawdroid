@@ -2206,6 +2206,12 @@ internal fun ChatBubble(
                         )
                     }
                 }
+                if (message.hasMedia) {
+                    ChatMediaContent(
+                        media = message.media,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
                 // Selection only — no long-press menu competing with drag handles.
                 CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
                     SelectionContainer {
