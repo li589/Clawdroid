@@ -79,8 +79,11 @@ func (s *Server) handleReadFileLimited(sess *session, req ipc.Request) ipc.Respo
 		}
 	}
 
-	readBytes, err := file.Read(buffer)
-	if err != nil && !errors.Is(err, io.EOF) {
+	// Use io.ReadFull to handle short reads: a single file.Read may return
+	// fewer bytes than requested even when more data is available. ReadFull
+	// loops internally until the buffer is full or EOF is reached.
+	readBytes, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		s.reportServerError("read_file_limited read failed: %v", err)
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -97,13 +100,17 @@ func (s *Server) handleReadFileLimited(sess *session, req ipc.Request) ipc.Respo
 		totalSize = stat.Size()
 	}
 
+	// EOF when: we read 0 bytes (empty file or offset past end), or we reached
+	// the end of the file (offset + readBytes >= totalSize).
+	eof := readBytes == 0 || args.Offset+int64(readBytes) >= totalSize
+
 	data := mergeData(s.sessionData(sess), map[string]interface{}{
 		"path":           resolvedPath,
 		"offset":         args.Offset,
 		"read_bytes":     readBytes,
 		"max_bytes":      args.MaxBytes,
 		"total_size":     totalSize,
-		"eof":            args.Offset+int64(readBytes) >= totalSize && totalSize > 0,
+		"eof":            eof,
 		"content_base64": base64.StdEncoding.EncodeToString(buffer[:readBytes]),
 	})
 

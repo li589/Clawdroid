@@ -302,7 +302,9 @@ func (s *Server) handleTaskGet(sess *session, req ipc.Request) ipc.Response {
 		}
 	}
 
-	t, ok := s.taskScheduler.Registry().Get(sess.id, taskID)
+	// Cross-session lookup: task_get may arrive on a different connection than
+	// task_submit. Use SnapshotByID for a consistent, lock-free read.
+	t, ok := s.taskScheduler.Registry().SnapshotByID(taskID)
 	if !ok {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -356,8 +358,8 @@ func (s *Server) handleTaskCancel(sess *session, req ipc.Request) ipc.Response {
 		}
 	}
 
-	// Verify task belongs to this session.
-	if _, ok := s.taskScheduler.Registry().Get(sess.id, taskID); !ok {
+	// Cross-session lookup: task_cancel may arrive on a different connection.
+	if _, ok := s.taskScheduler.Registry().SnapshotByID(taskID); !ok {
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,

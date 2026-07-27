@@ -247,10 +247,42 @@ func TestRegistry_CloseSession(t *testing.T) {
 	r.CloseSession("sess-a")
 
 	if len(r.List("sess-a")) != 0 {
-		t.Error("sess-a tasks should be cleared")
+		t.Error("sess-a tasks should be cleared from session map")
 	}
 	if len(r.List("sess-b")) != 1 {
 		t.Error("sess-b tasks should remain")
+	}
+}
+
+func TestRegistry_CloseSessionKeepsActiveTasksInGlobalIndex(t *testing.T) {
+	r := NewRegistry()
+	activeTask := makeTask("t-active", "sess-a")
+	activeTask.State = TaskStateRunning
+	r.Submit("sess-a", activeTask)
+
+	terminalTask := makeTask("t-terminal", "sess-a")
+	terminalTask.State = TaskStateSucceeded
+	r.Submit("sess-a", terminalTask)
+
+	r.CloseSession("sess-a")
+
+	// Active task should still be findable via GetByID (cross-session poll path).
+	got, ok := r.GetByID("t-active")
+	if !ok {
+		t.Fatal("active task should remain in global index after CloseSession")
+	}
+	if got.State != TaskStateRunning {
+		t.Errorf("active task state: got %s, want Running", got.State)
+	}
+
+	// Terminal task should be cleaned up from the global index.
+	if _, ok := r.GetByID("t-terminal"); ok {
+		t.Error("terminal task should be removed from global index after CloseSession")
+	}
+
+	// Session map should be empty.
+	if len(r.List("sess-a")) != 0 {
+		t.Error("sess-a should be cleared from session map")
 	}
 }
 

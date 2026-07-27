@@ -156,13 +156,6 @@ func (fl *FileLogger) Log(entry AuditLogEntry) error {
 		}
 	}
 
-	fl.mu.RLock()
-	sw = fl.writers[entry.AuditLevel]
-	fl.mu.RUnlock()
-	if sw == nil {
-		return fmt.Errorf("no writer for level %s", entry.AuditLevel)
-	}
-
 	payload, err := json.Marshal(entry)
 	if err != nil {
 		fl.setLastError("marshal: " + err.Error())
@@ -170,21 +163,36 @@ func (fl *FileLogger) Log(entry AuditLogEntry) error {
 	}
 	payload = append(payload, '\n')
 
+	// Hold fl.mu.RLock during the write so rotate (which needs fl.mu.Lock)
+	// cannot close sw.file while we're writing. Multiple Log calls can still
+	// proceed concurrently (RLock is shared), but rotate is fully serialised.
+	fl.mu.RLock()
+	sw = fl.writers[entry.AuditLevel]
+	if sw == nil {
+		fl.mu.RUnlock()
+		return fmt.Errorf("no writer for level %s", entry.AuditLevel)
+	}
+
 	sw.mu.Lock()
 	n, err := sw.file.Write(payload)
 	if err == nil {
 		err = sw.file.Sync()
 	}
 	sw.size += int64(n)
+	needRotate := sw.size >= fl.maxFileSize
 	sw.mu.Unlock()
+	fl.mu.RUnlock()
 
 	if err != nil {
 		fl.setLastError("write: " + err.Error())
 		return err
 	}
 
-	if sw.size >= fl.maxFileSize {
-		go fl.rotate(entry.AuditLevel, dateStr)
+	// Synchronous rotate: no 'go'. Since we released RLock, rotate can acquire
+	// fl.mu.Lock, but no other Log call can read a stale sw because rotate
+	// fully replaces the map entry before releasing fl.mu.
+	if needRotate {
+		fl.rotate(entry.AuditLevel, dateStr)
 	}
 
 	return nil

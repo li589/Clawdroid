@@ -46,6 +46,10 @@ type Server struct {
 	latestXposedFocus map[string]interface{}
 	latestXposedView  map[string]interface{}
 
+	// shutdownCtx is cancelled when Start() returns (listener closed / ctx done).
+	// Long-lived goroutines (e.g. reboot fire-and-forget) select on it to exit.
+	shutdownCtx context.Context
+
 	// Per-subscriber wake channels. Each subscribe_events loop registers its
 	// own buffered channel so a single report_xposed_* wakes every subscriber,
 	// not just one of them.
@@ -123,6 +127,12 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	defer cleanup()
+
+	// Derive a shutdown context so goroutines spawned by handlers can exit
+	// when the listener closes or the parent context is cancelled.
+	shutdownCtx, shutdownCancel := context.WithCancel(ctx)
+	s.shutdownCtx = shutdownCtx
+	defer shutdownCancel()
 
 	listener, err := net.Listen("unix", socketAddr)
 	if err != nil {
@@ -471,7 +481,9 @@ func (s *Server) logAuditRequest(sess *session, req ipc.Request, startedAt time.
 }
 
 // ExecuteStep implements task.StepExecutor. It routes the action through the
-// task's owning session, ensuring step execution stays within the correct session context.
+// task's owning session. If the original submitting session has closed (common
+// when the App opens a new connection for task_get polling), it falls back to
+// any active authenticated session so task steps can continue executing.
 func (s *Server) ExecuteStep(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
 	started := time.Now()
 
@@ -483,6 +495,11 @@ func (s *Server) ExecuteStep(ctx context.Context, sessionID, taskID string, acti
 	}
 
 	sess := s.getSession(sessionID)
+	if sess == nil {
+		// Original session closed (connection dropped). Fall back to any active
+		// session so multi-step tasks survive cross-connection polling.
+		sess = s.anyActiveSession()
+	}
 	if sess == nil {
 		return ipc.CodeErrSessionExpired, ipc.ErrorMessage(ipc.CodeErrSessionExpired), nil, time.Since(started).Milliseconds()
 	}

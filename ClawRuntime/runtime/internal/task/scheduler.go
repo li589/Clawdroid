@@ -182,23 +182,35 @@ func (s *Scheduler) Close() {
 	}
 }
 
-// transitionLocked transitions the task state. Caller must hold taskMu.
+// transitionLocked transitions the task state via the registry so that every
+// State/EndedAt write is serialized under r.mu (no cross-lock race). Caller
+// must hold taskMu (protects s.running/inflight and the cancel-func bookkeeping).
 func (s *Scheduler) transitionLocked(t *Task, newState TaskState) {
 	oldState := t.State
-	if err := oldState.MustTransition(newState); err != nil {
-		slog.Error("task state transition failed", "task_id", t.ID, "from", oldState, "to", newState, "error", err)
+	// Apply the state change under the registry lock and read back the result.
+	if !s.registry.SetState(t.ID, newState) {
+		// Transition invalid or task gone; read current state for logging.
+		cur, ok := s.registry.SnapshotByID(t.ID)
+		if !ok {
+			return
+		}
+		slog.Error("task state transition failed", "task_id", t.ID, "from", cur.State, "to", newState)
 		return
 	}
 	t.State = newState
 	if newState.IsTerminal() {
-		t.EndedAt = time.Now()
 		if cancel, ok := s.running[t.ID]; ok {
 			cancel()
 			delete(s.running, t.ID)
 		}
 	}
 	if s.onStateChange != nil {
-		s.onStateChange(t.ID, oldState, newState, t.StateSnapshot())
+		// Build snapshot from registry for a consistent view.
+		if cur, ok := s.registry.SnapshotByID(t.ID); ok {
+			s.onStateChange(t.ID, oldState, newState, cur.StateSnapshot())
+		} else {
+			s.onStateChange(t.ID, oldState, newState, t.StateSnapshot())
+		}
 	}
 }
 
@@ -225,14 +237,20 @@ func (s *Scheduler) runTask(t *Task) {
 	s.taskMu.Unlock()
 
 	defer func() {
-		cancel()
+		cancel() // cancel the original execution context
+	 // If the task entered Compensating state, the compensation goroutine
+	 // replaced s.running[t.ID] with its own cancel func and will clean up.
+	 // Otherwise, remove the stale entry now.
 		s.taskMu.Lock()
-		delete(s.running, t.ID)
+		cur, ok := s.registry.SnapshotByID(t.ID)
+		if !ok || cur.State != TaskStateCompensating {
+			delete(s.running, t.ID)
+		}
 		s.taskMu.Unlock()
 	}()
 
 	s.transition(t, TaskStateRunning)
-	s.registry.Update(t.SessionID, t.ID, func(t *Task) error {
+	s.registry.UpdateByID(t.ID, func(t *Task) error {
 		t.StartedAt = time.Now()
 		return nil
 	})
@@ -242,7 +260,7 @@ func (s *Scheduler) runTask(t *Task) {
 
 func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 	for {
-		err := s.registry.Update(t.SessionID, t.ID, func(task *Task) error {
+		err := s.registry.UpdateByID(t.ID, func(task *Task) error {
 			if task.CurrentStep >= len(task.Steps) {
 				return fmt.Errorf("all steps completed")
 			}
@@ -252,7 +270,7 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 			return nil
 		})
 		if err != nil {
-			curTask, ok := s.registry.Get(t.SessionID, t.ID)
+			curTask, ok := s.registry.GetByID(t.ID)
 			if !ok {
 				return
 			}
@@ -262,7 +280,7 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 			return
 		}
 
-		curTask, ok := s.registry.Get(t.SessionID, t.ID)
+		curTask, ok := s.registry.GetByID(t.ID)
 		if !ok || curTask.CurrentStep >= len(curTask.Steps) {
 			return
 		}
@@ -270,14 +288,14 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 
 		result := s.executeStepWithRetry(ctx, curTask, step)
 
-		s.registry.Update(t.SessionID, t.ID, func(task *Task) error {
+		s.registry.UpdateByID(t.ID, func(task *Task) error {
 			task.StepResults = append(task.StepResults, result)
 			return nil
 		})
 
 		if !result.OK {
 			if step.OnFailure != StepPolicyRetry {
-				if !s.handleStepFailure(curTask, step, result) {
+				if !s.handleStepFailure(ctx, curTask, step, result) {
 					return
 				}
 			} else {
@@ -285,7 +303,7 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 					s.transition(curTask, TaskStateCancelled)
 					return
 				}
-				s.registry.Update(t.SessionID, t.ID, func(task *Task) error {
+				s.registry.UpdateByID(t.ID, func(task *Task) error {
 					task.Error = result.Message
 					task.ErrorCode = result.Code
 					return nil
@@ -294,7 +312,7 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 				return
 			}
 		} else {
-			s.registry.Update(t.SessionID, t.ID, func(task *Task) error {
+			s.registry.UpdateByID(t.ID, func(task *Task) error {
 				task.CurrentStep++
 				return nil
 			})
@@ -346,7 +364,7 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 	}
 }
 
-func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) bool {
+func (s *Scheduler) handleStepFailure(ctx context.Context, t *Task, step Step, result StepResult) bool {
 	if result.Code == -1 {
 		s.transition(t, TaskStateCancelled)
 		return false
@@ -354,7 +372,7 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 
 	switch step.OnFailure {
 	case StepPolicyFail:
-		s.registry.Update(t.SessionID, t.ID, func(t *Task) error {
+		s.registry.UpdateByID(t.ID, func(t *Task) error {
 			t.Error = result.Message
 			t.ErrorCode = result.Code
 			return nil
@@ -363,27 +381,40 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 		return false
 
 	case StepPolicySkip:
-		s.registry.Update(t.SessionID, t.ID, func(t *Task) error {
+		s.registry.UpdateByID(t.ID, func(t *Task) error {
 			t.CurrentStep++
 			return nil
 		})
 		return true
 
 	case StepPolicyCompensate:
-		s.registry.Update(t.SessionID, t.ID, func(t *Task) error {
+		s.registry.UpdateByID(t.ID, func(t *Task) error {
 			t.Error = result.Message
 			t.ErrorCode = result.Code
 			return nil
 		})
 		s.transition(t, TaskStateCompensating)
-		go s.runCompensation(context.Background(), t)
+		// Compensation uses its own context, independent of the task's execution
+		// context (which runTask's defer will cancel). Register the compensation
+		// cancel func in s.running so Cancel()/Close() can terminate it.
+		compCtx, cancelComp := context.WithCancel(context.Background())
+		s.taskMu.Lock()
+		s.running[t.ID] = cancelComp
+		s.taskMu.Unlock()
+		go func() {
+			defer cancelComp()
+			s.runCompensation(compCtx, t)
+			s.taskMu.Lock()
+			delete(s.running, t.ID)
+			s.taskMu.Unlock()
+		}()
 		return false
 
 	case StepPolicyRetry:
 		return true
 
 	default:
-		s.registry.Update(t.SessionID, t.ID, func(t *Task) error {
+		s.registry.UpdateByID(t.ID, func(t *Task) error {
 			t.Error = result.Message
 			t.ErrorCode = result.Code
 			return nil
@@ -394,7 +425,7 @@ func (s *Scheduler) handleStepFailure(t *Task, step Step, result StepResult) boo
 }
 
 func (s *Scheduler) runCompensation(ctx context.Context, t *Task) {
-	curTask, ok := s.registry.Get(t.SessionID, t.ID)
+	curTask, ok := s.registry.GetByID(t.ID)
 	if !ok {
 		return
 	}

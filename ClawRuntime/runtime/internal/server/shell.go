@@ -220,9 +220,19 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		job := s.shellJobs.begin(sess.id, args.Command, template.Name)
 		s.logger.Info(fmt.Sprintf("exec_shell_limited fire-and-forget: session=%s command=%q job=%s", sess.id, args.Command, job.ID))
 		go func() {
-			time.Sleep(250 * time.Millisecond)
+			select {
+			case <-time.After(250 * time.Millisecond):
+			case <-s.shutdownCtx.Done():
+				s.shellJobs.finish(job.ID, "cancelled", 0, "shutdown before reboot", "", false, false, 0)
+				return
+			}
 			cmd := exec.Command(template.CommandArgs[0], template.CommandArgs[1:]...)
-			_ = cmd.Start()
+			if startErr := cmd.Start(); startErr != nil {
+				s.shellJobs.finish(job.ID, "failed", -1, fmt.Sprintf("reboot start failed: %v", startErr), "", false, false, 0)
+				return
+			}
+			// Reap the child process to avoid zombie; reboot will kill it anyway.
+			_ = cmd.Wait()
 			s.shellJobs.finish(job.ID, "succeeded", 0, "reboot accepted", "", false, false, 0)
 		}()
 		return ipc.Response{
