@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"clawdroid/runtime/internal/paths"
 )
 
 const (
-	magiskModuleID   = "clawruntime"
-	magiskModulePath = "/data/adb/modules/clawruntime"
+	magiskModuleID = "clawruntime"
 )
 
 // Test-only override for module path discovery.
@@ -18,7 +19,7 @@ func resolveMagiskModulePath() string {
 	if magiskModulePathOverride != "" {
 		return magiskModulePathOverride
 	}
-	return magiskModulePath
+	return paths.MagiskModulePath
 }
 
 type magiskModuleStatus struct {

@@ -28,9 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.clawdroid.app.chat.ChatContextIndexStore
-import com.clawdroid.app.chat.FileIndexStore
-import com.clawdroid.app.chat.MemoryGraphStore
+import com.clawdroid.app.data.ChatContextIndexStore
+import com.clawdroid.app.data.FileIndexStore
+import com.clawdroid.app.data.MemoryGraphStore
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.ui.FieldSupportingText

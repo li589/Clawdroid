@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"clawdroid/runtime/internal/ipc"
+	"clawdroid/runtime/internal/paths"
 )
 
 var androidPackageRegex = regexp.MustCompile(`^[A-Za-z]\w*(\.[A-Za-z]\w*)+$`)
@@ -71,15 +72,15 @@ var allowedShellCommands = map[string]shellCommandTemplate{
 	},
 	"ls /data/adb/modules/clawruntime": {
 		Name:        "ls /data/adb/modules/clawruntime",
-		CommandArgs: []string{"ls", "/data/adb/modules/clawruntime"},
+		CommandArgs: []string{"ls", paths.MagiskModulePath},
 	},
 	"cat /data/adb/modules/clawruntime/webroot/status.json": {
 		Name:        "cat /data/adb/modules/clawruntime/webroot/status.json",
-		CommandArgs: []string{"cat", "/data/adb/modules/clawruntime/webroot/status.json"},
+		CommandArgs: []string{"cat", paths.WebrootPath + "/status.json"},
 	},
 	"cat /data/adb/modules/clawruntime/webroot/verify.json": {
 		Name:        "cat /data/adb/modules/clawruntime/webroot/verify.json",
-		CommandArgs: []string{"cat", "/data/adb/modules/clawruntime/webroot/verify.json"},
+		CommandArgs: []string{"cat", paths.WebrootPath + "/verify.json"},
 	},
 	"pidof clawdroid-runtime": {
 		Name:        "pidof clawdroid-runtime",

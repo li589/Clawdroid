@@ -1,5 +1,6 @@
 package com.clawdroid.app.xposed
 
+import com.clawdroid.app.env.ClawRuntimePaths
 import java.io.File
 
 /**
@@ -349,5 +350,5 @@ internal data class XposedAdapterConfig(
 }
 
 internal object XposedPaths {
-    const val DIR = "/data/local/tmp/clawdroid/xposed"
+    const val DIR = ClawRuntimePaths.XPOSED_DIR
 }

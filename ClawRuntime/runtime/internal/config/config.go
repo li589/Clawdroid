@@ -3,8 +3,11 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"clawdroid/runtime/internal/paths"
 )
 
 type Config struct {
@@ -33,7 +36,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		SocketName:         "clawdroid_secure_ipc",
-		AuditDir:           "/data/local/tmp/clawdroid/audit",
+		AuditDir:           paths.AuditDir,
 		LogLevel:           "info",
 		ProtocolVersion:    1,
 		RequestTimeoutMS:   8000,
@@ -56,6 +59,90 @@ func Default() Config {
 	}
 }
 
+// stringOrList accepts both comma-separated scalar strings and YAML block
+// sequences, unifying them into []string. This preserves backward
+// compatibility with production runtime.yaml (comma strings) and config_test
+// (block lists).
+type stringOrList []string
+
+func (s *stringOrList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		raw := strings.TrimSpace(value.Value)
+		if raw == "" {
+			*s = []string{}
+			return nil
+		}
+		parts := strings.Split(raw, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if item := strings.TrimSpace(p); item != "" {
+				result = append(result, item)
+			}
+		}
+		*s = result
+		return nil
+	}
+	if value.Kind == yaml.SequenceNode {
+		var items []string
+		if err := value.Decode(&items); err != nil {
+			return err
+		}
+		*s = items
+		return nil
+	}
+	*s = []string{}
+	return nil
+}
+
+// yamlConfig is the intermediate structure for yaml.Unmarshal. Pointer types
+// distinguish "not set in YAML" (nil → keep default) from "explicitly set to
+// false/0" (non-nil → override default).
+type yamlConfig struct {
+	Runtime    *yamlRuntime    `yaml:"runtime"`
+	Auth       *yamlAuth       `yaml:"auth"`
+	Security   *yamlSecurity   `yaml:"security"`
+	Paths      *yamlPaths      `yaml:"paths"`
+	Capability *yamlCapability `yaml:"capability"`
+}
+
+type yamlRuntime struct {
+	SocketName         *string `yaml:"socket_name"`
+	ProtocolVersion    *int    `yaml:"protocol_version"`
+	RequestTimeoutMS   *int    `yaml:"request_timeout_ms"`
+	MaxPayloadBytes    *int    `yaml:"max_payload_bytes"`
+	RateLimitPerMinute *int    `yaml:"rate_limit_per_minute"`
+	MaxConcurrentTasks *int    `yaml:"max_concurrent_tasks"`
+	MaxInflightTasks   *int    `yaml:"max_inflight_tasks"`
+	LogLevel           *string `yaml:"log_level"`
+	AuditDir           *string `yaml:"audit_dir"`
+}
+
+type yamlAuth struct {
+	SharedSecret      *string      `yaml:"shared_secret"`
+	AllowedPackages   stringOrList `yaml:"allowed_packages"`
+	AllowedSignatures stringOrList `yaml:"allowed_signatures"`
+	TimestampSkewSec  *int64       `yaml:"timestamp_skew_seconds"`
+	ChallengeTTLSec   *int64       `yaml:"challenge_ttl_seconds"`
+	SessionTTLSec     *int64       `yaml:"session_ttl_seconds"`
+}
+
+type yamlSecurity struct {
+	HandshakeTTLMS     *int `yaml:"handshake_ttl_ms"`
+	SessionTTLMS       *int `yaml:"session_ttl_ms"`
+	RateLimitPerMinute *int `yaml:"rate_limit_per_minute"`
+}
+
+type yamlPaths struct {
+	ReadonlyWhitelist stringOrList `yaml:"readonly_whitelist"`
+}
+
+type yamlCapability struct {
+	InputInjectEnabled *bool `yaml:"input_inject_enabled"`
+	ScreenshotEnabled  *bool `yaml:"screenshot_enabled"`
+	ShellEnabled       *bool `yaml:"shell_enabled"`
+	FileBridgeEnabled  *bool `yaml:"file_bridge_enabled"`
+}
+
 func Load(path string) (Config, error) {
 	cfg := Default()
 
@@ -64,85 +151,98 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 
-	lines := strings.Split(string(content), "\n")
-	var section string
+	var yc yamlConfig
+	if err := yaml.Unmarshal(content, &yc); err != nil {
+		return cfg, err
+	}
 
-	for index := 0; index < len(lines); index++ {
-		rawLine := lines[index]
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	// Runtime section
+	if yc.Runtime != nil {
+		if yc.Runtime.SocketName != nil {
+			cfg.SocketName = *yc.Runtime.SocketName
 		}
-
-		if !strings.HasPrefix(rawLine, " ") && strings.HasSuffix(line, ":") && !strings.Contains(line, "\"") {
-			section = normalizeSectionName(strings.TrimSuffix(line, ":"))
-			continue
+		if yc.Runtime.ProtocolVersion != nil {
+			cfg.ProtocolVersion = *yc.Runtime.ProtocolVersion
 		}
-
-		if strings.HasPrefix(rawLine, "  ") && strings.HasSuffix(line, ":") && !strings.Contains(line, "\"") {
-			key := strings.TrimSuffix(line, ":")
-			listKey := section + "." + key
-			values, nextIndex := readIndentedList(lines, index+1)
-			applyListValue(&cfg, listKey, values)
-			index = nextIndex - 1
-			continue
+		if yc.Runtime.RequestTimeoutMS != nil {
+			cfg.RequestTimeoutMS = *yc.Runtime.RequestTimeoutMS
 		}
-
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
+		if yc.Runtime.MaxPayloadBytes != nil {
+			cfg.MaxPayloadBytes = *yc.Runtime.MaxPayloadBytes
 		}
+		if yc.Runtime.RateLimitPerMinute != nil {
+			cfg.RateLimitPerMinute = *yc.Runtime.RateLimitPerMinute
+		}
+		if yc.Runtime.MaxConcurrentTasks != nil {
+			cfg.MaxConcurrentTasks = *yc.Runtime.MaxConcurrentTasks
+		}
+		if yc.Runtime.MaxInflightTasks != nil {
+			cfg.MaxInflightTasks = *yc.Runtime.MaxInflightTasks
+		}
+		if yc.Runtime.LogLevel != nil {
+			cfg.LogLevel = *yc.Runtime.LogLevel
+		}
+		if yc.Runtime.AuditDir != nil {
+			cfg.AuditDir = *yc.Runtime.AuditDir
+		}
+	}
 
-		key := strings.TrimSpace(parts[0])
-		value := normalizeValue(parts[1])
+	// Auth section
+	if yc.Auth != nil {
+		if yc.Auth.SharedSecret != nil {
+			cfg.AuthSharedSecret = *yc.Auth.SharedSecret
+		}
+		if len(yc.Auth.AllowedPackages) > 0 {
+			cfg.AllowedPackages = yc.Auth.AllowedPackages
+		}
+		if len(yc.Auth.AllowedSignatures) > 0 {
+			cfg.AllowedSignatures = yc.Auth.AllowedSignatures
+		}
+		if yc.Auth.TimestampSkewSec != nil {
+			cfg.TimestampSkewSec = *yc.Auth.TimestampSkewSec
+		}
+		if yc.Auth.ChallengeTTLSec != nil {
+			cfg.ChallengeTTLSec = *yc.Auth.ChallengeTTLSec
+		}
+		if yc.Auth.SessionTTLSec != nil {
+			cfg.SessionTTLSec = *yc.Auth.SessionTTLSec
+		}
+	}
 
-		switch normalizeConfigKey(section + "." + key) {
-		case "runtime.socket_name":
-			cfg.SocketName = value
-		case "runtime.protocol_version":
-			cfg.ProtocolVersion = parseInt(value, cfg.ProtocolVersion)
-		case "runtime.request_timeout_ms":
-			cfg.RequestTimeoutMS = parseInt(value, cfg.RequestTimeoutMS)
-		case "runtime.max_payload_bytes":
-			cfg.MaxPayloadBytes = parseInt(value, cfg.MaxPayloadBytes)
-		case "runtime.rate_limit_per_minute":
-			cfg.RateLimitPerMinute = parseInt(value, cfg.RateLimitPerMinute)
-		case "runtime.max_concurrent_tasks":
-			cfg.MaxConcurrentTasks = parseInt(value, cfg.MaxConcurrentTasks)
-		case "runtime.max_inflight_tasks":
-			cfg.MaxInflightTasks = parseInt(value, cfg.MaxInflightTasks)
-		case "runtime.log_level":
-			cfg.LogLevel = value
-		case "runtime.audit_dir":
-			cfg.AuditDir = value
-		case "auth.shared_secret":
-			cfg.AuthSharedSecret = value
-		case "auth.allowed_packages":
-			cfg.AllowedPackages = parseList(value, cfg.AllowedPackages)
-		case "auth.allowed_signatures":
-			cfg.AllowedSignatures = parseList(value, cfg.AllowedSignatures)
-		case "auth.timestamp_skew_seconds":
-			cfg.TimestampSkewSec = int64(parseInt(value, int(cfg.TimestampSkewSec)))
-		case "auth.challenge_ttl_seconds":
-			cfg.ChallengeTTLSec = int64(parseInt(value, int(cfg.ChallengeTTLSec)))
-		case "auth.session_ttl_seconds":
-			cfg.SessionTTLSec = int64(parseInt(value, int(cfg.SessionTTLSec)))
-		case "security.handshake_ttl_ms":
-			cfg.ChallengeTTLSec = parseMillisecondsAsSeconds(value, cfg.ChallengeTTLSec)
-		case "security.session_ttl_ms":
-			cfg.SessionTTLSec = parseMillisecondsAsSeconds(value, cfg.SessionTTLSec)
-		case "capability.input_inject_enabled":
-			cfg.InputInjectEnabled = parseBool(value, cfg.InputInjectEnabled)
-		case "capability.screenshot_enabled":
-			cfg.ScreenshotEnabled = parseBool(value, cfg.ScreenshotEnabled)
-		case "capability.shell_enabled":
-			cfg.ShellEnabled = parseBool(value, cfg.ShellEnabled)
-		case "capability.file_bridge_enabled":
-			cfg.FileBridgeEnabled = parseBool(value, cfg.FileBridgeEnabled)
-		case "paths.readonly_whitelist":
-			cfg.ReadonlyWhitelist = parseList(value, cfg.ReadonlyWhitelist)
-		case "security.rate_limit_per_minute":
-			cfg.RateLimitPerMinute = parseInt(value, cfg.RateLimitPerMinute)
+	// Security section overrides Auth section (matches original switch order:
+	// security.handshake_ttl_ms overwrites auth.challenge_ttl_seconds, etc.)
+	if yc.Security != nil {
+		if yc.Security.HandshakeTTLMS != nil {
+			cfg.ChallengeTTLSec = int64((*yc.Security.HandshakeTTLMS + 999) / 1000)
+		}
+		if yc.Security.SessionTTLMS != nil {
+			cfg.SessionTTLSec = int64((*yc.Security.SessionTTLMS + 999) / 1000)
+		}
+		if yc.Security.RateLimitPerMinute != nil {
+			cfg.RateLimitPerMinute = *yc.Security.RateLimitPerMinute
+		}
+	}
+
+	// Paths section
+	if yc.Paths != nil {
+		if len(yc.Paths.ReadonlyWhitelist) > 0 {
+			cfg.ReadonlyWhitelist = yc.Paths.ReadonlyWhitelist
+		}
+	}
+
+	// Capability section
+	if yc.Capability != nil {
+		if yc.Capability.InputInjectEnabled != nil {
+			cfg.InputInjectEnabled = *yc.Capability.InputInjectEnabled
+		}
+		if yc.Capability.ScreenshotEnabled != nil {
+			cfg.ScreenshotEnabled = *yc.Capability.ScreenshotEnabled
+		}
+		if yc.Capability.ShellEnabled != nil {
+			cfg.ShellEnabled = *yc.Capability.ShellEnabled
+		}
+		if yc.Capability.FileBridgeEnabled != nil {
+			cfg.FileBridgeEnabled = *yc.Capability.FileBridgeEnabled
 		}
 	}
 
@@ -166,96 +266,4 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
-}
-
-func readIndentedList(lines []string, start int) ([]string, int) {
-	items := make([]string, 0, 4)
-	index := start
-	for ; index < len(lines); index++ {
-		line := lines[index]
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if !strings.HasPrefix(line, "    ") || !strings.HasPrefix(trimmed, "- ") {
-			break
-		}
-		item := normalizeValue(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
-		if item != "" {
-			items = append(items, item)
-		}
-	}
-	return items, index
-}
-
-func applyListValue(cfg *Config, key string, values []string) {
-	if len(values) == 0 {
-		return
-	}
-	switch key {
-	case "auth.allowed_packages":
-		cfg.AllowedPackages = values
-	case "auth.allowed_signatures":
-		cfg.AllowedSignatures = values
-	case "paths.readonly_whitelist":
-		cfg.ReadonlyWhitelist = values
-	}
-}
-
-func normalizeValue(raw string) string {
-	value := strings.TrimSpace(raw)
-	value = strings.Trim(value, "\"")
-	return value
-}
-
-func normalizeSectionName(section string) string {
-	return strings.TrimSpace(section)
-}
-
-func normalizeConfigKey(key string) string {
-	return strings.TrimSpace(key)
-}
-
-func parseInt(value string, fallback int) int {
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func parseBool(value string, fallback bool) bool {
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func parseMillisecondsAsSeconds(value string, fallback int64) int64 {
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return int64((parsed + 999) / 1000)
-}
-
-func parseList(value string, fallback []string) []string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-
-	parts := strings.Split(value, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(strings.Trim(part, "\""))
-		if item != "" {
-			result = append(result, item)
-		}
-	}
-
-	if len(result) == 0 {
-		return fallback
-	}
-	return result
 }

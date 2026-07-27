@@ -28,7 +28,7 @@ data class MagiskModuleStatus(
     val moduleInstalled: Boolean = false,
     val moduleEnabled: Boolean = false,
     val runtimeDaemonRunning: Boolean = false,
-    val modulePath: String = "/data/adb/modules/clawruntime",
+    val modulePath: String = ClawRuntimePaths.MAGISK_MODULE_PATH,
     val rawOutput: String = ""
 )
 
@@ -753,7 +753,7 @@ internal fun parseMagiskModuleStatus(output: String): MagiskModuleStatus {
     }
 
     val modulePath = Regex("""(?:^|\|)path=([^|]+)""").find(output)?.groupValues?.getOrNull(1)
-        ?: "/data/adb/modules/clawruntime"
+        ?: ClawRuntimePaths.MAGISK_MODULE_PATH
 
     return MagiskModuleStatus(
         magiskDaemonRunning = parseFlag("magisk"),

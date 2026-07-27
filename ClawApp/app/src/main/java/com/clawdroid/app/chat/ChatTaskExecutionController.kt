@@ -12,6 +12,7 @@ import com.clawdroid.app.data.model.ChatTaskFailureState
 import com.clawdroid.app.ui.ChatTaskHistoryFilter
 import com.clawdroid.app.data.model.ChatTaskProgressState
 import com.clawdroid.app.data.model.ChatTaskStepState
+import com.clawdroid.app.skills.RuntimeTaskPoller
 import com.clawdroid.app.ui.ChatUiState
 import com.clawdroid.app.ui.withRuntimeSnapshot
 import kotlinx.coroutines.CancellationException
@@ -130,29 +131,34 @@ internal class ChatTaskExecutionController(
             return
         }
         scope.launch {
-            val cancelResult = runCatching {
-                toolDispatcher?.execute(
-                    ClawTool.TASK_CANCEL,
-                    mapOf("task_id" to runtimeTaskId)
-                )
-            }.getOrNull()
-            val stillTrackingSame = getState().taskExecution
-                ?.takeIf { it.status == ChatTaskProgressState.Running }
-                ?.runtimeTaskId == runtimeTaskId
-            if (!stillTrackingSame) {
-                return@launch
-            }
-            if (cancelResult == null || cancelResult.success) {
-                cancelResult?.taskSnapshot?.let { applyRuntimeTaskSnapshot(it) }
-                if (getState().taskExecution?.status == ChatTaskProgressState.Running) {
-                    cancelTaskExecution("任务已取消：已停止 Runtime 任务 $runtimeTaskId。")
-                }
-            } else {
-                updateTaskExecution { task ->
-                    task.copy(
-                        summary = "取消请求失败：${cancelResult.output.trim()}（任务仍在运行）"
+            if (!RuntimeTaskPoller.claimCancel(runtimeTaskId)) return@launch
+            try {
+                val cancelResult = runCatching {
+                    toolDispatcher?.execute(
+                        ClawTool.TASK_CANCEL,
+                        mapOf("task_id" to runtimeTaskId)
                     )
+                }.getOrNull()
+                val stillTrackingSame = getState().taskExecution
+                    ?.takeIf { it.status == ChatTaskProgressState.Running }
+                    ?.runtimeTaskId == runtimeTaskId
+                if (!stillTrackingSame) {
+                    return@launch
                 }
+                if (cancelResult == null || cancelResult.success) {
+                    cancelResult?.taskSnapshot?.let { applyRuntimeTaskSnapshot(it) }
+                    if (getState().taskExecution?.status == ChatTaskProgressState.Running) {
+                        cancelTaskExecution("任务已取消：已停止 Runtime 任务 $runtimeTaskId。")
+                    }
+                } else {
+                    updateTaskExecution { task ->
+                        task.copy(
+                            summary = "取消请求失败：${cancelResult.output.trim()}（任务仍在运行）"
+                        )
+                    }
+                }
+            } finally {
+                RuntimeTaskPoller.forgetCancelled(runtimeTaskId)
             }
         }
     }
@@ -505,11 +511,16 @@ internal class ChatTaskExecutionController(
             return
         }
         scope.launch {
-            runCatching {
-                toolDispatcher?.execute(
-                    ClawTool.TASK_CANCEL,
-                    mapOf("task_id" to runtimeTaskId)
-                )
+            if (!RuntimeTaskPoller.claimCancel(runtimeTaskId)) return@launch
+            try {
+                runCatching {
+                    toolDispatcher?.execute(
+                        ClawTool.TASK_CANCEL,
+                        mapOf("task_id" to runtimeTaskId)
+                    )
+                }
+            } finally {
+                RuntimeTaskPoller.forgetCancelled(runtimeTaskId)
             }
         }
     }

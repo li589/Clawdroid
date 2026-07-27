@@ -1,4 +1,4 @@
-package com.clawdroid.app.chat
+package com.clawdroid.app.data
 
 import android.content.Context
 import org.json.JSONArray

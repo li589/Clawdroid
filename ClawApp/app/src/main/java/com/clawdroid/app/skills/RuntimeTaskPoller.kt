@@ -8,6 +8,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Shared poll helper for waiting on Runtime `task_*` until a terminal state
@@ -15,6 +16,20 @@ import kotlinx.coroutines.ensureActive
  */
 object RuntimeTaskPoller {
     const val ERROR_DETACHED = ClawAgentRunner.ERROR_RUNTIME_TASK_DETACHED
+
+    /**
+     * 去重集合：确保同一 task_id 的 TASK_CANCEL IPC 仅发送一次。
+     * 多条取消路径（catch 块、ChatTaskExecutionController）通过 [claimCancel] 原子认领。
+     */
+    private val cancelledTaskIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** 原子认领取消权。返回 true 表示首次认领（调用方应发送 TASK_CANCEL）。 */
+    internal fun claimCancel(taskId: String): Boolean = cancelledTaskIds.add(taskId)
+
+    /** 释放取消标记，允许同一 taskId 在未来重试时重新认领。 */
+    internal fun forgetCancelled(taskId: String) {
+        cancelledTaskIds.remove(taskId)
+    }
 
     data class AwaitResult(
         val success: Boolean,
@@ -42,6 +57,7 @@ object RuntimeTaskPoller {
                 error = "missing_task_id"
             )
         }
+        forgetCancelled(id)
 
         val effectiveAttempts = if (timeoutMs != null && timeoutMs > 0L) {
             // Adaptive backoff averages ~1s/attempt over long waits; keep a floor of 4 polls.
@@ -92,8 +108,10 @@ object RuntimeTaskPoller {
                 }
             }
         } catch (cancelled: CancellationException) {
-            runCatching {
-                dispatcher.execute(ClawTool.TASK_CANCEL, mapOf("task_id" to id))
+            if (claimCancel(id)) {
+                runCatching {
+                    dispatcher.execute(ClawTool.TASK_CANCEL, mapOf("task_id" to id))
+                }
             }
             throw cancelled
         }
@@ -143,6 +161,7 @@ object RuntimeTaskPoller {
     }
 
     private fun terminalResult(snapshot: ClawRuntimeTaskSnapshot): AwaitResult {
+        forgetCancelled(snapshot.taskId)
         val ok = snapshot.state.equals("succeeded", ignoreCase = true)
         return AwaitResult(
             success = ok,

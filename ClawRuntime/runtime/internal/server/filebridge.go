@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"clawdroid/runtime/internal/ipc"
+	"clawdroid/runtime/internal/paths"
 )
 
 type readFileArgs struct {
@@ -599,8 +600,8 @@ func (s *Server) allowedReadRoots() []string {
 		filepath.Join(baseDir, "captures"),
 		filepath.Join(baseDir, "xposed"),
 		s.cfg.AuditDir,
-		"/data/adb/modules/clawruntime",
-		"/data/adb/modules/clawruntime/webroot",
+		paths.MagiskModulePath,
+		paths.WebrootPath,
 	}
 	roots = append(roots, s.cfg.ReadonlyWhitelist...)
 

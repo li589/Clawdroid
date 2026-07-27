@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import com.clawdroid.app.env.ClawRuntimePaths
 import com.clawdroid.app.env.ShizukuSupport
 import com.clawdroid.app.termux.TermuxBridge
 import com.clawdroid.app.service.ClawAccessibilityService
@@ -106,8 +107,8 @@ class ToolPermissionGate(
                 if (!looksLikeRootRuntimePresent() && ToolPermissionGrant.RUNTIME_IPC in spec.grants) {
                     // Soft warning path: still allow attempt so Runtime can return precise errors,
                     // except when we know accessibility-only device with no module path.
-                    if (!File("/data/adb/modules/clawruntime").exists() &&
-                        !File("/data/local/tmp/clawdroid").exists()
+                    if (!File(ClawRuntimePaths.MAGISK_MODULE_PATH).exists() &&
+                        !File(ClawRuntimePaths.RUNTIME_WORK_DIR).exists()
                     ) {
                         // Do not hard-fail: magisk path may be invisible without root.
                     }
@@ -172,6 +173,6 @@ class ToolPermissionGate(
     }
 
     private fun looksLikeRootRuntimePresent(): Boolean {
-        return File("/data/adb/modules/clawruntime").exists()
+        return File(ClawRuntimePaths.MAGISK_MODULE_PATH).exists()
     }
 }

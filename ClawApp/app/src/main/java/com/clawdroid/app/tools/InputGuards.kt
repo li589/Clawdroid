@@ -1,5 +1,7 @@
 package com.clawdroid.app.tools
 
+import com.clawdroid.app.env.ClawRuntimePaths
+
 /**
  * Shared edge validation for chat / tool / MCP inputs.
  * Defense-in-depth: Runtime still enforces shell templates and file allowlists.
@@ -204,9 +206,9 @@ object InputGuards {
         "getprop ro.product.manufacturer",
         "getprop ro.product.model",
         "id",
-        "ls /data/adb/modules/clawruntime",
-        "cat /data/adb/modules/clawruntime/webroot/status.json",
-        "cat /data/adb/modules/clawruntime/webroot/verify.json",
+        "ls ${ClawRuntimePaths.MAGISK_MODULE_PATH}",
+        "cat ${ClawRuntimePaths.WEBROOT_PATH}/status.json",
+        "cat ${ClawRuntimePaths.WEBROOT_PATH}/verify.json",
         "pidof clawdroid-runtime",
         "settings get secure accessibility_enabled",
         "settings get secure enabled_accessibility_services",

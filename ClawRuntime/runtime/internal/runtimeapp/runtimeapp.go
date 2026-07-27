@@ -10,6 +10,7 @@ import (
 
 	"clawdroid/runtime/internal/audit"
 	"clawdroid/runtime/internal/config"
+	"clawdroid/runtime/internal/paths"
 	"clawdroid/runtime/internal/server"
 )
 
@@ -36,7 +37,7 @@ func Run() {
 
 	auditDir := cfg.AuditDir
 	if auditDir == "" {
-		auditDir = "/data/local/tmp/clawdroid/audit"
+		auditDir = paths.AuditDir
 	}
 
 	logger, err = audit.NewLoggerWithFileLogger(auditDir)

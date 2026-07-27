@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"clawdroid/runtime/internal/paths"
 )
 
 const accessibilityServiceClass = "ClawAccessibilityService"
@@ -55,13 +57,13 @@ func detectLSPosedAvailable() bool {
 		return false
 	}
 
-	paths := []string{
-		"/data/adb/lspd",
-		"/data/adb/modules/zygisk_lsposed",
-		"/data/adb/modules/riru_lsposed",
-		"/data/adb/modules/lsposed",
+	candidates := []string{
+		paths.LSPosedDaemonPath,
+		paths.LSPosedZygiskModulePath,
+		paths.LSPosedRiruModulePath,
+		paths.LSPosedModulePath,
 	}
-	for _, path := range paths {
+	for _, path := range candidates {
 		if _, err := os.Stat(path); err == nil {
 			return true
 		}

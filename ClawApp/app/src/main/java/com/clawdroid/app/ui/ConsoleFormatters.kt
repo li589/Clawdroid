@@ -1,5 +1,6 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.env.ClawRuntimePaths
 import com.clawdroid.app.env.LocalEnvironmentStatus
 import com.clawdroid.app.env.buildLocalEnvironmentDiagnosis
 import com.clawdroid.app.runtime.ClawRuntimeEventFrame
@@ -320,9 +321,9 @@ internal fun defaultShellCommandOptions(): List<String> {
         "settings get secure accessibility_enabled",
         "settings get secure enabled_accessibility_services",
         "cmd overlay list",
-        "ls /data/adb/modules/clawruntime",
-        "cat /data/adb/modules/clawruntime/webroot/status.json",
-        "cat /data/adb/modules/clawruntime/webroot/verify.json",
+        "ls ${ClawRuntimePaths.MAGISK_MODULE_PATH}",
+        "cat ${ClawRuntimePaths.WEBROOT_PATH}/status.json",
+        "cat ${ClawRuntimePaths.WEBROOT_PATH}/verify.json",
         "pidof clawdroid-runtime"
     )
 }

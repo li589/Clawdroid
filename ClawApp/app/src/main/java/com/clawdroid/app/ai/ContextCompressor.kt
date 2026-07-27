@@ -1,9 +1,9 @@
 package com.clawdroid.app.ai
 
 import android.content.Context
-import com.clawdroid.app.chat.ChatContextIndexStore
 import com.clawdroid.app.chat.ChatHistoryTurn
-import com.clawdroid.app.chat.MemoryGraphStore
+import com.clawdroid.app.data.ChatContextIndexStore
+import com.clawdroid.app.data.MemoryGraphStore
 import com.clawdroid.app.model.ModelApiClient
 import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.data.model.ModelProvider

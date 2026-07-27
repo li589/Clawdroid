@@ -14,9 +14,9 @@ import com.clawdroid.app.ai.AgentToolLoopHost
 import com.clawdroid.app.ai.ContextCompressor
 import com.clawdroid.app.chat.ChatSessionCoordinator
 import com.clawdroid.app.chat.ChatTaskExecutionController
-import com.clawdroid.app.chat.ChatContextIndexStore
-import com.clawdroid.app.chat.FileIndexStore
-import com.clawdroid.app.chat.MemoryGraphStore
+import com.clawdroid.app.data.ChatContextIndexStore
+import com.clawdroid.app.data.FileIndexStore
+import com.clawdroid.app.data.MemoryGraphStore
 import com.clawdroid.app.data.AppSettingsStore
 import com.clawdroid.app.data.ChatSessionSummary
 import com.clawdroid.app.data.model.AgentOrchestrationSettings
