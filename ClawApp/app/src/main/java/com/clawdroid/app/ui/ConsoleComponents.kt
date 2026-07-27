@@ -1,5 +1,12 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatMessageState
+import com.clawdroid.app.data.model.ChatRole
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ChatTaskFailureState
+import com.clawdroid.app.data.model.ChatTaskProgressState
+import com.clawdroid.app.data.model.ChatTaskStepState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -80,7 +87,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.clawdroid.app.R
 import com.clawdroid.app.automation.AutomationTaskState
 import com.clawdroid.app.env.LocalEnvironmentStatus
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
@@ -614,7 +623,7 @@ internal fun QuickActionCard(
                 AssistChip(onClick = onRuntimeCheck, enabled = actionsEnabled, label = { Text("运行时检查") })
                 AssistChip(onClick = onHealthSweepTask, enabled = actionsEnabled, label = { Text("运行时体检") })
                 AssistChip(onClick = onCapabilities, enabled = actionsEnabled, label = { Text("Capabilities") })
-                AssistChip(onClick = onCapture, enabled = actionsEnabled, label = { Text("截图并预览") })
+                AssistChip(onClick = onCapture, enabled = actionsEnabled, label = { Text(stringResource(R.string.overview_capture_detect)) })
                 AssistChip(onClick = onSwipeCaptureTask, enabled = actionsEnabled, label = { Text("滑动后截图") })
                 AssistChip(onClick = onShell, enabled = actionsEnabled, label = { Text("wm size") })
                 AssistChip(onClick = onSafeTapTask, enabled = actionsEnabled, label = { Text("确认后点击") })
@@ -1198,7 +1207,7 @@ private fun taskActionLabel(action: com.clawdroid.app.chat.ChatTaskAction): Stri
     return when (action) {
         com.clawdroid.app.chat.ChatTaskAction.ConfirmThenSafeTap -> "页面确认后安全点击"
         com.clawdroid.app.chat.ChatTaskAction.ProbeThenCapabilities -> "运行时状态检查"
-        com.clawdroid.app.chat.ChatTaskAction.CaptureThenPreview -> "截图并预览"
+        com.clawdroid.app.chat.ChatTaskAction.CaptureThenPreview -> "截图检测"
         com.clawdroid.app.chat.ChatTaskAction.RuntimeHealthSweep -> "运行时体检"
         com.clawdroid.app.chat.ChatTaskAction.SwipeThenCapture -> "滑动后截图"
     }
@@ -1685,7 +1694,7 @@ internal fun LocalEnvironmentOpsCard(
             ) {
                 AssistChip(onClick = onPing, label = { Text("Ping") })
                 AssistChip(onClick = onCapabilities, label = { Text("Capabilities") })
-                AssistChip(onClick = onCapture, label = { Text("截图并预览") })
+                AssistChip(onClick = onCapture, label = { Text(stringResource(R.string.overview_capture_detect)) })
                 AssistChip(onClick = onShell, label = { Text("wm size") })
                 AssistChip(
                     onClick = onEvents,

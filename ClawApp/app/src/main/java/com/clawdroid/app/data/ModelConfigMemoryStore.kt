@@ -1,11 +1,11 @@
 package com.clawdroid.app.data
 
 import android.content.Context
-import com.clawdroid.app.ui.ModelConfigMemory
-import com.clawdroid.app.ui.ModelConfigSnapshot
-import com.clawdroid.app.ui.ModelProvider
-import com.clawdroid.app.ui.ModelSettings
-import com.clawdroid.app.ui.UrlPathMode
+import com.clawdroid.app.data.model.ModelConfigMemory
+import com.clawdroid.app.data.model.ModelConfigSnapshot
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
+import com.clawdroid.app.data.model.UrlPathMode
 import org.json.JSONArray
 import org.json.JSONObject
 

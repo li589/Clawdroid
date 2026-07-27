@@ -212,7 +212,10 @@ internal fun ClawdroidShell(
         onAssistEnabledChanged = assistController::setEnabled,
         onAssistHostUrlChanged = assistController::updateHostUrl,
         onAssistTokenChanged = assistController::updateToken,
-        onAssistProbe = assistController::probe
+        onAssistProbe = assistController::probe,
+        onGetVersion = overviewController::getVersion,
+        onGetHealth = overviewController::getHealth,
+        onGetLastError = overviewController::getLastError
     )
     val chatConsoleState = remember(
         chatUiState,

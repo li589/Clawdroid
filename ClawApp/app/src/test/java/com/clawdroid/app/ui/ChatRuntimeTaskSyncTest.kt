@@ -1,5 +1,8 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ChatTaskProgressState
+import com.clawdroid.app.data.model.ChatTaskStepState
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

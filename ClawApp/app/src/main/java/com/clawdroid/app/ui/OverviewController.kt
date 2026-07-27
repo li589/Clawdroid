@@ -1124,6 +1124,23 @@ internal class OverviewController(
         val capabilitiesResult = toolExecutor.getCapabilities()
         applyToolSideEffects(capabilitiesResult)
         updateRuntimeState { it.copy(capabilityStatus = capabilitiesResult.output) }
+
+        // 同步 Version / Health，避免诊断页恒为"未读取"。
+        // getVersion 走 PING action；getHealth 走 GET_CAPABILITIES（与上方 capabilities 同源响应），
+        // 二者输出的展示字段不同，故仍分别调用以保证诊断页信息完整。
+        if (capabilitiesResult.success) {
+            updateRuntimeState { it.copy(versionStatus = "请求中...") }
+            val versionResult = toolExecutor.getVersion()
+            applyToolSideEffects(versionResult)
+            updateRuntimeState { it.copy(versionStatus = versionResult.output) }
+
+            updateRuntimeState { it.copy(healthStatus = "请求中...") }
+            val healthResult = toolExecutor.getHealth()
+            applyToolSideEffects(healthResult)
+            updateRuntimeState { it.copy(healthStatus = healthResult.output) }
+            refreshCompatBanner()
+        }
+
         ensureAutoEventSubscription(reason = reason)
         refreshRuntimeTasks()
     }

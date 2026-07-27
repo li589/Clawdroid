@@ -8,10 +8,10 @@ import com.clawdroid.app.automation.AutomationRuntimeStore
 import com.clawdroid.app.runtime.ClawRuntimeClient
 import com.clawdroid.app.tools.ClawToolExecutor
 import com.clawdroid.app.data.ChatHistoryStore
-import com.clawdroid.app.ui.ChatMessageState
-import com.clawdroid.app.ui.ChatRole
+import com.clawdroid.app.data.model.ChatMessageState
+import com.clawdroid.app.data.model.ChatRole
 import com.clawdroid.app.ui.ChatViewModel
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelSettings
 import com.clawdroid.app.ui.OverviewController
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay

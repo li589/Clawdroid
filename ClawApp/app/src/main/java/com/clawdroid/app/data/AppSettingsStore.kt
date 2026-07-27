@@ -2,15 +2,15 @@ package com.clawdroid.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.clawdroid.app.ui.AgentOrchestrationSettings
-import com.clawdroid.app.ui.ContextSettings
-import com.clawdroid.app.ui.ModelProvider
-import com.clawdroid.app.ui.ModelSettings
-import com.clawdroid.app.ui.NetworkProxyMode
-import com.clawdroid.app.ui.NetworkProxySettings
-import com.clawdroid.app.ui.ThemeMode
-import com.clawdroid.app.ui.UrlPathMode
-import com.clawdroid.app.ui.defaultBaseUrlFor
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.ContextSettings
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
+import com.clawdroid.app.data.model.NetworkProxyMode
+import com.clawdroid.app.data.model.NetworkProxySettings
+import com.clawdroid.app.data.model.ThemeMode
+import com.clawdroid.app.data.model.UrlPathMode
+import com.clawdroid.app.data.model.defaultBaseUrlFor
 import org.json.JSONArray
 import org.json.JSONObject
 

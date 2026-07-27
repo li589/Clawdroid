@@ -1,7 +1,9 @@
 package com.clawdroid.app.ui
-import com.clawdroid.app.data.ChatSessionStore
-import com.clawdroid.app.data.ChatHistoryStore
 
+import com.clawdroid.app.data.ChatHistoryStore
+import com.clawdroid.app.data.ChatSessionStore
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

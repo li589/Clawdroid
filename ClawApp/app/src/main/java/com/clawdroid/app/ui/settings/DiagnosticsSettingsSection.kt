@@ -32,7 +32,10 @@ import com.clawdroid.app.ui.responsiveCardPadding
 
 internal fun LazyListScope.diagnosticsSettingsSection(
     categoryId: SettingsCategoryId,
-    state: SettingsScreenState
+    state: SettingsScreenState,
+    onGetVersion: () -> Unit = {},
+    onGetHealth: () -> Unit = {},
+    onGetLastError: () -> Unit = {}
 ) {
     item { SectionTitle(categoryId.title) }
     item { RuntimeSecretOverrideCard() }
@@ -43,21 +46,12 @@ internal fun LazyListScope.diagnosticsSettingsSection(
         )
     }
     item {
-        StatusCard(
-            title = "Runtime",
-            content = buildString {
-                if (state.runtimeCompatBanner.isNotBlank()) {
-                    appendLine("对齐: ${state.runtimeCompatBanner}")
-                    appendLine()
-                }
-                appendLine("Version:")
-                appendLine(state.runtimeVersionStatus)
-                appendLine()
-                appendLine("Health:")
-                appendLine(state.runtimeHealthStatus)
-                appendLine()
-                appendLine("Last Error:")
-                append(state.runtimeLastErrorStatus)
+        RuntimeDiagnosticsCard(
+            state = state,
+            onRefresh = {
+                onGetVersion()
+                onGetHealth()
+                onGetLastError()
             }
         )
     }
@@ -72,6 +66,53 @@ internal fun LazyListScope.diagnosticsSettingsSection(
             title = "说明",
             content = "概览页保留状态与快捷操作；Ping / 探测 / 权限修复 / 页面确认等手动诊断集中在本页。"
         )
+    }
+}
+
+@Composable
+private fun RuntimeDiagnosticsCard(
+    state: SettingsScreenState,
+    onRefresh: () -> Unit
+) {
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text(text = "Runtime", style = MaterialTheme.typography.titleMedium)
+                FilledTonalButton(onClick = onRefresh) {
+                    Text("刷新")
+                }
+            }
+            if (state.runtimeCompatBanner.isNotBlank()) {
+                Text(
+                    text = "对齐: ${state.runtimeCompatBanner}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                text = "Version:\n${state.runtimeVersionStatus}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "Health:\n${state.runtimeHealthStatus}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "Last Error:\n${state.runtimeLastErrorStatus}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 }
 

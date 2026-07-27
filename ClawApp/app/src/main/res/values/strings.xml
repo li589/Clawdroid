@@ -3,4 +3,5 @@
     <string name="app_name">Clawdroid</string>
     <string name="xposed_description">Clawdroid LSPosed integration module</string>
     <string name="accessibility_service_label">Clawdroid Accessibility Service</string>
+    <string name="overview_capture_detect">截图检测</string>
 </resources>

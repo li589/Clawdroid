@@ -1,5 +1,9 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ModelConfigMemory
+import com.clawdroid.app.data.model.ModelConfigMemoryLogic
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

@@ -6,8 +6,8 @@ import com.clawdroid.app.chat.ChatHistoryTurn
 import com.clawdroid.app.chat.MemoryGraphStore
 import com.clawdroid.app.model.ModelApiClient
 import com.clawdroid.app.tools.ClawAssetPromptStore
-import com.clawdroid.app.ui.ModelProvider
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
 
 internal data class ContextCompressResult(
     val recentChat: List<ChatHistoryTurn>,

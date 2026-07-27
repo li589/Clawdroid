@@ -5,7 +5,7 @@ import com.clawdroid.app.ai.AiAgentPlan
 import com.clawdroid.app.ai.AiRuntimeSnapshot
 import com.clawdroid.app.orchestrator.DirectCommandOrchestrator
 import com.clawdroid.app.tools.ClawTool
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelSettings
 
 internal data class ChatHistoryTurn(
     val role: String,

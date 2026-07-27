@@ -1,5 +1,9 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
+import com.clawdroid.app.data.model.NetworkProxyMode
+import com.clawdroid.app.data.model.NetworkProxySettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull

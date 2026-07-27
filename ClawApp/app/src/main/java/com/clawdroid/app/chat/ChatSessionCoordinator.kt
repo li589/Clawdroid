@@ -2,11 +2,11 @@ package com.clawdroid.app.chat
 
 import android.content.Context
 import com.clawdroid.app.data.ChatSessionStore
-import com.clawdroid.app.ui.ChatMessage
-import com.clawdroid.app.ui.ChatMessageState
-import com.clawdroid.app.ui.ChatRole
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatMessageState
+import com.clawdroid.app.data.model.ChatRole
 import com.clawdroid.app.ui.ChatUiState
-import com.clawdroid.app.ui.finalizeAbandonedStreaming
+import com.clawdroid.app.data.model.finalizeAbandonedStreaming
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

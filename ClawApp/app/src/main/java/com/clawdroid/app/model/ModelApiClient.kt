@@ -1,8 +1,8 @@
 package com.clawdroid.app.model
 
-import com.clawdroid.app.ui.ApiPathStyle
-import com.clawdroid.app.ui.ModelProvider
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ApiPathStyle
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
 import com.clawdroid.app.tools.ClawToolCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

@@ -2,7 +2,7 @@ package com.clawdroid.app.tools
 
 import android.content.Context
 import com.clawdroid.app.data.AppSettingsStore
-import com.clawdroid.app.ui.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import org.json.JSONArray
 import org.json.JSONObject
 

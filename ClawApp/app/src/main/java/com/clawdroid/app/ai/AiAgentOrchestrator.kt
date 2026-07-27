@@ -8,8 +8,8 @@ import com.clawdroid.app.model.ModelToolCall
 import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCatalog
-import com.clawdroid.app.ui.ModelProvider
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,7 +48,7 @@ internal sealed interface AiAgentPlan {
 }
 
 internal object AiAgentOrchestrator {
-    /** @deprecated Prefer [com.clawdroid.app.ui.AgentOrchestrationSettings.maxToolLoopTurns]. */
+    /** @deprecated Prefer [com.clawdroid.app.data.model.AgentOrchestrationSettings.maxToolLoopTurns]. */
     const val MAX_TOOL_LOOP_TURNS = 16
 
     @Volatile

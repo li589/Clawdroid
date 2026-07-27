@@ -190,16 +190,41 @@ class ClawAgentRunner(
         var startedCount = 1
         var finalSnapshot: ClawRuntimeTaskSnapshot? = submit.taskSnapshot
         var lastOutput = submit.output
+        var consecutiveMisses = 0
 
         poll@ for (attempt in 0 until RUNTIME_TASK_POLL_ATTEMPTS) {
             coroutineContext.ensureActive()
-            delay(RUNTIME_TASK_POLL_INTERVAL_MS)
+            val waitMs = when {
+                attempt < 20 -> RUNTIME_TASK_POLL_INTERVAL_MS
+                attempt < 60 -> RUNTIME_TASK_POLL_INTERVAL_MS * 2
+                else -> RUNTIME_TASK_POLL_INTERVAL_MS * 4
+            }
+            delay(waitMs)
             val getResult = dispatcher.execute(
                 ClawTool.TASK_GET,
                 mapOf("task_id" to taskId)
             )
             lastOutput = getResult.output
-            val snapshot = getResult.taskSnapshot ?: continue
+            var snapshot = getResult.taskSnapshot
+            if (snapshot == null) {
+                consecutiveMisses += 1
+                // Fallback: try task_list if task_get consistently fails (e.g., cross-session
+                // lookup edge cases or transient IPC errors).
+                if (consecutiveMisses >= 3 && consecutiveMisses % 3 == 0) {
+                    val listed = runCatching {
+                        dispatcher.execute(ClawTool.TASK_LIST)
+                    }.getOrNull()?.taskSnapshots?.firstOrNull { it.taskId == taskId }
+                    if (listed != null) {
+                        consecutiveMisses = 0
+                        snapshot = listed
+                    }
+                }
+                if (snapshot == null) {
+                    continue@poll
+                }
+            } else {
+                consecutiveMisses = 0
+            }
             finalSnapshot = snapshot
 
             val completed = snapshot.completedSteps.coerceIn(0, agent.steps.size)

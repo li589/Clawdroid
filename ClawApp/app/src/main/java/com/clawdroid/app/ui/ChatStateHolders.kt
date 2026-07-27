@@ -2,6 +2,10 @@ package com.clawdroid.app.ui
 
 import com.clawdroid.app.ai.AiAgentOrchestrator
 import com.clawdroid.app.data.ChatSessionSummary
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ModelSettings
 
 internal data class ChatConsoleState(
     val messages: List<ChatMessage>,

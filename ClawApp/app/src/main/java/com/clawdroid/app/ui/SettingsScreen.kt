@@ -58,7 +58,13 @@ private fun LazyListScope.settingsCategoryScreen(
         SettingsCategoryId.PromptsSkills -> promptsSkillsSettingsSection(categoryId)
         SettingsCategoryId.AssistMcp -> assistMcpSettingsSection(categoryId, state, actions)
         SettingsCategoryId.TermuxShell -> termuxShellSettingsSection(categoryId)
-        SettingsCategoryId.Diagnostics -> diagnosticsSettingsSection(categoryId, state)
+        SettingsCategoryId.Diagnostics -> diagnosticsSettingsSection(
+            categoryId = categoryId,
+            state = state,
+            onGetVersion = actions.onGetVersion,
+            onGetHealth = actions.onGetHealth,
+            onGetLastError = actions.onGetLastError
+        )
     }
 }
 

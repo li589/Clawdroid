@@ -1,5 +1,9 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ChatTaskFailureState
+import com.clawdroid.app.data.model.ChatTaskProgressState
+import com.clawdroid.app.data.model.ChatTaskStepState
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 
 internal fun ChatTaskExecutionState.withRuntimeSnapshot(

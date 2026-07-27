@@ -13,6 +13,7 @@ import com.clawdroid.app.tools.ClawCaptureArtifact
 import com.clawdroid.app.tools.ClawSessionSnapshot
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolExecutor
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -145,7 +146,14 @@ internal fun createRuntimeClientMock(): ClawRuntimeClient {
 }
 
 internal fun createToolExecutorMock(): ClawToolExecutor {
-    return mockk(relaxed = true)
+    return mockk(relaxed = true) {
+        // Explicitly mock getVersion/getHealth so they return a clean result without a
+        // sessionSnapshot. A relaxed mock would populate sessionSnapshot with a proxy,
+        // causing applyToolSideEffects to overwrite the real session state with a mock
+        // ClawRuntimeConnectionState, breaking state assertions in startup tests.
+        coEvery { getVersion() } returns toolCallResult(output = "1.0.0")
+        coEvery { getHealth() } returns toolCallResult(output = "OK")
+    }
 }
 
 internal fun createAppContextMock(): Context {

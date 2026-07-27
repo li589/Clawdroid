@@ -33,7 +33,7 @@ class FileListToolSchemaTest {
 
     @Test
     fun defaultAllowlistIncludesFileList() {
-        val allow = com.clawdroid.app.ui.AgentOrchestrationSettings.defaultAllowlist()
+        val allow = com.clawdroid.app.data.model.AgentOrchestrationSettings.defaultAllowlist()
         assertTrue(allow.contains("file_list"))
         assertTrue(allow.contains("run_agents_parallel"))
         assertTrue(allow.contains("termux_exec"))

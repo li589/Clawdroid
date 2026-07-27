@@ -1,6 +1,11 @@
 package com.clawdroid.app.ui
 
 import com.clawdroid.app.data.ChatSessionSummary
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatMessageState
+import com.clawdroid.app.data.model.ChatRole
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ChatTaskProgressState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn

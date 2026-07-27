@@ -16,7 +16,7 @@ import com.clawdroid.app.ui.ModernCard
 import com.clawdroid.app.ui.ResultPanel
 import com.clawdroid.app.ui.SectionTitle
 import com.clawdroid.app.ui.SettingsCategoryId
-import com.clawdroid.app.ui.ThemeMode
+import com.clawdroid.app.data.model.ThemeMode
 import com.clawdroid.app.ui.responsiveCardInnerSpacing
 import com.clawdroid.app.ui.responsiveCardPadding
 import com.clawdroid.app.ui.responsiveFlowHSpacing

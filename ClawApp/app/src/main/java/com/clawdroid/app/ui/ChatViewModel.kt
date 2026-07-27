@@ -19,6 +19,14 @@ import com.clawdroid.app.chat.FileIndexStore
 import com.clawdroid.app.chat.MemoryGraphStore
 import com.clawdroid.app.data.AppSettingsStore
 import com.clawdroid.app.data.ChatSessionSummary
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatMessageState
+import com.clawdroid.app.data.model.ChatRole
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ChatTaskProgressState
+import com.clawdroid.app.data.model.ModelSettings
+import com.clawdroid.app.data.model.asTerminated
 import com.clawdroid.app.ai.AiAgentOrchestrator
 import com.clawdroid.app.ai.AiAgentPlan
 import com.clawdroid.app.ai.AiToolReflectionInput
@@ -80,14 +88,6 @@ internal data class PendingCommandReview(
     val argumentsPreview: String
 )
 
-internal enum class ChatTaskProgressState {
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-    Cancelled
-}
-
 internal enum class ChatTaskHistoryFilter {
     All,
     Failed,
@@ -95,37 +95,6 @@ internal enum class ChatTaskHistoryFilter {
     Succeeded,
     Retried
 }
-
-internal data class ChatTaskFailureState(
-    val code: String,
-    val summary: String,
-    val rawDetail: String
-)
-
-internal data class ChatTaskStepState(
-    val title: String,
-    val status: ChatTaskProgressState = ChatTaskProgressState.Pending,
-    val detail: String = "等待执行",
-    val startedAtEpochMs: Long = 0L,
-    val finishedAtEpochMs: Long = 0L
-)
-
-internal data class ChatTaskExecutionState(
-    val taskId: String,
-    val title: String,
-    val summary: String,
-    val status: ChatTaskProgressState,
-    val steps: List<ChatTaskStepState>,
-    val startedAtEpochMs: Long,
-    val finishedAtEpochMs: Long = 0L,
-    val taskAction: com.clawdroid.app.chat.ChatTaskAction? = null,
-    val runtimeTaskId: String? = null,
-    val failureReason: String? = null,
-    val originPrompt: String = "",
-    val retryCount: Int = 0,
-    val retryFromTaskId: String? = null,
-    val failure: ChatTaskFailureState? = null
-)
 
 internal class ChatViewModel(
     private val appContext: Context,

@@ -29,13 +29,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.clawdroid.app.ui.ModernCard
 import com.clawdroid.app.ui.ModelInputSanitizer
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelSettings
 import com.clawdroid.app.ui.ResultPanel
 import com.clawdroid.app.ui.SettingsCategoryId
 import com.clawdroid.app.ui.StatusChip
-import com.clawdroid.app.ui.ThemeMode
-import com.clawdroid.app.ui.UrlPathMode
-import com.clawdroid.app.ui.modelProviderLabel
+import com.clawdroid.app.data.model.ThemeMode
+import com.clawdroid.app.data.model.UrlPathMode
+import com.clawdroid.app.data.model.modelProviderLabel
 import com.clawdroid.app.ui.responsiveCardInnerSpacing
 import com.clawdroid.app.ui.responsiveCardPadding
 import com.clawdroid.app.ui.responsiveFlowHSpacing

@@ -1,4 +1,4 @@
-package com.clawdroid.app.ui
+package com.clawdroid.app.data.model
 
 /**
  * 模型接入记忆：近期模型名 / API URL / API Key，以及按供应商快照与回退栈。

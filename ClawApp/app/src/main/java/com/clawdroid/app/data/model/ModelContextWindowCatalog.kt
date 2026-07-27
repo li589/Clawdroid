@@ -1,4 +1,4 @@
-package com.clawdroid.app.ui
+package com.clawdroid.app.data.model
 
 import android.content.Context
 import org.json.JSONArray

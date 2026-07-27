@@ -1,5 +1,12 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.ContextSettings
+import com.clawdroid.app.data.model.ModelConfigMemory
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
+import com.clawdroid.app.data.model.ThemeMode
+
 internal data class SettingsScreenState(
     val versionName: String,
     val packageName: String,
@@ -62,7 +69,10 @@ internal data class SettingsScreenActions(
     val onAssistProbe: () -> Unit = {},
     val onOpenCategory: (SettingsCategoryId) -> Unit = {},
     val onNavigateHub: () -> Unit = {},
-    val onAgentSettingsChanged: (AgentOrchestrationSettings) -> Unit = {}
+    val onAgentSettingsChanged: (AgentOrchestrationSettings) -> Unit = {},
+    val onGetVersion: () -> Unit = {},
+    val onGetHealth: () -> Unit = {},
+    val onGetLastError: () -> Unit = {}
 )
 
 internal fun buildSettingsScreenState(
@@ -123,7 +133,10 @@ internal fun SettingsViewModel.buildSettingsScreenActions(
     onAssistEnabledChanged: (Boolean) -> Unit,
     onAssistHostUrlChanged: (String) -> Unit,
     onAssistTokenChanged: (String) -> Unit,
-    onAssistProbe: () -> Unit
+    onAssistProbe: () -> Unit,
+    onGetVersion: () -> Unit = {},
+    onGetHealth: () -> Unit = {},
+    onGetLastError: () -> Unit = {}
 ): SettingsScreenActions {
     return SettingsScreenActions(
         onThemeModeSelected = ::selectThemeMode,
@@ -151,6 +164,9 @@ internal fun SettingsViewModel.buildSettingsScreenActions(
         onAssistProbe = onAssistProbe,
         onOpenCategory = ::openCategory,
         onNavigateHub = ::navigateHub,
-        onAgentSettingsChanged = ::updateAgentSettings
+        onAgentSettingsChanged = ::updateAgentSettings,
+        onGetVersion = onGetVersion,
+        onGetHealth = onGetHealth,
+        onGetLastError = onGetLastError
     )
 }

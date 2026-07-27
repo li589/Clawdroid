@@ -1,7 +1,7 @@
 package com.clawdroid.app.model
 
-import com.clawdroid.app.ui.NetworkProxyMode
-import com.clawdroid.app.ui.NetworkProxySettings
+import com.clawdroid.app.data.model.NetworkProxyMode
+import com.clawdroid.app.data.model.NetworkProxySettings
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy

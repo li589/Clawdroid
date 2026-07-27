@@ -4,7 +4,7 @@ import com.clawdroid.app.ai.AiAgentPlan
 import com.clawdroid.app.ai.AiRuntimeSnapshot
 import com.clawdroid.app.model.ModelUserImage
 import com.clawdroid.app.tools.ClawTool
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelSettings
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

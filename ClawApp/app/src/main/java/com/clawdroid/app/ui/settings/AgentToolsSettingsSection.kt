@@ -32,7 +32,7 @@ import com.clawdroid.app.chat.ChatContextIndexStore
 import com.clawdroid.app.chat.FileIndexStore
 import com.clawdroid.app.chat.MemoryGraphStore
 import com.clawdroid.app.tools.ClawTool
-import com.clawdroid.app.ui.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.ui.FieldSupportingText
 import com.clawdroid.app.ui.ModernCard
 import com.clawdroid.app.ui.SectionTitle

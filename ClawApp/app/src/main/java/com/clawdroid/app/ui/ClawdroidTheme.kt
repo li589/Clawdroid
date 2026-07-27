@@ -1,5 +1,6 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ThemeMode
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme

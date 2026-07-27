@@ -3,11 +3,11 @@ package com.clawdroid.app.ai
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolDispatcher
-import com.clawdroid.app.ui.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.ui.ChatAiLoop
-import com.clawdroid.app.ui.ChatMessageState
+import com.clawdroid.app.data.model.ChatMessageState
 import com.clawdroid.app.ui.ChatUiState
-import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.data.model.ModelSettings
 import com.clawdroid.app.ui.OverviewAutomationState
 import com.clawdroid.app.ui.OverviewController
 import kotlinx.coroutines.Dispatchers

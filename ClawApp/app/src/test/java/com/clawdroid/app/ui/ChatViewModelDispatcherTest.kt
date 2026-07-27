@@ -6,6 +6,12 @@ import com.clawdroid.app.data.ChatSessionSnapshot
 import com.clawdroid.app.data.ChatSessionStore
 import com.clawdroid.app.data.ChatTaskHistoryStore
 import com.clawdroid.app.data.PersistedChatTaskState
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
+import com.clawdroid.app.data.model.ChatRole
+import com.clawdroid.app.data.model.ChatTaskExecutionState
+import com.clawdroid.app.data.model.ChatTaskProgressState
+import com.clawdroid.app.data.model.ChatTaskStepState
+import com.clawdroid.app.data.model.ModelSettings
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult

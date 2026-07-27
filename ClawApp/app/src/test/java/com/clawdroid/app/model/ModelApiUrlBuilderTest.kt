@@ -1,8 +1,8 @@
 package com.clawdroid.app.model
 
-import com.clawdroid.app.ui.ModelProvider
-import com.clawdroid.app.ui.ModelSettings
-import com.clawdroid.app.ui.UrlPathMode
+import com.clawdroid.app.data.model.ModelProvider
+import com.clawdroid.app.data.model.ModelSettings
+import com.clawdroid.app.data.model.UrlPathMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

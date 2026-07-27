@@ -1,5 +1,7 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.model.ContextSettings
+import com.clawdroid.app.data.model.ModelContextWindowCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

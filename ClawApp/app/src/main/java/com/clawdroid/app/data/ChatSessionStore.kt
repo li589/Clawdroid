@@ -2,12 +2,12 @@ package com.clawdroid.app.data
 
 import android.content.Context
 import com.clawdroid.app.chat.ChatTextLimits
-import com.clawdroid.app.ui.ChatMessage
-import com.clawdroid.app.ui.ChatMessageState
-import com.clawdroid.app.ui.ChatRole
-import com.clawdroid.app.ui.asTerminated
-import com.clawdroid.app.ui.newChatMessageId
-import com.clawdroid.app.ui.parseChatRole
+import com.clawdroid.app.data.model.ChatMessage
+import com.clawdroid.app.data.model.ChatMessageState
+import com.clawdroid.app.data.model.ChatRole
+import com.clawdroid.app.data.model.asTerminated
+import com.clawdroid.app.data.model.newChatMessageId
+import com.clawdroid.app.data.model.parseChatRole
 import org.json.JSONArray
 import org.json.JSONObject
 
