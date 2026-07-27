@@ -124,6 +124,11 @@ enum class ClawTool(
         "运行 Agent",
         "按 Agent id 执行多步工具编排（体检、截图预览、安全点击等）"
     ),
+    RUN_AGENTS_PARALLEL(
+        "run_agents_parallel",
+        "并行运行 Agents",
+        "并行启动多个 Agent，汇总各自结果"
+    ),
     TASK_SUBMIT(
         "task_submit",
         "提交 Runtime 任务",
@@ -143,6 +148,11 @@ enum class ClawTool(
         "task_cancel",
         "取消 Runtime 任务",
         "取消正在运行的 Runtime 任务"
+    ),
+    TASK_WAIT(
+        "task_wait",
+        "等待 Runtime 任务",
+        "轮询等待 Runtime 任务到达终态（succeeded/failed/cancelled）；超时则 detach 继续事件跟踪"
     ),
 
     // ========== 工具发现 ==========
@@ -199,6 +209,11 @@ enum class ClawTool(
         "file_stat",
         "文件元信息",
         "读取文件大小、mtime、sha256 等"
+    ),
+    FILE_LIST(
+        "file_list",
+        "列出目录",
+        "列出目录下的文件与子目录（受路径白名单约束）"
     ),
 
     // ========== 应用 ==========
@@ -265,6 +280,11 @@ enum class ClawTool(
         "sandbox_shell",
         "沙箱 Shell",
         "在应用 filesDir/sandbox 下执行白名单短命令（无 Root/Shizuku）"
+    ),
+    TERMUX_EXEC(
+        "termux_exec",
+        "Termux 执行",
+        "经 Termux RUN_COMMAND 执行 usr/bin 白名单命令（含 proot-distro、bash -lc）；自动唤醒 Termux"
     ),
 
     // ========== 硬件 ==========

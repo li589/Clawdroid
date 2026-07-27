@@ -75,4 +75,27 @@ class DirectCommandOrchestratorTest {
         assertEquals("demo-1", submit.arguments["task_id"])
         assertTrue(submit.arguments["steps_json"].orEmpty().contains("\"action\":\"ping\""))
     }
+
+    @Test
+    fun parseKeepsShortCapabilityCommandAsTool() {
+        val parsed = DirectCommandOrchestrator.parse("获取能力")
+        assertTrue(parsed is DirectCommandOrchestrator.ParsedIntent.ToolCall)
+        parsed as DirectCommandOrchestrator.ParsedIntent.ToolCall
+        assertEquals(ClawTool.GET_CAPABILITIES, parsed.tool)
+    }
+
+    @Test
+    fun parseDefersConversationalCapabilityPromptToAi() {
+        val parsed = DirectCommandOrchestrator.parse("帮我看看现在有哪些能力")
+        assertEquals(
+            DirectCommandOrchestrator.ParsedIntent.RawText("帮我看看现在有哪些能力"),
+            parsed
+        )
+    }
+
+    @Test
+    fun parseDefersConversationalScreenshotPromptToAi() {
+        val parsed = DirectCommandOrchestrator.parse("能不能帮我截个图看看当前界面情况")
+        assertTrue(parsed is DirectCommandOrchestrator.ParsedIntent.RawText)
+    }
 }

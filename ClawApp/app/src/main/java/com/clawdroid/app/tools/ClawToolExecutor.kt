@@ -3,6 +3,7 @@ package com.clawdroid.app.tools
 import com.clawdroid.app.automation.AutomationRuntimeStore
 import com.clawdroid.app.runtime.ClawRuntimeClient
 import com.clawdroid.app.runtime.ClawRuntimeConnectionState
+import com.clawdroid.app.runtime.LiveRuntimeCompatStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -109,6 +110,11 @@ class ClawToolExecutor(
     suspend fun getVersion(): ClawToolCallResult {
         return runtimeClient.getVersion().fold(
             onSuccess = { result ->
+                LiveRuntimeCompatStore.updateFrom(
+                    daemonVersion = result.daemonVersion,
+                    protocolVersion = result.protocolVersion,
+                    actions = emptyList()
+                )
                 ClawToolCallResult(
                     success = true,
                     output = "成功: daemon=${result.daemonStatus}, version=${result.daemonVersion}, protocol=${result.protocolVersion}, socket=${result.socketName}, log=${result.logLevel}",
@@ -131,6 +137,11 @@ class ClawToolExecutor(
                 if (result.capabilities.isNotEmpty()) {
                     LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities)
                 }
+                LiveRuntimeCompatStore.updateFrom(
+                    daemonVersion = result.daemonVersion,
+                    protocolVersion = result.protocolVersion,
+                    actions = emptyList()
+                )
                 ClawToolCallResult(
                     success = true,
                     output = "成功: uptime=${result.uptimeSeconds}s, root=${result.root}, accessibility=${result.accessibility}, lsposed=${result.lsposed}, runtime=${result.lsposedRuntimeLoaded}, rate_limit=${result.rateLimitPerMinute}/min, whitelist=${result.readonlyWhitelist.joinToString()}",
@@ -152,6 +163,11 @@ class ClawToolExecutor(
             onSuccess = { result ->
                 val module = result.module
                 LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities)
+                LiveRuntimeCompatStore.updateFrom(
+                    daemonVersion = result.daemonVersion,
+                    protocolVersion = result.protocolVersion,
+                    actions = result.actions
+                )
                 ClawToolCallResult(
                     success = true,
                     output = buildString {
@@ -207,6 +223,11 @@ class ClawToolExecutor(
         return runtimeClient.probeSession().fold(
             onSuccess = { result ->
                 LiveToolCapabilityStore.updateFromCapabilityList(result.capabilities.capabilities)
+                LiveRuntimeCompatStore.updateFrom(
+                    daemonVersion = result.ping.daemonVersion,
+                    protocolVersion = 0,
+                    actions = emptyList()
+                )
                 val degraded = result.capabilities.degradedReason.ifBlank { "none" }
                 ClawToolCallResult(
                     success = true,

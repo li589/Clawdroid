@@ -14,10 +14,15 @@ fun ClawdroidApp(debugSeedLongOverview: Boolean = false) {
     // 与 DebugRuntimeBridge* 的 DEFAULT_PREVIEW_LIMIT_BYTES=8MB 保持一致。
     val previewLimitBytes = 8 * 1024 * 1024
     val runtimeClient = remember(context) {
+        val appCtx = context.applicationContext
+        val secret = runCatching { RuntimeSecretStore.resolve(appCtx) }.getOrDefault("")
+        val digest = runCatching {
+            ClawRuntimeClient.resolveSignatureDigest(context, context.packageName)
+        }.getOrDefault("")
         ClawRuntimeClient(
             packageName = context.packageName,
-            sharedSecret = RuntimeSecretStore.resolve(context.applicationContext),
-            signatureDigest = ClawRuntimeClient.resolveSignatureDigest(context, context.packageName)
+            sharedSecret = secret,
+            signatureDigest = digest
         )
     }
     val toolExecutor = remember(runtimeClient) { ClawToolExecutor(runtimeClient) }

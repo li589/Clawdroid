@@ -1,7 +1,18 @@
-package com.clawdroid.app.ui
+package com.clawdroid.app.data
 
 import android.content.Context
+import com.clawdroid.app.chat.ChatTaskAction
 import com.clawdroid.app.chat.ChatTextLimits
+import com.clawdroid.app.ui.ChatMessage
+import com.clawdroid.app.ui.ChatMessageState
+import com.clawdroid.app.ui.ChatRole
+import com.clawdroid.app.ui.ChatTaskExecutionState
+import com.clawdroid.app.ui.ChatTaskFailureState
+import com.clawdroid.app.ui.ChatTaskProgressState
+import com.clawdroid.app.ui.ChatTaskStepState
+import com.clawdroid.app.ui.asTerminated
+import com.clawdroid.app.ui.newChatMessageId
+import com.clawdroid.app.ui.parseChatRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -24,7 +35,7 @@ internal object ChatHistoryStore {
                     add(
                         ChatMessage(
                             id = item.optString("id").ifBlank { newChatMessageId() },
-                            role = ChatRole.valueOf(item.optString("role", ChatRole.Assistant.name)),
+                            role = parseChatRole(item.optString("role", ChatRole.Assistant.name)),
                             content = ChatTextLimits.truncateForDisplay(item.optString("content")),
                             attachmentLabel = item.optString("attachment_label").ifBlank { null },
                             createdAtEpochMs = item.optLong("created_at_epoch_ms", System.currentTimeMillis()),
@@ -33,7 +44,7 @@ internal object ChatHistoryStore {
                                     ChatMessageState.entries.firstOrNull { it.name == state }
                                         ?: ChatMessageState.Final
                                 }
-                        )
+                        ).asTerminated()
                     )
                 }
             }.let { ChatTextLimits.windowMessages(it) }

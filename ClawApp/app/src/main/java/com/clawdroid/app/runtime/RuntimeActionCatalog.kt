@@ -15,6 +15,7 @@ object RuntimeActionCatalog {
     const val READ_FILE_LIMITED = "read_file_limited"
     const val WRITE_FILE_LIMITED = "write_file_limited"
     const val STAT_FILE_LIMITED = "stat_file_limited"
+    const val LIST_DIR_LIMITED = "list_dir_limited"
     const val EXEC_SHELL_LIMITED = "exec_shell_limited"
     const val SUBSCRIBE_EVENTS = "subscribe_events"
     const val REPORT_XPOSED_FOCUS = "report_xposed_focus"
@@ -23,6 +24,8 @@ object RuntimeActionCatalog {
     const val TASK_GET = "task_get"
     const val TASK_LIST = "task_list"
     const val TASK_CANCEL = "task_cancel"
+    const val SHELL_JOB_LIST = "shell_job_list"
+    const val SHELL_JOB_GET = "shell_job_get"
 
     const val CAPABILITY_SYSTEM_PING = "system.ping"
     const val CAPABILITY_SYSTEM_INSPECT = "system.inspect"
@@ -46,6 +49,7 @@ object RuntimeActionCatalog {
         READ_FILE_LIMITED to CAPABILITY_FILE_READ_LIMITED,
         WRITE_FILE_LIMITED to CAPABILITY_FILE_WRITE_LIMITED,
         STAT_FILE_LIMITED to CAPABILITY_FILE_READ_LIMITED,
+        LIST_DIR_LIMITED to CAPABILITY_FILE_READ_LIMITED,
         EXEC_SHELL_LIMITED to CAPABILITY_SHELL_EXEC_LIMITED,
         SUBSCRIBE_EVENTS to CAPABILITY_EVENT_SUBSCRIBE,
         REPORT_XPOSED_FOCUS to CAPABILITY_EVENT_REPORT,
@@ -53,8 +57,16 @@ object RuntimeActionCatalog {
         TASK_SUBMIT to CAPABILITY_TASK_MANAGE,
         TASK_GET to CAPABILITY_TASK_MANAGE,
         TASK_LIST to CAPABILITY_TASK_MANAGE,
-        TASK_CANCEL to CAPABILITY_TASK_MANAGE
+        TASK_CANCEL to CAPABILITY_TASK_MANAGE,
+        SHELL_JOB_LIST to CAPABILITY_SHELL_EXEC_LIMITED,
+        SHELL_JOB_GET to CAPABILITY_SHELL_EXEC_LIMITED
     )
+
+    /** Wire protocol version expected by this App build (must match Runtime ProtocolVersion). */
+    const val EXPECTED_PROTOCOL_VERSION = 1
+
+    /** Actions this App build may call; missing ones imply Magisk module is stale. */
+    val expectedActions: Set<String> get() = actionToCapability.keys
 
     fun capabilityFor(action: String): String? = actionToCapability[action]
 }

@@ -37,30 +37,80 @@ object ShizukuSupport {
     @Volatile
     private var cachedShell: IClawShizukuShell? = null
 
+    @Volatile
+    private var initialized: Boolean = false
+
+    private val initLock = Any()
     private val bindLock = Any()
 
     fun isManagerInstalled(context: Context): Boolean {
+        ensureInitialized()
         return runCatching {
             context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0)
             true
         }.getOrDefault(false)
     }
 
-    fun isBinderAlive(): Boolean = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
+    fun isBinderAlive(): Boolean {
+        ensureInitialized()
+        return runCatching { Shizuku.pingBinder() }.getOrDefault(false)
+    }
 
     fun permissionGranted(): Boolean {
+        ensureInitialized()
         return runCatching {
             isBinderAlive() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         }.getOrDefault(false)
     }
 
+    @Volatile
+    private var onBinderChanged: (() -> Unit)? = null
+
+    /**
+     * Register sticky binder listeners once so cold-start probes see an authorized session.
+     * Optional [onChanged] is invoked when the binder arrives or dies (e.g. refresh Overview chips).
+     */
+    fun ensureInitialized(onChanged: (() -> Unit)? = null) {
+        if (onChanged != null) {
+            onBinderChanged = onChanged
+        }
+        if (initialized) return
+        synchronized(initLock) {
+            if (onChanged != null) {
+                onBinderChanged = onChanged
+            }
+            if (initialized) return
+            runCatching {
+                Shizuku.addBinderReceivedListenerSticky {
+                    onBinderChanged?.invoke()
+                }
+                Shizuku.addBinderDeadListener {
+                    cachedShell = null
+                    onBinderChanged?.invoke()
+                }
+            }
+            initialized = true
+        }
+    }
+
     fun requestPermission(requestCode: Int = 1001): Result<String> = runCatching {
+        ensureInitialized()
         check(isBinderAlive()) { "shizuku_binder_dead" }
         if (permissionGranted()) {
             return@runCatching "already_granted"
         }
         Shizuku.requestPermission(requestCode)
         "permission_requested"
+    }
+
+    fun addPermissionResultListener(listener: (requestCode: Int, grantResult: Int) -> Unit) {
+        ensureInitialized()
+        runCatching {
+            Shizuku.addRequestPermissionResultListener { requestCode, grantResult ->
+                listener(requestCode, grantResult)
+                onBinderChanged?.invoke()
+            }
+        }
     }
 
     fun statusSummary(context: Context): String {

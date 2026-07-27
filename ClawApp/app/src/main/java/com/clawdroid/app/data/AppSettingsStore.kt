@@ -1,7 +1,16 @@
-package com.clawdroid.app.ui
+package com.clawdroid.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.clawdroid.app.ui.AgentOrchestrationSettings
+import com.clawdroid.app.ui.ContextSettings
+import com.clawdroid.app.ui.ModelProvider
+import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.ui.NetworkProxyMode
+import com.clawdroid.app.ui.NetworkProxySettings
+import com.clawdroid.app.ui.ThemeMode
+import com.clawdroid.app.ui.UrlPathMode
+import com.clawdroid.app.ui.defaultBaseUrlFor
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -19,6 +28,7 @@ internal object AppSettingsStore {
     private const val keyUrlPathMode = "url_path_mode"
     private const val keyContextSettings = "context_settings"
     private const val keyNetworkProxy = "network_proxy_settings"
+    private const val keyAgentOrchestration = "agent_orchestration_settings"
 
     private var registeredListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
@@ -102,6 +112,74 @@ internal object AppSettingsStore {
             .apply()
     }
 
+    fun loadAgentOrchestrationSettings(context: Context): AgentOrchestrationSettings {
+        val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        val json = prefs.getString(keyAgentOrchestration, null).orEmpty()
+        if (json.isBlank()) return AgentOrchestrationSettings()
+        return try {
+            val obj = JSONObject(json)
+            val allowArr = obj.optJSONArray("toolAllowlist")
+            val allowlist = if (allowArr != null) {
+                (0 until allowArr.length()).mapNotNull { idx ->
+                    allowArr.optString(idx)?.takeIf { it.isNotBlank() }
+                }.toSet()
+            } else {
+                emptySet()
+            }
+            AgentOrchestrationSettings(
+                maxToolLoopTurns = obj.optInt(
+                    "maxToolLoopTurns",
+                    AgentOrchestrationSettings.DEFAULT_MAX_TOOL_LOOP_TURNS
+                ).coerceIn(
+                    AgentOrchestrationSettings.MIN_TOOL_LOOP_TURNS,
+                    AgentOrchestrationSettings.MAX_TOOL_LOOP_TURNS_CAP
+                ),
+                maxModelApiCalls = obj.optInt(
+                    "maxModelApiCalls",
+                    AgentOrchestrationSettings.DEFAULT_MAX_MODEL_API_CALLS
+                ).coerceIn(
+                    AgentOrchestrationSettings.MIN_MODEL_API_CALLS,
+                    AgentOrchestrationSettings.MAX_MODEL_API_CALLS_CAP
+                ),
+                contextCompressionEnabled = obj.optBoolean("contextCompressionEnabled", true),
+                toolAllowlist = allowlist,
+                toolAllowlistCustomized = obj.optBoolean("toolAllowlistCustomized", false),
+                enforceToolAllowlist = obj.optBoolean("enforceToolAllowlist", true),
+                agentCallsEnabled = obj.optBoolean("agentCallsEnabled", true),
+                requireCommandReview = obj.optBoolean("requireCommandReview", false)
+            )
+        } catch (_: Exception) {
+            AgentOrchestrationSettings()
+        }
+    }
+
+    fun saveAgentOrchestrationSettings(context: Context, settings: AgentOrchestrationSettings) {
+        val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        val payload = JSONObject().apply {
+            put(
+                "maxToolLoopTurns",
+                settings.maxToolLoopTurns.coerceIn(
+                    AgentOrchestrationSettings.MIN_TOOL_LOOP_TURNS,
+                    AgentOrchestrationSettings.MAX_TOOL_LOOP_TURNS_CAP
+                )
+            )
+            put(
+                "maxModelApiCalls",
+                settings.maxModelApiCalls.coerceIn(
+                    AgentOrchestrationSettings.MIN_MODEL_API_CALLS,
+                    AgentOrchestrationSettings.MAX_MODEL_API_CALLS_CAP
+                )
+            )
+            put("contextCompressionEnabled", settings.contextCompressionEnabled)
+            put("toolAllowlistCustomized", settings.toolAllowlistCustomized)
+            put("toolAllowlist", JSONArray(settings.toolAllowlist.toList().sorted()))
+            put("enforceToolAllowlist", settings.enforceToolAllowlist)
+            put("agentCallsEnabled", settings.agentCallsEnabled)
+            put("requireCommandReview", settings.requireCommandReview)
+        }.toString()
+        prefs.edit().putString(keyAgentOrchestration, payload).apply()
+    }
+
     private fun loadProxySettings(prefs: SharedPreferences): NetworkProxySettings {
         val json = prefs.getString(keyNetworkProxy, null).orEmpty()
         if (json.isBlank()) return NetworkProxySettings()
@@ -144,6 +222,8 @@ internal object AppSettingsStore {
             ContextSettings(
                 systemPrompt = obj.optString("systemPrompt", ""),
                 maxTokens = obj.optInt("maxTokens", 4096),
+                contextWindowTokens = obj.optInt("contextWindowTokens", 0)
+                    .coerceIn(ContextSettings.MIN_CONTEXT_WINDOW, ContextSettings.MAX_CONTEXT_WINDOW),
                 temperature = obj.optDouble("temperature", 0.7).toFloat(),
                 topP = obj.optDouble("topP", 1.0).toFloat(),
                 topK = if (obj.has("topK") && !obj.isNull("topK")) obj.getInt("topK") else null,
@@ -161,6 +241,7 @@ internal object AppSettingsStore {
         return JSONObject().apply {
             put("systemPrompt", cs.systemPrompt)
             put("maxTokens", cs.maxTokens)
+            put("contextWindowTokens", cs.contextWindowTokens)
             put("temperature", cs.temperature.toDouble())
             put("topP", cs.topP.toDouble())
             cs.topK?.let { put("topK", it) }

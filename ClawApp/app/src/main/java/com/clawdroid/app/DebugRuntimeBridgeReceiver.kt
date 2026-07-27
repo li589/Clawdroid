@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.clawdroid.app.runtime.ClawRuntimeClient
 import com.clawdroid.app.tools.ClawToolExecutor
-import com.clawdroid.app.ui.ChatHistoryStore
+import com.clawdroid.app.data.ChatHistoryStore
 import com.clawdroid.app.ui.ChatMessageState
 import com.clawdroid.app.ui.ChatRole
 import com.clawdroid.app.ui.ChatViewModel

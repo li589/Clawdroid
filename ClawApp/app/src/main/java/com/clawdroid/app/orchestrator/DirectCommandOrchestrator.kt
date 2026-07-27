@@ -31,6 +31,12 @@ object DirectCommandOrchestrator {
             return matchDirectCommand(normalized)
         }
 
+        // 自然语言优先交给 AI：避免「能力/截图」等短词误抢长句
+        if (prefersNaturalLanguageRouting(normalized)) {
+            parseAgentSkillOrTaskIntent(normalized)?.let { return it }
+            return ParsedIntent.RawText(normalized)
+        }
+
         // ========== Skills / Agents / Runtime Tasks ==========
         parseAgentSkillOrTaskIntent(normalized)?.let { return it }
 
@@ -63,7 +69,9 @@ object DirectCommandOrchestrator {
         if (matchAny(normalized, listOf("最近错误", "last error", "错误状态"))) {
             return ParsedIntent.ToolCall(ClawTool.GET_LAST_ERROR)
         }
-        if (matchAny(normalized, listOf("获取能力", "能力", "capabilities", "get capabilities"))) {
+        if (matchAny(normalized, listOf("获取能力", "capabilities", "get capabilities")) ||
+            isShortExactKeyword(normalized, "能力")
+        ) {
             return ParsedIntent.ToolCall(ClawTool.GET_CAPABILITIES)
         }
         if (matchAny(normalized, listOf("probe", "session probe", "runtime probe", "会话探测"))) {
@@ -109,6 +117,42 @@ object DirectCommandOrchestrator {
         }
 
         return ParsedIntent.RawText(normalized)
+    }
+
+    /**
+     * 对话式/长句自然语言应交 AI，避免短关键词 contains 误命中。
+     * `/命令` 与坐标型短指令不受影响。
+     */
+    internal fun prefersNaturalLanguageRouting(text: String): Boolean {
+        if (text.startsWith("/")) return false
+        if (looksLikeCoordinateCommand(text)) return false
+        val lower = text.lowercase()
+        val conversationalMarkers = listOf(
+            "帮我", "请帮", "能不能", "可以吗", "可不可以",
+            "怎么", "如何", "为什么", "为啥", "什么是", "解释",
+            "分析", "总结", "告诉我", "判断", "看看", "看一下", "看下",
+            "然后", "并且", "同时", "接着", "之后",
+            "吗？", "吗?", "呢？", "呢?"
+        )
+        val hasMarker = conversationalMarkers.any { lower.contains(it) } ||
+            text.contains('？') || text.contains('?')
+        if (hasMarker && text.length >= 8) return true
+        if (text.length > 36) return true
+        return false
+    }
+
+    private fun looksLikeCoordinateCommand(text: String): Boolean {
+        val nums = integerPattern.findAll(text).count()
+        if (nums < 2) return false
+        val lower = text.lowercase()
+        return lower.contains("点击") || lower.contains("滑动") ||
+            lower.contains("tap") || lower.contains("swipe")
+    }
+
+    private fun isShortExactKeyword(text: String, keyword: String): Boolean {
+        val trimmed = text.trim()
+        return trimmed.equals(keyword, ignoreCase = true) ||
+            (trimmed.length <= keyword.length + 2 && trimmed.contains(keyword, ignoreCase = true))
     }
 
     private fun matchAny(text: String, keywords: List<String>): Boolean {

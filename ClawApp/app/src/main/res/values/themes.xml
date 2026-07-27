@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- No ActionBar: page titles are owned by Compose (BrandPageHeader / ChatTopBar). -->
+    <!-- API 28+/29+ attrs live in values-v28 / values-v29 to avoid first-run theme inflate crashes on minSdk 26. -->
+    <style name="Theme.Clawdroid" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

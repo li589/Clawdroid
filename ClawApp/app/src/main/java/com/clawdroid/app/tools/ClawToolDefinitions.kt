@@ -187,7 +187,18 @@ object ClawToolDefinitions {
                 callNotes = "Agent 内部步骤仍受各自工具权限约束"
             )
         )
-        listOf(ClawTool.TASK_GET, ClawTool.TASK_LIST).forEach { tool ->
+        put(
+            ClawToolSpec(
+                tool = ClawTool.RUN_AGENTS_PARALLEL,
+                tier = ToolPermissionTier.Basic,
+                backend = ToolBackend.Hybrid,
+                risk = ToolRisk.Destructive,
+                tags = setOf("agent"),
+                callNotes = "传入多个 agent_ids，并行执行后汇聚；共享 API 预算",
+                examples = listOf("""{"agent_ids":"runtime_health_sweep,capture_then_preview"}""")
+            )
+        )
+        listOf(ClawTool.TASK_GET, ClawTool.TASK_LIST, ClawTool.TASK_WAIT).forEach { tool ->
             put(
                 ClawToolSpec(
                     tool = tool,
@@ -196,7 +207,12 @@ object ClawToolDefinitions {
                     backend = ToolBackend.Runtime,
                     risk = ToolRisk.Read,
                     tags = setOf("task"),
-                    requiredCapabilities = setOf(RuntimeActionCatalog.CAPABILITY_TASK_MANAGE)
+                    requiredCapabilities = setOf(RuntimeActionCatalog.CAPABILITY_TASK_MANAGE),
+                    callNotes = if (tool == ClawTool.TASK_WAIT) {
+                        "参数 task_id、可选 timeout_ms；协程取消时会尝试 TASK_CANCEL；超时返回 detached=true（非硬失败）"
+                    } else {
+                        ""
+                    }
                 )
             )
         }
@@ -310,6 +326,18 @@ object ClawToolDefinitions {
                 backend = ToolBackend.Hybrid,
                 risk = ToolRisk.Read,
                 tags = setOf("file")
+            )
+        )
+        put(
+            ClawToolSpec(
+                tool = ClawTool.FILE_LIST,
+                tier = ToolPermissionTier.Basic,
+                grants = setOf(ToolPermissionGrant.STORAGE_READ, ToolPermissionGrant.FILE_BRIDGE_READ),
+                backend = ToolBackend.Hybrid,
+                risk = ToolRisk.Read,
+                tags = setOf("file"),
+                callNotes = "列目录优先用 file_list，不要反复 file_stat",
+                examples = listOf("""{"path":"/sdcard","limit":100,"offset":0}""")
             )
         )
 
@@ -440,6 +468,18 @@ object ClawToolDefinitions {
                 tags = setOf("sandbox", "shell"),
                 callNotes = "cwd=filesDir/sandbox；白名单: pwd/id/uname/ls/cat/head/tail/wc/mkdir/echo",
                 examples = listOf("""{"command":"ls"}""", """{"command":"echo hello"}""")
+            )
+        )
+        put(
+            ClawToolSpec(
+                tool = ClawTool.TERMUX_EXEC,
+                tier = ToolPermissionTier.Basic,
+                grants = setOf(ToolPermissionGrant.TERMUX, ToolPermissionGrant.SHELL_ALLOWLIST),
+                backend = ToolBackend.Local,
+                risk = ToolRisk.Write,
+                tags = setOf("termux", "shell"),
+                callNotes = "需 Termux 安装、RUN_COMMAND 权限与 allow-external-apps=true；可执行文件限 /data/data/com.termux/files/usr/bin/*",
+                examples = listOf("""{"command":"ls -la"}""", """{"command":"pwd"}""")
             )
         )
         put(

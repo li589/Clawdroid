@@ -28,7 +28,8 @@ enum class ToolPermissionGrant {
     RUNTIME_IPC,
     ASSIST_MCP_CLIENT,
     SHIZUKU,
-    CAMERA
+    CAMERA,
+    TERMUX
 }
 
 enum class ToolBackend {

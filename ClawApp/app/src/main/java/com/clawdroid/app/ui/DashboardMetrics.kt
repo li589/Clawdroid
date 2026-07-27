@@ -307,7 +307,12 @@ internal object DashboardMetricsCollector {
               fi
             }
             report_proc runtime clawdroid-runtime
-            report_proc magisk magiskd
+            # Prefer magiskd; fall back to empty if KernelSU/APatch (no magiskd).
+            if pidof magiskd >/dev/null 2>&1; then
+              report_proc magisk magiskd
+            else
+              echo "PROC|magisk|0|missing|?|0|0"
+            fi
         """.trimIndent()
 
         val process = try {

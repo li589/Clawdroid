@@ -97,4 +97,20 @@ class ModelConfigMemoryLogicTest {
         assertTrue(memory.recentApiKeys.contains("sf-key"))
         assertTrue(memory.providerSnapshots.containsKey(ModelProvider.SiliconFlow))
     }
+
+    @Test
+    fun resolveProviderSwitchPrefillsTencentTokenHubDefaults() {
+        val restored = ModelConfigMemoryLogic.resolveProviderSwitch(
+            memory = ModelConfigMemory(),
+            current = ModelSettings(
+                provider = ModelProvider.OpenAI,
+                baseUrl = "https://api.openai.com/v1",
+                modelName = "gpt-4o-mini"
+            ),
+            newProvider = ModelProvider.TencentTokenHub
+        )
+        assertEquals(ModelProvider.TencentTokenHub, restored.provider)
+        assertEquals("https://tokenhub.tencentmaas.com/v1", restored.baseUrl)
+        assertEquals("hy3", restored.modelName)
+    }
 }

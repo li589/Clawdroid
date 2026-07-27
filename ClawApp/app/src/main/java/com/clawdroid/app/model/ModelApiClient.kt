@@ -3,6 +3,7 @@ package com.clawdroid.app.model
 import com.clawdroid.app.ui.ApiPathStyle
 import com.clawdroid.app.ui.ModelProvider
 import com.clawdroid.app.ui.ModelSettings
+import com.clawdroid.app.tools.ClawToolCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -30,6 +31,13 @@ import java.security.cert.X509Certificate
  * - 本地模型（Ollama / LM Studio / vLLM）
  */
 internal object ModelApiClient {
+
+    @Volatile
+    private var appContext: android.content.Context? = null
+
+    fun bindContext(context: android.content.Context) {
+        appContext = context.applicationContext
+    }
 
     // -------------------------------------------------------------------------
     // 证书锁定
@@ -90,19 +98,60 @@ internal object ModelApiClient {
     }
 
     /**
-     * 生成回复（带系统提示词）
+     * 生成纯文本回复（不附带原生 tools，用于连通性测试 / 工具结果总结）。
      */
     suspend fun generateReply(
         settings: ModelSettings,
         prompt: String,
         systemPrompt: String?
     ): Result<String> {
+        return generateAgentTurn(
+            settings = settings,
+            prompt = prompt,
+            systemPrompt = systemPrompt,
+            enableNativeTools = false
+        ).map { result ->
+            result.text.trim().takeIf { it.isNotBlank() }
+                ?: error("模型响应中没有可用内容")
+        }
+    }
+
+    /**
+     * Agent 编排用：可附带原生 function/tool 定义，返回文本 + tool_calls。
+     * 若网关不支持 tools，自动回退为无 tools 请求（再靠 JSON 协议解析）。
+     * [userImage] 仅作用于当前 user 轮；历史仍由调用方以文本摘要传入 [prompt]。
+     */
+    suspend fun generateAgentTurn(
+        settings: ModelSettings,
+        prompt: String,
+        systemPrompt: String?,
+        enableNativeTools: Boolean = true,
+        userImage: ModelUserImage? = null
+    ): Result<ModelGenerationResult> {
         return withContext(Dispatchers.IO) {
             runCatching {
                 validateSettings(settings)
+                if (userImage != null && settings.provider.apiPathStyle == ApiPathStyle.Custom) {
+                    error("当前 Custom 供应商路径不支持多模态附图，请改用 OpenAI 兼容或 Anthropic。")
+                }
+                val resolvedSystem = systemPrompt ?: settings.contextSettings.systemPrompt
                 when (settings.provider.apiPathStyle) {
-                    ApiPathStyle.Anthropic -> executeAnthropicMessages(settings, prompt, systemPrompt ?: settings.contextSettings.systemPrompt)
-                    ApiPathStyle.OpenAI, ApiPathStyle.Custom -> executeOpenAiCompatibleChat(settings, prompt, systemPrompt ?: settings.contextSettings.systemPrompt)
+                    ApiPathStyle.Anthropic -> {
+                        val tools = if (enableNativeTools) {
+                            ClawToolCatalog.toAnthropicToolsJson(appContext).takeIf { it.length() > 0 }
+                        } else {
+                            null
+                        }
+                        executeAnthropicMessages(settings, prompt, resolvedSystem, tools, userImage)
+                    }
+                    ApiPathStyle.OpenAI, ApiPathStyle.Custom -> {
+                        val tools = if (enableNativeTools) {
+                            ClawToolCatalog.toOpenAiToolsJson(appContext).takeIf { it.length() > 0 }
+                        } else {
+                            null
+                        }
+                        executeOpenAiCompatibleChat(settings, prompt, resolvedSystem, tools, userImage)
+                    }
                 }
             }
         }
@@ -112,15 +161,8 @@ internal object ModelApiClient {
      * 测试模型连接
      */
     suspend fun testConnection(settings: ModelSettings): Result<String> {
-        return withContext(Dispatchers.IO) {
-            runCatching {
-                validateSettings(settings)
-                val reply = when (settings.provider.apiPathStyle) {
-                    ApiPathStyle.Anthropic -> executeAnthropicMessages(settings, "Reply with OK only.", null)
-                    ApiPathStyle.OpenAI, ApiPathStyle.Custom -> executeOpenAiCompatibleChat(settings, "Reply with OK only.", null)
-                }
-                "连接成功: ${settings.provider.displayName} / ${reply.take(80)}"
-            }
+        return generateReply(settings, "Reply with OK only.", null).map { reply ->
+            "连接成功: ${settings.provider.displayName} / ${reply.take(80)}"
         }
     }
 
@@ -181,49 +223,170 @@ internal object ModelApiClient {
     private fun executeOpenAiCompatibleChat(
         settings: ModelSettings,
         prompt: String,
-        systemPrompt: String?
-    ): String {
-        val endpoint = ModelApiUrlBuilder.buildChatUrl(settings)
-        val headers = buildAuthHeaders(settings)
-        val ctx = settings.contextSettings
-
-        val messages = JSONArray().apply {
-            systemPrompt?.takeIf { it.isNotBlank() }?.let { content ->
+        systemPrompt: String?,
+        nativeTools: JSONArray? = null,
+        userImage: ModelUserImage? = null
+    ): ModelGenerationResult {
+        fun buildPayload(includeTools: Boolean): String {
+            val messages = JSONArray().apply {
+                systemPrompt?.takeIf { it.isNotBlank() }?.let { content ->
+                    put(JSONObject().apply {
+                        put("role", "system")
+                        put("content", content)
+                    })
+                }
                 put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", content)
+                    put("role", "user")
+                    put("content", buildOpenAiUserContent(prompt, userImage))
                 })
             }
-            put(JSONObject().apply {
-                put("role", "user")
-                put("content", prompt)
-            })
+            val ctx = settings.contextSettings
+            return JSONObject().apply {
+                put("model", settings.resolvedModelName())
+                put("messages", messages)
+                put("temperature", ctx.temperature.toDouble())
+                put("max_tokens", ctx.maxTokens)
+                if (ctx.topP < 1.0f) put("top_p", ctx.topP.toDouble())
+                if (ctx.stopSequences.isNotEmpty()) put("stop", JSONArray(ctx.stopSequences))
+                if (includeTools && nativeTools != null && nativeTools.length() > 0) {
+                    put("tools", nativeTools)
+                    put("tool_choice", "auto")
+                }
+            }.toString()
         }
 
-        val payload = JSONObject().apply {
-            put("model", settings.resolvedModelName())
-            put("messages", messages)
-            put("temperature", ctx.temperature.toDouble())
-            put("max_tokens", ctx.maxTokens)
-            if (ctx.topP < 1.0f) put("top_p", ctx.topP.toDouble())
-            if (ctx.stopSequences.isNotEmpty()) put("stop", JSONArray(ctx.stopSequences))
+        val endpoint = ModelApiUrlBuilder.buildChatUrl(settings)
+        val headers = buildAuthHeaders(settings)
+        val withTools = nativeTools != null && nativeTools.length() > 0
+        return try {
+            val response = executeJsonRequest(settings, endpoint, "POST", headers, buildPayload(withTools))
+            parseOpenAiGeneration(response)
+        } catch (error: Throwable) {
+            if (withTools && looksLikeToolsUnsupported(error)) {
+                val response = executeJsonRequest(settings, endpoint, "POST", headers, buildPayload(false))
+                parseOpenAiGeneration(response)
+            } else {
+                throw error
+            }
         }
-
-        val response = executeJsonRequest(settings, endpoint, "POST", headers, payload.toString())
-        return parseOpenAiChatResponse(response)
     }
 
     private fun parseOpenAiChatResponse(response: String): String {
+        val result = parseOpenAiGeneration(response)
+        return result.text.trim().takeIf { it.isNotBlank() }
+            ?: error("模型响应中没有可用内容")
+    }
+
+    /**
+     * 解析 OpenAI 兼容 chat/completions：文本 + tool_calls。
+     */
+    internal fun parseOpenAiGeneration(response: String): ModelGenerationResult {
         val root = JSONObject(response)
         val choices = root.optJSONArray("choices")
             ?: error("模型响应缺少 choices 字段")
         val first = choices.optJSONObject(0)
             ?: error("模型响应 choices 为空")
-        return first.optJSONObject("message")
-            ?.optString("content")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: error("模型响应中没有可用内容")
+        val message = first.optJSONObject("message")
+            ?: error("模型响应缺少 message 字段")
+        val text = extractOpenAiMessageContent(message).orEmpty()
+        val toolCalls = extractOpenAiToolCalls(message)
+        if (text.isBlank() && toolCalls.isEmpty()) {
+            error("模型响应中没有可用内容")
+        }
+        return ModelGenerationResult(text = text, toolCalls = toolCalls)
+    }
+
+    internal fun extractOpenAiToolCalls(message: JSONObject): List<ModelToolCall> {
+        val arr = message.optJSONArray("tool_calls") ?: return emptyList()
+        val calls = mutableListOf<ModelToolCall>()
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val fn = item.optJSONObject("function") ?: continue
+            val name = fn.optString("name").trim()
+            if (name.isBlank()) continue
+            val args = fn.opt("arguments")
+            val argumentsJson = when (args) {
+                is JSONObject -> args.toString()
+                is String -> args.ifBlank { "{}" }
+                else -> fn.optString("arguments").ifBlank { "{}" }
+            }
+            calls += ModelToolCall(
+                id = item.optString("id"),
+                name = name,
+                argumentsJson = argumentsJson
+            )
+        }
+        return calls
+    }
+
+    /**
+     * OpenAI 兼容：content 可能是 string，也可能是多段 text/parts 数组。
+     */
+    internal fun extractOpenAiMessageContent(message: JSONObject): String? {
+        when (val content = message.opt("content")) {
+            is String -> return content.trim().takeIf { it.isNotBlank() }
+            is JSONArray -> {
+                val parts = mutableListOf<String>()
+                for (i in 0 until content.length()) {
+                    when (val part = content.opt(i)) {
+                        is String -> part.trim().takeIf { it.isNotEmpty() }?.let { parts += it }
+                        is JSONObject -> {
+                            val type = part.optString("type").trim().lowercase()
+                            when {
+                                type == "text" || part.has("text") ->
+                                    part.optString("text").trim().takeIf { it.isNotEmpty() }?.let { parts += it }
+                                type == "output_text" ->
+                                    part.optString("text").trim().takeIf { it.isNotEmpty() }?.let { parts += it }
+                            }
+                        }
+                    }
+                }
+                return parts.joinToString("\n").trim().takeIf { it.isNotBlank() }
+            }
+        }
+        return message.optString("content").trim().takeIf { it.isNotBlank() }
+    }
+
+    /** OpenAI-compatible multimodal user content (string or text+image_url parts). */
+    internal fun buildOpenAiUserContent(prompt: String, userImage: ModelUserImage?): Any {
+        if (userImage == null) return prompt
+        return JSONArray()
+            .put(
+                JSONObject()
+                    .put("type", "text")
+                    .put("text", prompt)
+            )
+            .put(
+                JSONObject()
+                    .put("type", "image_url")
+                    .put(
+                        "image_url",
+                        JSONObject().put("url", userImage.dataUrl)
+                    )
+            )
+    }
+
+    /** Anthropic multimodal user content (string or text+image blocks). */
+    internal fun buildAnthropicUserContent(prompt: String, userImage: ModelUserImage?): Any {
+        if (userImage == null) return prompt
+        val mediaType = userImage.mimeType.ifBlank { "image/jpeg" }
+        return JSONArray()
+            .put(
+                JSONObject()
+                    .put("type", "text")
+                    .put("text", prompt)
+            )
+            .put(
+                JSONObject()
+                    .put("type", "image")
+                    .put(
+                        "source",
+                        JSONObject()
+                            .put("type", "base64")
+                            .put("media_type", mediaType)
+                            .put("data", userImage.base64Data)
+                    )
+            )
     }
 
     // -------------------------------------------------------------------------
@@ -233,47 +396,143 @@ internal object ModelApiClient {
     private fun executeAnthropicMessages(
         settings: ModelSettings,
         prompt: String,
-        systemPrompt: String?
-    ): String {
-        val endpoint = ModelApiUrlBuilder.buildChatUrl(settings)
-        val headers = buildAnthropicHeaders(settings)
-        val ctx = settings.contextSettings
-
-        val payload = JSONObject().apply {
-            put("model", settings.resolvedModelName())
-            put("max_tokens", ctx.maxTokens)
-            if (systemPrompt?.isNotBlank() == true) put("system", systemPrompt)
-            put(
-                "messages",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("role", "user")
-                        put("content", prompt)
-                    }
+        systemPrompt: String?,
+        nativeTools: JSONArray? = null,
+        userImage: ModelUserImage? = null
+    ): ModelGenerationResult {
+        fun buildPayload(includeTools: Boolean): String {
+            val ctx = settings.contextSettings
+            return JSONObject().apply {
+                put("model", settings.resolvedModelName())
+                put("max_tokens", ctx.maxTokens)
+                if (systemPrompt?.isNotBlank() == true) put("system", systemPrompt)
+                put(
+                    "messages",
+                    JSONArray().put(
+                        JSONObject().apply {
+                            put("role", "user")
+                            put("content", buildAnthropicUserContent(prompt, userImage))
+                        }
+                    )
                 )
-            )
-            put("temperature", ctx.temperature.toDouble())
-            if (ctx.topP < 1.0f) put("top_p", ctx.topP.toDouble())
-            ctx.topK?.let { put("top_k", it) }
-            if (ctx.stopSequences.isNotEmpty()) put("stop_sequences", JSONArray(ctx.stopSequences))
-            // Claude 3.7+ extended thinking
-            ctx.thinkingBudget?.let { put("thinking", JSONObject().put("type", "enabled").put("budget_tokens", it)) }
+                put("temperature", ctx.temperature.toDouble())
+                if (ctx.topP < 1.0f) put("top_p", ctx.topP.toDouble())
+                ctx.topK?.let { put("top_k", it) }
+                if (ctx.stopSequences.isNotEmpty()) put("stop_sequences", JSONArray(ctx.stopSequences))
+                ctx.thinkingBudget?.let {
+                    put("thinking", JSONObject().put("type", "enabled").put("budget_tokens", it))
+                }
+                if (includeTools && nativeTools != null && nativeTools.length() > 0) {
+                    put("tools", nativeTools)
+                }
+            }.toString()
         }
 
-        val response = executeJsonRequest(settings, endpoint, "POST", headers, payload.toString())
-        return parseAnthropicMessagesResponse(response)
+        val endpoint = ModelApiUrlBuilder.buildChatUrl(settings)
+        val headers = buildAnthropicHeaders(settings)
+        val withTools = nativeTools != null && nativeTools.length() > 0
+        return try {
+            val response = executeJsonRequest(settings, endpoint, "POST", headers, buildPayload(withTools))
+            parseAnthropicGeneration(response)
+        } catch (error: Throwable) {
+            if (withTools && looksLikeToolsUnsupported(error)) {
+                val response = executeJsonRequest(settings, endpoint, "POST", headers, buildPayload(false))
+                parseAnthropicGeneration(response)
+            } else {
+                throw error
+            }
+        }
     }
 
     private fun parseAnthropicMessagesResponse(response: String): String {
-        val root = JSONObject(response)
-        val content = root.optJSONArray("content")
-            ?: error("Anthropic 响应缺少 content 字段")
-        val first = content.optJSONObject(0)
-            ?: error("Anthropic 响应内容为空")
-        return first.optString("text")
-            .trim()
-            .takeIf { it.isNotBlank() }
+        val result = parseAnthropicGeneration(response)
+        return result.text.trim().takeIf { it.isNotBlank() }
             ?: error("Anthropic 响应中没有文本内容")
+    }
+
+    /**
+     * 解析 Anthropic messages：文本 + tool_use（跳过 thinking）。
+     */
+    internal fun parseAnthropicGeneration(response: String): ModelGenerationResult {
+        val root = JSONObject(response)
+        if (!root.has("content")) {
+            error("Anthropic 响应缺少 content 字段")
+        }
+        val content = root.optJSONArray("content") ?: error("Anthropic 响应内容为空")
+        val texts = mutableListOf<String>()
+        val toolCalls = mutableListOf<ModelToolCall>()
+        for (i in 0 until content.length()) {
+            val block = content.optJSONObject(i) ?: continue
+            when (block.optString("type").trim().lowercase()) {
+                "text" -> block.optString("text").trim().takeIf { it.isNotEmpty() }?.let { texts += it }
+                "thinking", "redacted_thinking" -> Unit
+                "tool_use" -> {
+                    val name = block.optString("name").trim()
+                    if (name.isBlank()) continue
+                    val input = block.opt("input")
+                    val argumentsJson = when (input) {
+                        is JSONObject -> input.toString()
+                        is String -> input.ifBlank { "{}" }
+                        else -> "{}"
+                    }
+                    toolCalls += ModelToolCall(
+                        id = block.optString("id"),
+                        name = name,
+                        argumentsJson = argumentsJson
+                    )
+                }
+                else -> {
+                    if (block.has("text")) {
+                        block.optString("text").trim().takeIf { it.isNotEmpty() }?.let { texts += it }
+                    }
+                }
+            }
+        }
+        val text = texts.joinToString("\n").trim()
+        if (text.isBlank() && toolCalls.isEmpty()) {
+            error("Anthropic 响应中没有文本内容")
+        }
+        return ModelGenerationResult(text = text, toolCalls = toolCalls)
+    }
+
+    /**
+     * Anthropic：跳过 thinking 块，拼接所有 type=text（extended thinking 时首块常不是正文）。
+     * 软提取：无正文时返回 null（不抛错）。
+     */
+    internal fun extractAnthropicTextContent(root: JSONObject): String? {
+        val content = root.optJSONArray("content") ?: return null
+        val texts = mutableListOf<String>()
+        for (i in 0 until content.length()) {
+            val block = content.optJSONObject(i) ?: continue
+            val type = block.optString("type").trim().lowercase()
+            when (type) {
+                "text" -> block.optString("text").trim().takeIf { it.isNotEmpty() }?.let { texts += it }
+                "thinking", "redacted_thinking", "tool_use" -> Unit
+                else -> {
+                    if (type.isBlank() && block.has("text")) {
+                        block.optString("text").trim().takeIf { it.isNotEmpty() }?.let { texts += it }
+                    }
+                }
+            }
+        }
+        return texts.joinToString("\n").trim().takeIf { it.isNotBlank() }
+    }
+
+    private fun looksLikeToolsUnsupported(error: Throwable): Boolean {
+        val msg = error.message.orEmpty().lowercase()
+        val hints = listOf(
+            "tool", "tools", "tool_choice", "function", "functions",
+            "not support", "unsupported", "unknown field", "unrecognized",
+            "does not support", "invalid_request", "extra inputs"
+        )
+        val statusHints = listOf("http 400", "http 422", "http 404")
+        return hints.any { msg.contains(it) } && (
+            statusHints.any { msg.contains(it) } ||
+                msg.contains("unsupported") ||
+                msg.contains("not support") ||
+                msg.contains("unknown field") ||
+                msg.contains("unrecognized")
+            )
     }
 
     // -------------------------------------------------------------------------

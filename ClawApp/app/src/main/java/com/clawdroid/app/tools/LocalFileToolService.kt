@@ -37,7 +37,10 @@ class LocalFileToolService(
         content: String,
         append: Boolean
     ): ClawToolCallResult {
-        val resolved = resolvePath(path)
+        InputGuards.validateFileWriteContent(content)?.let { return InputGuards.toToolResult(it) }
+        val resolved = runCatching { resolvePath(path) }.getOrElse {
+            return ClawToolCallResult(false, "失败: ${it.message}", error = "invalid_path")
+        }
         return if (isSandboxPath(resolved)) {
             runCatching {
                 resolved.parentFile?.mkdirs()
@@ -147,6 +150,56 @@ class LocalFileToolService(
                 output = "成功: replacements=$replacements path=${resolved.absolutePath} lines=${startIdx + 1}..$endExclusive"
             )
         }
+    }
+
+    suspend fun listDir(path: String, offset: Int = 0, limit: Int = 100): ClawToolCallResult {
+        val resolved = resolvePath(path)
+        val safeOffset = offset.coerceAtLeast(0)
+        val safeLimit = limit.coerceIn(1, 500)
+        if (isSandboxPath(resolved)) {
+            if (!resolved.exists()) {
+                return ClawToolCallResult(false, "失败: 路径不存在", error = "not_found")
+            }
+            if (!resolved.isDirectory) {
+                return ClawToolCallResult(false, "失败: 不是目录", error = "not_directory")
+            }
+            val children = resolved.listFiles()?.sortedBy { it.name.lowercase() }.orEmpty()
+            val total = children.size
+            val page = children.drop(safeOffset).take(safeLimit)
+            return ClawToolCallResult(
+                success = true,
+                output = buildString {
+                    appendLine("path=${resolved.absolutePath}")
+                    appendLine("offset=$safeOffset limit=$safeLimit total=$total truncated=${safeOffset + page.size < total}")
+                    page.forEach { child ->
+                        val kind = if (child.isDirectory) "dir" else "file"
+                        appendLine("$kind\t${child.name}\tsize=${child.length()}\tmtime_ms=${child.lastModified()}")
+                    }
+                }
+            )
+        }
+        return runtimeClient.listDirLimited(
+            path = resolved.absolutePath,
+            offset = safeOffset,
+            limit = safeLimit
+        ).fold(
+            onSuccess = { result ->
+                ClawToolCallResult(
+                    success = true,
+                    output = buildString {
+                        appendLine("path=${result.path}")
+                        appendLine("offset=${result.offset} limit=${result.limit} total=${result.total} truncated=${result.truncated}")
+                        result.entries.forEach { entry ->
+                            val kind = if (entry.isDir) "dir" else "file"
+                            appendLine("$kind\t${entry.name}\tsize=${entry.size}\tmtime_ms=${entry.mtimeMs}")
+                        }
+                    }
+                )
+            },
+            onFailure = {
+                ClawToolCallResult(false, "失败: ${it.message}", error = it.message)
+            }
+        )
     }
 
     suspend fun stat(path: String, computeHash: Boolean): ClawToolCallResult {
@@ -309,6 +362,12 @@ class LocalFileToolService(
 
     private fun resolvePath(raw: String): File {
         val trimmed = raw.trim()
+        require(trimmed.isNotEmpty()) { "path 不能为空" }
+        require(trimmed.indexOf('\u0000') < 0) { "path 包含非法空字节" }
+        require(!trimmed.contains("..")) { "path 不允许包含 .." }
+        require(trimmed.length <= InputGuards.MAX_PATH_CHARS) {
+            "path 过长（最多 ${InputGuards.MAX_PATH_CHARS} 字符）"
+        }
         if (trimmed.startsWith("/")) return File(trimmed)
         return File(context.filesDir, trimmed)
     }

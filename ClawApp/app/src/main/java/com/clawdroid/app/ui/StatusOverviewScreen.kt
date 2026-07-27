@@ -12,6 +12,10 @@ internal data class AssistMcpOverviewStatus(
     val liveCapabilityCount: Int = 0
 )
 
+/**
+ * Overview: status, basic permissions, local environment ops, events, capture.
+ */
+@Suppress("UNUSED_PARAMETER")
 internal fun LazyListScope.statusOverviewScreen(
     permissionState: OverviewPermissionState,
     permissionActions: OverviewPermissionActions,
@@ -26,47 +30,6 @@ internal fun LazyListScope.statusOverviewScreen(
     assistMcpStatus: AssistMcpOverviewStatus = AssistMcpOverviewStatus(),
     debugHighlightLongContent: Boolean = false
 ) {
-    if (debugHighlightLongContent) {
-        item { SectionTitle("长内容压测") }
-        item {
-            ActionCard(
-                title = "最近错误",
-                buttonText = "获取 Last Error",
-                result = runtimeState.lastErrorStatus,
-                onClick = runtimeActions.onGetLastError
-            )
-        }
-        item {
-            EventSubscriptionCard(
-                title = "事件订阅",
-                result = eventState.eventStatus,
-                streaming = eventState.eventStreaming,
-                onStart = eventActions.onStartEvents,
-                onStop = eventActions.onStopEvents
-            )
-        }
-        if (eventState.eventLines.isNotEmpty()) {
-            item {
-                LogCard(
-                    title = "事件流日志",
-                    content = eventState.eventLines.joinToString("\n")
-                )
-            }
-        }
-        item {
-            ShellCard(
-                selectedCommand = runtimeState.shell.selectedCommand,
-                commands = runtimeState.shell.commandOptions,
-                expanded = runtimeState.shell.dropdownExpanded,
-                result = runtimeState.shell.status,
-                output = runtimeState.shell.output,
-                onExpandedChange = runtimeActions.onShellExpandedChange,
-                onCommandSelected = runtimeActions.onShellCommandSelected,
-                onExecute = runtimeActions.onExecuteShell
-            )
-        }
-    }
-    item { SectionTitle("运行总览") }
     item {
         OverviewHeroCard(
             sessionState = runtimeState.session.state,
@@ -80,289 +43,76 @@ internal fun LazyListScope.statusOverviewScreen(
             degradedReason = runtimeState.session.degradedReason
         )
     }
+    if (runtimeState.compatBanner.isNotBlank()) {
+        item {
+            StatusCard(
+                title = "App ↔ Runtime 对齐",
+                content = runtimeState.compatBanner
+            )
+        }
+    }
     item {
-        StatusCard(
-            title = "协助 MCP",
-            content = buildString {
-                appendLine(
-                    "手机侧服务: ${if (assistMcpStatus.phoneServerRunning) "运行中" else "未运行"} — ${assistMcpStatus.phoneServerStatus}"
-                )
-                appendLine(
-                    "电脑协助端点: ${if (assistMcpStatus.assistClientEnabled) "已启用" else "未启用"} — ${assistMcpStatus.assistClientStatus}"
-                )
-                if (assistMcpStatus.assistLastError.isNotBlank()) {
-                    appendLine("最近错误: ${assistMcpStatus.assistLastError}")
-                }
-                append("Live capabilities: ${assistMcpStatus.liveCapabilityCount}（用于工具可用性标注）")
-            }
+        BasicPermissionsCard(
+            status = permissionState.localEnvironmentStatus,
+            actionStatus = permissionState.permissionActionStatus,
+            rememberedNotification = permissionState.rememberedNotification,
+            rememberedWriteSettings = permissionState.rememberedWriteSettings,
+            rememberedAllFiles = permissionState.rememberedAllFiles,
+            rememberedAccessibility = permissionState.rememberedAccessibility,
+            onToggleNotification = permissionActions.onRequestNotificationPermission,
+            onToggleAccessibility = permissionActions.onOpenAccessibilitySettings,
+            onToggleWriteSettings = permissionActions.onOpenWriteSettings,
+            onToggleAllFiles = permissionActions.onOpenAllFilesAccess,
+            onToggleNotificationListener = permissionActions.onOpenNotificationListenerSettings,
+            onToggleShizuku = permissionActions.onRequestShizukuPermission,
+            onRootGrantAll = permissionActions.onRootGrantAutomationPermissions
         )
     }
     item {
-        MetricsOverviewCard(
-            daemonMetrics = runtimeState.latestDaemonMetrics,
-            runtimeMetrics = runtimeState.latestRuntimeProcessMetrics,
-            windowSummary = runtimeState.latestWindowSummary,
-            dashboardMetrics = dashboardMetrics
-        )
-    }
-    item {
-        QuickActionCard(
+        LocalEnvironmentOpsCard(
+            result = buildLocalEnvironmentPanelResult(permissionState),
+            eventStreaming = eventState.eventStreaming,
+            onDetectEnvironment = permissionActions.onRefreshLocalEnvironment,
             onPing = runtimeActions.onPing,
             onCapabilities = runtimeActions.onGetCapabilities,
             onCapture = runtimeActions.onCaptureScreen,
             onShell = runtimeActions.onExecuteShell,
-            onEvents = if (eventState.eventStreaming) eventActions.onStopEvents else eventActions.onStartEvents,
-            eventStreaming = eventState.eventStreaming
-        )
-    }
-    item {
-        StatusCard(
-            title = "连接配置",
-            content = "本地 Socket: ${runtimeState.session.runtimeSocketDisplay} (Abstract Namespace)\n包名: ${runtimeState.session.packageDisplay}\n签名摘要: ${runtimeState.session.signatureDigestDisplay}"
-        )
-    }
-    item { SectionTitle("本地状态") }
-    item {
-        ActionCard(
-            title = "本地环境检测",
-            buttonText = "刷新本地状态",
-            result = permissionState.localEnvironmentSummary,
-            onClick = permissionActions.onRefreshLocalEnvironment
-        )
-    }
-    item {
-        StatusCard(
-            title = "本地环境诊断",
-            content = permissionState.localEnvironmentDiagnosis,
-            maxContentLines = 8
-        )
-    }
-    item {
-        StatusCard(
-            title = "本地环境详情",
-            content = "Root: ${rootStatusLabel(permissionState.localEnvironmentStatus.rootGranted)}\nMagisk 守护: ${magiskDaemonStatusLabel(permissionState.localEnvironmentStatus)}\nClawRuntime 模块: ${moduleStatusLabel(permissionState.localEnvironmentStatus)}\nRuntime 守护: ${runtimeDaemonStatusLabel(permissionState.localEnvironmentStatus)}\nLSPosed: ${lsposedStatusLabel(permissionState.localEnvironmentStatus)}\nLSPosed 进程: ${permissionState.localEnvironmentStatus.xposedProcessName.ifBlank { "unknown" }}\nLSPosed 时间: ${formatEpochMillis(permissionState.localEnvironmentStatus.xposedLoadedAtEpochMs)}\n目标焦点: ${permissionState.localEnvironmentStatus.xposedFocusSummary.ifBlank { "unknown" }}\nView 层次: ${permissionState.localEnvironmentStatus.xposedViewSummary.ifBlank { "unknown" }}\n适配配置: ${permissionState.localEnvironmentStatus.xposedAdapterConfigSummary.ifBlank { "unknown" }}\nAccessibility: ${booleanStatusLabel(permissionState.localEnvironmentStatus.accessibilityEnabled)}\n通知权限: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.notificationPermissionGranted)}\n通知监听: ${booleanStatusLabel(permissionState.localEnvironmentStatus.notificationListenerEnabled)}\nShizuku: ${shizukuEnvLabel(permissionState.localEnvironmentStatus)}\n修改系统设置: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.writeSettingsGranted)}\n全部文件访问: ${permissionGrantedLabel(permissionState.localEnvironmentStatus.allFilesAccessGranted)}"
-        )
-    }
-    item {
-        PermissionActionsCard(
-            summary = permissionState.permissionSummary,
-            result = permissionState.permissionActionStatus,
-            targetPath = permissionState.permissionTargetPath,
-            chmodMode = permissionState.permissionChmodMode,
-            chownOwner = permissionState.permissionChownOwner,
-            onTargetPathChange = permissionActions.onPermissionTargetPathChange,
-            onChmodModeChange = permissionActions.onPermissionChmodModeChange,
-            onChownOwnerChange = permissionActions.onPermissionChownOwnerChange,
-            onRequestNotification = permissionActions.onRequestNotificationPermission,
-            onOpenAccessibility = permissionActions.onOpenAccessibilitySettings,
-            onOpenWriteSettings = permissionActions.onOpenWriteSettings,
-            onOpenAllFiles = permissionActions.onOpenAllFilesAccess,
-            onRootGrantNotification = permissionActions.onRootGrantNotificationPermission,
-            onRootGrantWriteSettings = permissionActions.onRootGrantWriteSettings,
-            onRootGrantAllFiles = permissionActions.onRootGrantAllFilesAccess,
-            onRootEnableAccessibility = permissionActions.onRootEnableAccessibility,
-            onRootGrantAutomation = permissionActions.onRootGrantAutomationPermissions,
-            onRootChmodPath = permissionActions.onRootChmodPath,
-            onRootChownPath = permissionActions.onRootChownPath
-        )
-    }
-    item {
-        StatusCard(
-            title = "Runtime 连接诊断",
-            content = buildRuntimeConnectionDiagnosis(
-                localStatus = permissionState.localEnvironmentStatus,
-                runtimeState = runtimeState
-            ),
-            maxContentLines = 10
-        )
-    }
-    item {
-        StatusCard(
-            title = "连接状态机",
-            content = "当前状态: ${runtimeState.session.state}\n状态轨迹: ${runtimeState.session.trace}\n鉴权模式: ${runtimeState.session.authMode}\n会话摘要: ${runtimeState.session.summary}\nRuntime 注入: ${runtimeState.session.runtimeLoaded?.let { if (it) "已加载" else "未加载" } ?: "unknown"}\nRuntime 进程: ${runtimeState.session.runtimeProcess.ifBlank { "unknown" }}\nRuntime 时间: ${formatEpochMillis(runtimeState.session.runtimeLoadedAtEpochMs)}\nDegraded: ${runtimeState.session.degradedReason.ifBlank { "none" }}\nCapabilities: ${runtimeState.capabilityStatus}"
-        )
-    }
-    item { SectionTitle("自动化闭环") }
-    item {
-        StatusCard(
-            title = "无障碍感知快照",
-            content = automationState.accessibilitySnapshotStatus,
-            maxContentLines = 12
-        )
-    }
-    item {
-        StatusCard(
-            title = "任务状态",
-            content = "任务状态: ${automationState.taskState}\n任务详情: ${automationState.taskSummary}"
-        )
-    }
-    item {
-        PageConfirmationCard(
-            expectedPackage = automationState.pageConfirmPackage,
-            expectedText = automationState.pageConfirmText,
-            expectedViewId = automationState.pageConfirmViewId,
-            result = automationState.pageConfirmStatus,
-            onExpectedPackageChange = automationActions.onPageConfirmPackageChange,
-            onExpectedTextChange = automationActions.onPageConfirmTextChange,
-            onExpectedViewIdChange = automationActions.onPageConfirmViewIdChange,
-            onConfirm = automationActions.onConfirmPage
-        )
-    }
-    item {
-        ClickPrecheckCard(
-            expectedPackage = automationState.clickPrecheckPackage,
-            targetText = automationState.clickPrecheckText,
-            targetViewId = automationState.clickPrecheckViewId,
-            result = automationState.clickPrecheckStatus,
-            executeResult = automationState.safeTapStatus,
-            onExpectedPackageChange = automationActions.onClickPrecheckPackageChange,
-            onTargetTextChange = automationActions.onClickPrecheckTextChange,
-            onTargetViewIdChange = automationActions.onClickPrecheckViewIdChange,
-            onPrecheck = automationActions.onClickPrecheck,
-            onExecuteTap = automationActions.onExecuteSafeTap
-        )
-    }
-    item { SectionTitle("ClawRuntime 控制") }
-    item {
-        RuntimeTasksCard(
-            tasks = runtimeState.runtimeTasks,
-            status = runtimeState.runtimeTasksStatus,
-            eventStreaming = eventState.eventStreaming,
-            onRefresh = runtimeActions.onRefreshRuntimeTasks,
-            onCancel = runtimeActions.onCancelRuntimeTask
-        )
-    }
-    item {
-        ActionCard(
-            title = "ClawRuntime 联通测试",
-            buttonText = "发送 Ping",
-            result = runtimeState.pingStatus,
-            onClick = runtimeActions.onPing
-        )
-    }
-    item {
-        ActionCard(
-            title = "版本信息",
-            buttonText = "获取 Version",
-            result = runtimeState.versionStatus,
-            onClick = runtimeActions.onGetVersion
-        )
-    }
-    item {
-        ActionCard(
-            title = "健康状态",
-            buttonText = "获取 Health",
-            result = runtimeState.healthStatus,
-            onClick = runtimeActions.onGetHealth
-        )
-    }
-    item {
-        ActionCard(
-            title = "Runtime/模块统一状态",
-            buttonText = "获取 Runtime Status",
-            result = runtimeState.runtimeStatus,
-            onClick = runtimeActions.onGetRuntimeStatus
-        )
-    }
-    item {
-        ActionCard(
-            title = "最近错误",
-            buttonText = "获取 Last Error",
-            result = runtimeState.lastErrorStatus,
-            onClick = runtimeActions.onGetLastError
-        )
-    }
-    item {
-        ActionCard(
-            title = "会话探测",
-            buttonText = "执行 Runtime Probe",
-            result = "用于一次性完成连接、挑战鉴权骨架、能力同步和最终状态判定。",
-            onClick = runtimeActions.onSessionProbe
-        )
-    }
-    item {
-        ActionCard(
-            title = "ClawRuntime 能力读取",
-            buttonText = "获取 Capabilities",
-            result = runtimeState.capabilityStatus,
-            onClick = runtimeActions.onGetCapabilities
-        )
-    }
-    item { SectionTitle("能力动作") }
-    item {
-        ActionCard(
-            title = "屏幕截图",
-            buttonText = "执行 Capture Screen",
-            result = runtimeState.captureStatus,
-            onClick = runtimeActions.onCaptureScreen
-        )
-    }
-    item {
-        ActionCard(
-            title = "读取文件",
-            buttonText = "读取并预览最近截图",
-            result = runtimeState.readFileStatus,
-            onClick = runtimeActions.onReadLatestCapture
-        )
-    }
-    item { SectionTitle("自动化输入") }
-    item {
-        ActionCard(
-            title = "输入注入",
-            buttonText = "执行 Tap(540,1200)",
-            result = runtimeState.tapStatus,
-            onClick = runtimeActions.onInjectTap
-        )
-    }
-    item {
-        ActionCard(
-            title = "滑动注入",
-            buttonText = "执行 Swipe(540,1800 -> 540,400)",
-            result = runtimeState.swipeStatus,
-            onClick = runtimeActions.onInjectSwipe
-        )
-    }
-    item {
-        ActionCard(
-            title = "按键注入",
-            buttonText = "执行 Keyevent BACK",
-            result = runtimeState.keyeventStatus,
-            onClick = runtimeActions.onInjectKeyeventBack
-        )
-    }
-    item { SectionTitle("诊断与事件") }
-    item {
-        ShellCard(
-            selectedCommand = runtimeState.shell.selectedCommand,
-            commands = runtimeState.shell.commandOptions,
-            expanded = runtimeState.shell.dropdownExpanded,
-            result = runtimeState.shell.status,
-            output = runtimeState.shell.output,
-            onExpandedChange = runtimeActions.onShellExpandedChange,
-            onCommandSelected = runtimeActions.onShellCommandSelected,
-            onExecute = runtimeActions.onExecuteShell
+            onEvents = if (eventState.eventStreaming) {
+                eventActions.onStopEvents
+            } else {
+                eventActions.onStartEvents
+            }
         )
     }
     item {
         EventSubscriptionCard(
-            title = "事件订阅",
+            title = "事件流",
             result = eventState.eventStatus,
             streaming = eventState.eventStreaming,
+            recentEvents = eventState.eventLines,
             onStart = eventActions.onStartEvents,
             onStop = eventActions.onStopEvents
         )
     }
-    if (eventState.eventLines.isNotEmpty()) {
-        item {
-            LogCard(
-                title = "事件流日志",
-                content = eventState.eventLines.joinToString("\n")
-            )
-        }
+    item {
+        PreviewCard(imageBitmap = latestCapturePreview)
     }
-    latestCapturePreview?.let { preview ->
-        item {
-            PreviewCard(preview)
-        }
+}
+
+/**
+ * 本地环境结果框：环境摘要 + 可选的操作回显（互不重复拼接）。
+ */
+internal fun buildLocalEnvironmentPanelResult(permissionState: OverviewPermissionState): String {
+    val summary = permissionState.localEnvironmentSummary.trim()
+        .ifBlank { "尚未检测本地环境" }
+    val ops = permissionState.environmentOpsFeedback.trim()
+    if (ops.isBlank()) return summary
+    if (summary == "检测中..." || summary == "尚未检测本地环境") {
+        return if (ops == "检测中..." || ops == "环境检测中...") summary else ops
     }
+    if (ops == "环境检测完成" || ops == "检测中..." || ops == "环境检测中...") {
+        return if (ops == "环境检测完成") "$summary\n\n$ops" else summary
+    }
+    if (summary.contains(ops) || ops.contains(summary)) return summary
+    return "$summary\n\n$ops"
 }

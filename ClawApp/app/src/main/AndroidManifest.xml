@@ -2,12 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -22,6 +24,7 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.termux" />
     </queries>
 
     <application
@@ -30,7 +33,8 @@
         android:extractNativeLibs="false"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Clawdroid">
 
         <meta-data
             android:name="xposedmodule"
@@ -44,7 +48,9 @@
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustNothing"
+            android:theme="@style/Theme.Clawdroid">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -84,6 +90,15 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".service.SandboxShellService"
+            android:exported="false"
+            android:process=":sandbox" />
+
+        <service
+            android:name=".termux.TermuxResultService"
+            android:exported="false" />
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

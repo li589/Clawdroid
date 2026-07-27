@@ -16,7 +16,7 @@ class RuntimeActionCatalogTest {
             RuntimeActionCatalog.capabilityFor(RuntimeActionCatalog.INJECT_KEYEVENT)
         )
         assertTrue(RuntimeActionCatalog.actionToCapability.containsKey(RuntimeActionCatalog.TASK_SUBMIT))
-        assertEquals(18, RuntimeActionCatalog.actionToCapability.size)
+        assertEquals(21, RuntimeActionCatalog.actionToCapability.size)
         assertEquals(
             RuntimeActionCatalog.CAPABILITY_EVENT_REPORT,
             RuntimeActionCatalog.capabilityFor(RuntimeActionCatalog.REPORT_XPOSED_FOCUS)

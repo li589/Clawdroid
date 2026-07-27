@@ -9,6 +9,8 @@ object ChatTextLimits {
     const val MAX_PERSIST_FIELD_CHARS = 8 * 1024
     const val MAX_CONTEXT_CHARS = 1_800
     const val MAX_HISTORY_TURN_CHARS = 400
+    /** Hard cap for chat composer / submit (aligned with [com.clawdroid.app.tools.InputGuards]). */
+    const val MAX_PROMPT_CHARS = 8_192
 
     fun truncateForDisplay(text: String, maxChars: Int = MAX_CONTENT_CHARS): String {
         return truncate(text, maxChars)

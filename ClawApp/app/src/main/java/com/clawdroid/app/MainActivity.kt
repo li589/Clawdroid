@@ -3,10 +3,12 @@ package com.clawdroid.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import com.clawdroid.app.ui.ClawdroidApp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val debugSeedLongOverview = intent?.getBooleanExtra(EXTRA_DEBUG_SEED_LONG_OVERVIEW, false) == true
         setContent {

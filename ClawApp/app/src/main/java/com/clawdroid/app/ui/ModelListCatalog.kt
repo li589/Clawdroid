@@ -6,7 +6,7 @@ package com.clawdroid.app.ui
 internal object ModelListCatalog {
     private val COMMON_KEYWORDS = listOf(
         "gpt", "o1", "o3", "o4", "claude", "gemini", "deepseek", "qwen", "glm",
-        "llama", "mistral", "kimi", "moonshot", "yi-", "ernie", "hunyuan",
+        "llama", "mistral", "kimi", "moonshot", "yi-", "ernie", "hunyuan", "hy3",
         "minimax", "command", "grok", "embedding", "rerank", "tts", "whisper",
         "flux", "sdxl", "video", "image"
     )

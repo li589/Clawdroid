@@ -13,6 +13,7 @@ class DomainToolsCatalogTest {
             "web_preview",
             "web_search",
             "sandbox_shell",
+            "termux_exec",
             "camera_capture",
             "camera_record",
             "sensor_read",
@@ -41,6 +42,9 @@ class DomainToolsCatalogTest {
         val sandbox = ClawToolDefinitions.spec(ClawTool.SANDBOX_SHELL)
         assertEquals(ToolPermissionTier.Basic, sandbox.tier)
         assertTrue(ToolPermissionGrant.SHELL_ALLOWLIST in sandbox.grants)
+        val termux = ClawToolDefinitions.spec(ClawTool.TERMUX_EXEC)
+        assertEquals(ToolPermissionTier.Basic, termux.tier)
+        assertTrue(ToolPermissionGrant.TERMUX in termux.grants)
         val camera = ClawToolDefinitions.spec(ClawTool.CAMERA_CAPTURE)
         assertEquals(ToolPermissionTier.Basic, camera.tier)
         assertTrue(ToolPermissionGrant.CAMERA in camera.grants)

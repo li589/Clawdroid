@@ -1,6 +1,7 @@
 package com.clawdroid.app.env
 
 import android.Manifest
+import android.app.AppOpsManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -65,26 +66,62 @@ object AppPermissionManager {
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
-    fun writeSettingsGranted(context: Context): Boolean = Settings.System.canWrite(context)
+    fun writeSettingsGranted(context: Context): Boolean {
+        if (Settings.System.canWrite(context)) return true
+        return isAppOpAllowed(context, AppOpsManager.OPSTR_WRITE_SETTINGS)
+    }
 
-    fun allFilesAccessGranted(): Boolean {
+    fun allFilesAccessGranted(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return true
         }
-        return Environment.isExternalStorageManager()
+        if (Environment.isExternalStorageManager()) return true
+        // AppOpsManager.OPSTR_MANAGE_EXTERNAL_STORAGE is API 30+; use literal for compile safety.
+        return isAppOpAllowed(context, "android:manage_external_storage")
+    }
+
+    private fun isAppOpAllowed(context: Context, op: String): Boolean {
+        val appOps = context.getSystemService(AppOpsManager::class.java) ?: return false
+        val uid = context.applicationInfo.uid
+        val packageName = context.packageName
+        val mode = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(op, uid, packageName)
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(op, uid, packageName)
+            }
+        }.getOrDefault(AppOpsManager.MODE_DEFAULT)
+        return mode == AppOpsManager.MODE_ALLOWED
     }
 
     fun notificationSettingsIntent(context: Context): Intent {
-        return Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return firstResolvableIntent(
+                context,
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                },
+                Intent("android.settings.APP_NOTIFICATION_SETTINGS").apply {
+                    putExtra("app_package", context.packageName)
+                    putExtra("app_uid", context.applicationInfo.uid)
+                },
+                miuiAppPermEditorIntent(context),
+                appDetailsIntent(context)
+            )
         }
+        return firstResolvableIntent(
+            context,
+            miuiAppPermEditorIntent(context),
+            appDetailsIntent(context)
+        )
     }
 
     fun accessibilitySettingsIntent(context: Context): Intent {
         return firstResolvableIntent(
             context,
             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            Intent("com.samsung.accessibility.installed_service"),
             Intent(Settings.ACTION_SETTINGS),
             appDetailsIntent(context)
         )
@@ -97,13 +134,19 @@ object AppPermissionManager {
                 Settings.ACTION_MANAGE_WRITE_SETTINGS,
                 Uri.parse("package:${context.packageName}")
             ),
+            miuiAppPermEditorIntent(context),
             appDetailsIntent(context)
         )
     }
 
     fun allFilesAccessIntent(context: Context): Intent {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            return appDetailsIntent(context)
+            return firstResolvableIntent(
+                context,
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")),
+                miuiAppPermEditorIntent(context),
+                appDetailsIntent(context)
+            )
         }
         return firstResolvableIntent(
             context,
@@ -112,8 +155,40 @@ object AppPermissionManager {
                 Uri.parse("package:${context.packageName}")
             ),
             Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+            miuiAppPermEditorIntent(context),
             appDetailsIntent(context)
         )
+    }
+
+    fun notificationListenerSettingsIntent(context: Context): Intent {
+        return firstResolvableIntent(
+            context,
+            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
+            Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"),
+            Intent(Settings.ACTION_SETTINGS),
+            appDetailsIntent(context)
+        )
+    }
+
+    fun shizukuManagerIntent(context: Context): Intent {
+        return firstResolvableIntent(
+            context,
+            context.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=moe.shizuku.privileged.api")),
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/")),
+            appDetailsIntent(context)
+        )
+    }
+
+    private fun miuiAppPermEditorIntent(context: Context): Intent {
+        return Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+            putExtra("extra_pkgname", context.packageName)
+            putExtra("extra_package_uid", context.applicationInfo.uid)
+            setClassName(
+                "com.miui.securitycenter",
+                "com.miui.permcenter.permissions.PermissionsEditorActivity"
+            )
+        }
     }
 
     fun appDetailsIntent(context: Context): Intent {
@@ -194,6 +269,172 @@ object AppPermissionManager {
             pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS
             """.trimIndent(),
             successMessage = "已通过 Root 授予通知权限"
+        )
+    }
+
+    /**
+     * Termux defines com.termux.permission.RUN_COMMAND as a dangerous permission.
+     * Many OEMs hide it from App Info → Additional permissions; pm grant with Root works.
+     */
+    suspend fun grantTermuxRunCommandViaRoot(context: Context): RootActionResult {
+        return runRootCommand(
+            """
+            pm grant ${context.packageName} com.termux.permission.RUN_COMMAND
+            """.trimIndent(),
+            successMessage = "已通过 Root 授予 Termux RUN_COMMAND"
+        )
+    }
+
+    /**
+     * Root: grant RUN_COMMAND, ensure allow-external-apps=true, then verify both.
+     * Also force-stops Termux after writing so properties reload on next launch.
+     */
+    suspend fun grantAndVerifyTermuxIntegrationViaRoot(context: Context): RootActionResult =
+        withContext(Dispatchers.IO) {
+            val ensure = ensureTermuxAllowExternalAppsViaRoot(context, alsoGrantRunCommand = true)
+            val appSeesPermission = ContextCompat.checkSelfPermission(
+                context,
+                "com.termux.permission.RUN_COMMAND"
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val summary = buildString {
+                appendLine(if (ensure.termuxInstalled) "Termux: 已安装" else "Termux: 未安装")
+                appendLine(
+                    when (ensure.runCommandGrant) {
+                        "ok" -> "RUN_COMMAND: Root pm grant 已执行"
+                        "fail" -> "RUN_COMMAND: Root pm grant 失败"
+                        "skipped" -> "RUN_COMMAND: 未执行"
+                        else -> "RUN_COMMAND: ${ensure.runCommandGrant.ifBlank { "未知" }}"
+                    }
+                )
+                appendLine(
+                    if (appSeesPermission) "RUN_COMMAND 复核: App 侧已授权"
+                    else "RUN_COMMAND 复核: App 侧仍未授权（需弹系统授权框或重启 App）"
+                )
+                appendLine(ensure.allowExternalSummary)
+                if (ensure.forceStoppedTermux) {
+                    append("已 force-stop Termux 以重载 termux.properties")
+                }
+            }.trim()
+            RootActionResult(
+                success = ensure.success && appSeesPermission,
+                output = if (ensure.timedOut) "Root 执行超时\n$summary" else summary,
+                timedOut = ensure.timedOut
+            )
+        }
+
+    data class TermuxAllowExternalEnsureResult(
+        val success: Boolean,
+        val termuxInstalled: Boolean,
+        val runCommandGrant: String,
+        val allowExternal: String,
+        val forceStoppedTermux: Boolean,
+        val timedOut: Boolean,
+        val rawOutput: String
+    ) {
+        val allowExternalSummary: String
+            get() = when (allowExternal) {
+                "already_true" -> "allow-external-apps: 已是 true"
+                "wrote_true" -> "allow-external-apps: 已写入 true"
+                "write_fail" -> "allow-external-apps: 写入失败，请手动编辑 ~/.termux/termux.properties"
+                "no_root" -> "allow-external-apps: 无 Root，无法自动写入"
+                else -> "allow-external-apps: $allowExternal"
+            }
+
+        val didWriteOrConfirm: Boolean
+            get() = allowExternal == "already_true" || allowExternal == "wrote_true"
+    }
+
+    /**
+     * Ensures Termux `allow-external-apps=true` via Root (optional pm grant).
+     * After write, force-stops Termux so RunCommandService reloads properties.
+     */
+    suspend fun ensureTermuxAllowExternalAppsViaRoot(
+        context: Context,
+        alsoGrantRunCommand: Boolean = false,
+        forceStopTermux: Boolean = true
+    ): TermuxAllowExternalEnsureResult = withContext(Dispatchers.IO) {
+        val pkg = context.packageName
+        val propsPath = "/data/data/com.termux/files/home/.termux/termux.properties"
+        val grantBlock = if (alsoGrantRunCommand) {
+            """
+            if pm grant $pkg com.termux.permission.RUN_COMMAND >/dev/null 2>&1; then
+              echo "RUN_COMMAND_GRANT=ok"
+            else
+              echo "RUN_COMMAND_GRANT=fail"
+            fi
+            """.trimIndent()
+        } else {
+            """echo "RUN_COMMAND_GRANT=skipped""""
+        }
+        val forceStopBlock = if (forceStopTermux) {
+            """
+            am force-stop com.termux >/dev/null 2>&1 || true
+            echo "TERMUX_FORCE_STOP=ok"
+            """.trimIndent()
+        } else {
+            """echo "TERMUX_FORCE_STOP=skipped""""
+        }
+        val command = """
+            if ! pm path com.termux >/dev/null 2>&1; then
+              echo "TERMUX_INSTALLED=0"
+              echo "RUN_COMMAND_GRANT=skipped"
+              echo "ALLOW_EXTERNAL=unknown"
+              echo "TERMUX_FORCE_STOP=skipped"
+              exit 0
+            fi
+            echo "TERMUX_INSTALLED=1"
+            $grantBlock
+            props='$propsPath'
+            mkdir -p /data/data/com.termux/files/home/.termux 2>/dev/null || true
+            touch "${'$'}props" 2>/dev/null || true
+            if grep -Eq '^[[:space:]]*allow-external-apps[[:space:]]*=[[:space:]]*true([[:space:]]*#.*)?${'$'}' "${'$'}props" 2>/dev/null; then
+              echo "ALLOW_EXTERNAL=already_true"
+            else
+              if [ -f "${'$'}props" ]; then
+                grep -Ev '^[[:space:]]*allow-external-apps[[:space:]]*=' "${'$'}props" > "${'$'}props.tmp" 2>/dev/null || true
+                if [ -f "${'$'}props.tmp" ]; then
+                  mv "${'$'}props.tmp" "${'$'}props" 2>/dev/null || true
+                fi
+              fi
+              printf '\nallow-external-apps=true\n' >> "${'$'}props"
+              if grep -Eq '^[[:space:]]*allow-external-apps[[:space:]]*=[[:space:]]*true([[:space:]]*#.*)?${'$'}' "${'$'}props" 2>/dev/null; then
+                echo "ALLOW_EXTERNAL=wrote_true"
+              else
+                echo "ALLOW_EXTERNAL=write_fail"
+              fi
+            fi
+            termux_uid=${'$'}(stat -c %u /data/data/com.termux 2>/dev/null || echo "")
+            if [ -n "${'$'}termux_uid" ]; then
+              chown "${'$'}termux_uid:${'$'}termux_uid" /data/data/com.termux/files/home/.termux 2>/dev/null || true
+              chown "${'$'}termux_uid:${'$'}termux_uid" "${'$'}props" 2>/dev/null || true
+              chmod 700 /data/data/com.termux/files/home/.termux 2>/dev/null || true
+              chmod 600 "${'$'}props" 2>/dev/null || true
+            fi
+            $forceStopBlock
+        """.trimIndent()
+
+        val raw = runRawRootCommand(command)
+        val lines = raw.output.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        fun flag(key: String): String =
+            lines.firstOrNull { it.startsWith("$key=") }?.substringAfter('=').orEmpty()
+
+        val installed = flag("TERMUX_INSTALLED") == "1"
+        val allow = flag("ALLOW_EXTERNAL").ifBlank {
+            if (!raw.success && raw.output.contains("Permission denied", ignoreCase = true)) {
+                "no_root"
+            } else {
+                "unknown"
+            }
+        }
+        val wroteOrOk = allow == "already_true" || allow == "wrote_true"
+        TermuxAllowExternalEnsureResult(
+            success = installed && wroteOrOk,
+            termuxInstalled = installed,
+            runCommandGrant = flag("RUN_COMMAND_GRANT"),
+            allowExternal = allow,
+            forceStoppedTermux = flag("TERMUX_FORCE_STOP") == "ok",
+            timedOut = raw.timedOut,
+            rawOutput = raw.output
         )
     }
 
@@ -346,7 +587,11 @@ object AppPermissionManager {
             val modulePath = "/data/adb/modules/$moduleId"
             val command = """
                 module_path=$modulePath
-                if pidof magiskd >/dev/null 2>&1; then magisk=1; else magisk=0; fi
+                magisk=0
+                if pidof magiskd >/dev/null 2>&1; then magisk=1
+                elif pidof magisk >/dev/null 2>&1; then magisk=1
+                elif [ -d /data/adb/magisk ] || [ -d /data/adb/ksu ] || [ -d /data/adb/apd ] || [ -d /data/adb/modules ]; then magisk=1
+                fi
                 if [ -d "${'$'}module_path" ]; then installed=1; else installed=0; fi
                 if [ -d "${'$'}module_path" ] && [ ! -f "${'$'}module_path/disable" ] && [ ! -f "${'$'}module_path/remove" ]; then enabled=1; else enabled=0; fi
                 if pidof clawdroid-runtime >/dev/null 2>&1; then runtime=1; else runtime=0; fi
@@ -490,12 +735,13 @@ object AppPermissionManager {
         return ComponentName(context, ClawAccessibilityService::class.java)
     }
 
-    private fun firstResolvableIntent(context: Context, vararg intents: Intent): Intent {
-        val resolved = intents.firstOrNull { candidate ->
+    private fun firstResolvableIntent(context: Context, vararg intents: Intent?): Intent {
+        val candidates = intents.filterNotNull()
+        val resolved = candidates.firstOrNull { candidate ->
             candidate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             candidate.resolveActivity(context.packageManager) != null
         }
-        return resolved ?: intents.last().apply {
+        return (resolved ?: candidates.lastOrNull() ?: appDetailsIntent(context)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }

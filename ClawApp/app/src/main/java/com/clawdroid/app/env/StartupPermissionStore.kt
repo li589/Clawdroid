@@ -81,8 +81,8 @@ internal object StartupPermissionStore {
                 automationGrantRemembered = true,
                 notificationGrantRemembered = true,
                 writeSettingsGrantRemembered = true,
-                allFilesGrantRemembered = true,
-                accessibilityGrantRemembered = true
+                allFilesGrantRemembered = true
+                // Intentionally do NOT remember accessibility — never auto-enable a11y on startup.
             )
         }
     }
@@ -94,6 +94,7 @@ internal object StartupPermissionStore {
                 notificationGrantRemembered = current.notificationGrantRemembered || status.notificationPermissionGranted,
                 writeSettingsGrantRemembered = current.writeSettingsGrantRemembered || status.writeSettingsGranted,
                 allFilesGrantRemembered = current.allFilesGrantRemembered || status.allFilesAccessGranted,
+                // Remember for UI sync hints only; startup auto-grant still ignores accessibility.
                 accessibilityGrantRemembered = current.accessibilityGrantRemembered || status.accessibilityEnabled
             )
         }
@@ -129,8 +130,8 @@ internal fun buildStartupAutoGrantPlan(
     val missingNotification = !status.notificationPermissionGranted
     val missingWriteSettings = !status.writeSettingsGranted
     val missingAllFiles = !status.allFilesAccessGranted
-    val missingAccessibility = !status.accessibilityEnabled
-    val missingCoreGrant = missingNotification || missingWriteSettings || missingAllFiles || missingAccessibility
+    // Accessibility is never auto-granted at startup (privacy); only manual / Root 一键.
+    val missingCoreGrant = missingNotification || missingWriteSettings || missingAllFiles
 
     if (state.automationGrantRemembered && missingCoreGrant) {
         return StartupAutoGrantPlan(useAutomationGrant = true)
@@ -140,6 +141,6 @@ internal fun buildStartupAutoGrantPlan(
         grantNotification = state.notificationGrantRemembered && missingNotification,
         grantWriteSettings = state.writeSettingsGrantRemembered && missingWriteSettings,
         grantAllFiles = state.allFilesGrantRemembered && missingAllFiles,
-        grantAccessibility = state.accessibilityGrantRemembered && missingAccessibility
+        grantAccessibility = false
     )
 }

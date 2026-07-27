@@ -1,5 +1,4 @@
-package com.clawdroid.app.ui
-
+﻿package com.clawdroid.app.data
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -24,35 +23,39 @@ internal object AppSecretCipher {
         if (plainText.isEmpty()) {
             return ""
         }
-        val cipher = Cipher.getInstance(transformation)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
-        val iv = cipher.iv
-        val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-        return Base64.encodeToString(iv, Base64.NO_WRAP) +
-            ":" +
-            Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        return runCatching {
+            val cipher = Cipher.getInstance(transformation)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
+            val iv = cipher.iv
+            val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+            Base64.encodeToString(iv, Base64.NO_WRAP) +
+                ":" +
+                Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        }.getOrDefault("")
     }
 
     fun decrypt(payload: String): String {
         if (payload.isBlank()) {
             return ""
         }
-        val parts = payload.split(':', limit = 2)
-        if (parts.size != 2) {
-            return ""
-        }
-        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-        val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
-        if (iv.size != ivSizeBytes) {
-            return ""
-        }
-        val cipher = Cipher.getInstance(transformation)
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            getOrCreateSecretKey(),
-            GCMParameterSpec(tagSizeBits, iv)
-        )
-        return cipher.doFinal(encrypted).toString(Charsets.UTF_8)
+        return runCatching {
+            val parts = payload.split(':', limit = 2)
+            if (parts.size != 2) {
+                return@runCatching ""
+            }
+            val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+            val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
+            if (iv.size != ivSizeBytes) {
+                return@runCatching ""
+            }
+            val cipher = Cipher.getInstance(transformation)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                getOrCreateSecretKey(),
+                GCMParameterSpec(tagSizeBits, iv)
+            )
+            cipher.doFinal(encrypted).toString(Charsets.UTF_8)
+        }.getOrDefault("")
     }
 
     private fun getOrCreateSecretKey(): SecretKey {

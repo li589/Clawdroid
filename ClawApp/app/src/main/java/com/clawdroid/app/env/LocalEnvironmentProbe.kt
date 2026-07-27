@@ -33,7 +33,11 @@ data class LocalEnvironmentStatus(
     val shizukuManagerInstalled: Boolean = false,
     val shizukuBinderAlive: Boolean = false,
     val shizukuPermissionGranted: Boolean = false,
-    val notificationListenerEnabled: Boolean = false
+    val notificationListenerEnabled: Boolean = false,
+    /** true = Enforcing, false = Permissive/Disabled, null = unknown */
+    val selinuxEnforcing: Boolean? = null,
+    val networkConnected: Boolean = false,
+    val systemVersionLabel: String = ""
 )
 
 internal data class LocalEnvironmentDiagnosis(
@@ -121,21 +125,22 @@ object LocalEnvironmentProbe {
 
     suspend fun probe(context: Context, includeRootCheck: Boolean): LocalEnvironmentStatus {
         val rootGranted = if (includeRootCheck) {
-            detectRootGranted()
+            runCatching { detectRootGranted() }.getOrDefault(false)
         } else {
             null
         }
         val magiskModuleStatus = if (includeRootCheck && rootGranted == true) {
-            AppPermissionManager.inspectMagiskModule()
+            runCatching { AppPermissionManager.inspectMagiskModule() }.getOrDefault(MagiskModuleStatus())
         } else {
             MagiskModuleStatus()
         }
 
         if (includeRootCheck && rootGranted == true) {
-            seedXposedAdapterConfigIfNeeded()
+            runCatching { seedXposedAdapterConfigIfNeeded() }
         }
 
-        val persistedMarker = LocalRuntimeStatus.readPersistedMarker(context)
+        val persistedMarker = runCatching { LocalRuntimeStatus.readPersistedMarker(context) }
+            .getOrDefault(emptyEnvironmentStatus())
         val injectedInProcess = LocalRuntimeStatus.isXposedInjected()
         val markerFresh = isPersistedMarkerFresh(persistedMarker.xposedLoadedAtEpochMs)
         val xposedInjected = injectedInProcess || (persistedMarker.xposedInjected && markerFresh)
@@ -144,31 +149,37 @@ object LocalEnvironmentProbe {
             persistedMarker.xposedInjected && markerFresh -> "marker"
             else -> "none"
         }
-        val writeSettingsGranted = AppPermissionManager.writeSettingsGranted(context) || (
-            includeRootCheck && rootGranted == true &&
-                detectAppOpAllowed(
-                    context.packageName,
-                    listOf("android:write_settings", "WRITE_SETTINGS")
+        val writeSettingsGranted = runCatching {
+            AppPermissionManager.writeSettingsGranted(context) || (
+                includeRootCheck && rootGranted == true &&
+                    detectAppOpAllowed(
+                        context.packageName,
+                        listOf("android:write_settings", "WRITE_SETTINGS")
+                    )
                 )
-            )
-        val allFilesAccessGranted = AppPermissionManager.allFilesAccessGranted() || (
-            includeRootCheck && rootGranted == true &&
-                detectAppOpAllowed(
-                    context.packageName,
-                    listOf("android:manage_external_storage", "MANAGE_EXTERNAL_STORAGE")
+        }.getOrDefault(false)
+        val allFilesAccessGranted = runCatching {
+            AppPermissionManager.allFilesAccessGranted(context) || (
+                includeRootCheck && rootGranted == true &&
+                    detectAppOpAllowed(
+                        context.packageName,
+                        listOf("android:manage_external_storage", "MANAGE_EXTERNAL_STORAGE")
+                    )
                 )
-            )
+        }.getOrDefault(false)
         return LocalEnvironmentStatus(
             rootGranted = rootGranted,
-            accessibilityEnabled = detectAccessibilityEnabled(context),
-            notificationPermissionGranted = AppPermissionManager.notificationPermissionGranted(context),
+            accessibilityEnabled = runCatching { detectAccessibilityEnabled(context) }.getOrDefault(false),
+            notificationPermissionGranted = runCatching {
+                AppPermissionManager.notificationPermissionGranted(context)
+            }.getOrDefault(false),
             writeSettingsGranted = writeSettingsGranted,
             allFilesAccessGranted = allFilesAccessGranted,
             magiskDaemonRunning = magiskModuleStatus.magiskDaemonRunning,
             magiskModuleInstalled = magiskModuleStatus.moduleInstalled,
             magiskModuleEnabled = magiskModuleStatus.moduleEnabled,
             runtimeDaemonRunning = magiskModuleStatus.runtimeDaemonRunning,
-            lsposedManagerInstalled = detectLsposedManagerInstalled(context),
+            lsposedManagerInstalled = runCatching { detectLsposedManagerInstalled(context) }.getOrDefault(false),
             xposedInjected = xposedInjected,
             xposedProcessName = resolveXposedProcessName(
                 xposedInjected,
@@ -180,14 +191,23 @@ object LocalEnvironmentProbe {
                 LocalRuntimeStatus.loadedAtEpochMs(),
                 persistedMarker.xposedLoadedAtEpochMs
             ),
-            shizukuManagerInstalled = ShizukuSupport.isManagerInstalled(context),
-            shizukuBinderAlive = ShizukuSupport.isBinderAlive(),
-            shizukuPermissionGranted = ShizukuSupport.permissionGranted(),
-            notificationListenerEnabled = detectNotificationListenerEnabled(context),
-            xposedFocusSummary = resolveXposedFocusSummary(),
-            xposedViewSummary = resolveXposedViewSummary(),
+            shizukuManagerInstalled = runCatching { ShizukuSupport.isManagerInstalled(context) }.getOrDefault(false),
+            shizukuBinderAlive = runCatching { ShizukuSupport.isBinderAlive() }.getOrDefault(false),
+            shizukuPermissionGranted = runCatching { ShizukuSupport.permissionGranted() }.getOrDefault(false),
+            notificationListenerEnabled = runCatching {
+                detectNotificationListenerEnabled(context)
+            }.getOrDefault(false),
+            selinuxEnforcing = DeviceSystemInfo.selinuxEnforcing(),
+            networkConnected = DeviceSystemInfo.networkConnected(context),
+            systemVersionLabel = runCatching { DeviceSystemInfo.systemVersionLabel() }.getOrDefault(""),
+            xposedFocusSummary = runCatching { resolveXposedFocusSummary() }.getOrDefault(""),
+            xposedViewSummary = runCatching { resolveXposedViewSummary() }.getOrDefault(""),
             xposedAdapterConfigSummary = buildString {
-                append(com.clawdroid.app.xposed.XposedAdapterConfig.summaryForProbe())
+                append(
+                    runCatching {
+                        com.clawdroid.app.xposed.XposedAdapterConfig.summaryForProbe()
+                    }.getOrDefault("")
+                )
                 append("; injected_source=")
                 append(xposedSource)
             }
@@ -437,9 +457,9 @@ internal fun buildLocalEnvironmentDiagnosis(status: LocalEnvironmentStatus): Loc
 
         true -> when {
             !status.magiskDaemonRunning -> LocalEnvironmentDiagnosis(
-                title = "Root 已建立，但未检测到 Magisk/Kitsune 守护",
-                detail = "这通常意味着当前 Root 管理器未正常工作，或 App 进程拿到的 Root 会话与外部 shell 环境不一致。",
-                actionHint = "先确认设备侧 `magiskd` 或对应守护仍在运行，再继续检查模块目录。"
+                title = "Root 已建立，但未确认 Root 环境目录",
+                detail = "未检测到 magiskd，也未看到 /data/adb 下常见的 Magisk/KernelSU/APatch 目录。可能是纯 su 或探测脚本未读到预期路径。",
+                actionHint = "确认已授权本 App 的 Root，再刷新本地环境；若使用 KernelSU/APatch，装好 ClawRuntime 模块后以「模块/Runtime」状态为准。"
             )
 
             !status.magiskModuleInstalled -> LocalEnvironmentDiagnosis(

@@ -1,5 +1,11 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.data.AppSettingsStore
+import com.clawdroid.app.data.ChatHistoryStore
+import com.clawdroid.app.data.ChatSessionSnapshot
+import com.clawdroid.app.data.ChatSessionStore
+import com.clawdroid.app.data.ChatTaskHistoryStore
+import com.clawdroid.app.data.PersistedChatTaskState
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
@@ -412,6 +418,74 @@ class ChatViewModelDispatcherTest {
     }
 
     @Test
+    fun aiToolLoopReflectTrueDoesNotSelfCancel() = runTest(mainDispatcherRule.dispatcher) {
+        mockkObject(ChatHistoryStore)
+        mockkObject(ChatTaskHistoryStore)
+        mockkObject(com.clawdroid.app.chat.ChatPromptPlanner)
+        mockkObject(com.clawdroid.app.ai.AiAgentOrchestrator)
+        try {
+            coEvery { ChatHistoryStore.load(any()) } returns emptyList()
+            every { ChatHistoryStore.save(any(), any()) } just runs
+            every { ChatTaskHistoryStore.load(any()) } returns PersistedChatTaskState(
+                currentTask = null,
+                taskHistory = emptyList()
+            )
+            every { ChatTaskHistoryStore.save(any(), any(), any()) } just runs
+
+            coEvery {
+                com.clawdroid.app.chat.ChatPromptPlanner.plan(any(), any())
+            } returns com.clawdroid.app.chat.ChatPromptPlan.ToolExecution(
+                tool = ClawTool.GET_CAPABILITIES,
+                arguments = emptyMap(),
+                assistantMessage = "我先读取能力列表。",
+                aiStatus = "AI 决策工具: 读取能力列表",
+                reflectResultWithModel = true
+            )
+            coEvery {
+                com.clawdroid.app.ai.AiAgentOrchestrator.continueAfterTool(
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any()
+                )
+            } returns Result.success(
+                com.clawdroid.app.ai.AiAgentPlan.AssistantReply("能力汇总：root=true")
+            )
+
+            val dispatcher = fakeDispatcher()
+            coEvery { dispatcher.execute(ClawTool.GET_CAPABILITIES, any()) } returns ClawToolCallResult(
+                success = true,
+                output = "root=true, accessibility=true"
+            )
+
+            val viewModel = createViewModel(dispatcher)
+            advanceUntilIdle()
+            viewModel.submitPrompt("帮我看看你现在有哪些能力", ModelSettings())
+            advanceUntilIdle()
+
+            val assistantTexts = viewModel.uiState.value.messages
+                .filter { it.role == ChatRole.Assistant }
+                .map { it.content }
+            assertTrue(
+                "should not self-cancel AI tool loop",
+                assistantTexts.none { it.contains("已停止后续工具步骤") }
+            )
+            assertFalse(viewModel.uiState.value.chatBusy)
+            assertTrue(
+                assistantTexts.any {
+                    it.contains("能力汇总") || it.contains("root=true")
+                }
+            )
+        } finally {
+            unmockkObject(com.clawdroid.app.ai.AiAgentOrchestrator)
+            unmockkObject(com.clawdroid.app.chat.ChatPromptPlanner)
+            unmockkObject(ChatTaskHistoryStore)
+            unmockkObject(ChatHistoryStore)
+        }
+    }
+
+    @Test
     fun restoreCancelsLocalOnlyRunningTask() = runTest(mainDispatcherRule.dispatcher) {
         mockkObject(ChatTaskHistoryStore)
         mockkObject(ChatHistoryStore)
@@ -459,8 +533,20 @@ class ChatViewModelDispatcherTest {
     }
 
     private fun createViewModel(dispatcher: ClawToolDispatcher): ChatViewModel {
+        mockkObject(ChatSessionStore)
+        mockkObject(AppSettingsStore)
+        every { ChatSessionStore.loadSnapshot(any()) } returns ChatSessionSnapshot(
+            activeSessionId = "sess-1",
+            sessions = emptyList(),
+            activeMessages = emptyList(),
+            activeTitle = "新对话"
+        )
+        every { ChatSessionStore.listSummaries(any()) } returns emptyList()
+        every { ChatSessionStore.saveActiveMessages(any(), any(), any()) } just runs
+        every { AppSettingsStore.loadAgentOrchestrationSettings(any()) } returns AgentOrchestrationSettings()
+        val appContext = createAppContextMock()
         val overviewController = OverviewController(
-            appContext = createAppContextMock(),
+            appContext = appContext,
             runtimeClient = createRuntimeClientMock(),
             toolExecutor = createToolExecutorMock(),
             previewLimitBytes = 1024,
@@ -468,7 +554,7 @@ class ChatViewModelDispatcherTest {
             autoStart = false
         )
         return ChatViewModel(
-            appContext = createAppContextMock(),
+            appContext = appContext,
             overviewController = overviewController,
             toolDispatcher = dispatcher
         )

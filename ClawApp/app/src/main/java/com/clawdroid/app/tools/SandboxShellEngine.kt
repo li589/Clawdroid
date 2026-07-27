@@ -1,6 +1,5 @@
 package com.clawdroid.app.tools
 
-import android.content.Context
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -8,13 +7,15 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 /**
- * App-uid sandbox shell: cwd under filesDir/sandbox, allowlisted argv only (no root/Shizuku).
+ * App-uid sandbox shell engine: cwd under filesDir/sandbox, allowlisted argv only.
+ * Runs inside the [:sandbox] process via [com.clawdroid.app.service.SandboxShellService].
  */
-class SandboxShellService(
-    private val context: Context
+internal class SandboxShellEngine(
+    private val sandboxRoot: File
 ) {
-    private val sandboxRoot: File =
+    constructor(context: android.content.Context) : this(
         File(context.filesDir, "sandbox").also { it.mkdirs() }
+    )
 
     fun exec(command: String, timeoutMs: Long = 8_000): ClawToolCallResult {
         val trimmed = command.trim().replace(Regex("\\s+"), " ")
@@ -142,5 +143,23 @@ class SandboxShellService(
         private val REL_WC = Pattern.compile("""^wc -l ([A-Za-z0-9._/\-]+)$""")
         private val REL_MKDIR = Pattern.compile("""^mkdir -p ([A-Za-z0-9._/\-]+)$""")
         private val ECHO = Pattern.compile("""^echo ([A-Za-z0-9 ._/\-:]+)$""")
+
+        fun encodeResult(result: ClawToolCallResult): String =
+            org.json.JSONObject()
+                .put("success", result.success)
+                .put("output", result.output)
+                .put("error", result.error ?: org.json.JSONObject.NULL)
+                .put("shellOutput", result.shellOutput ?: org.json.JSONObject.NULL)
+                .toString()
+
+        fun decodeResult(json: String): ClawToolCallResult {
+            val obj = org.json.JSONObject(json)
+            return ClawToolCallResult(
+                success = obj.optBoolean("success"),
+                output = obj.optString("output"),
+                error = obj.optString("error").takeIf { it.isNotBlank() && it != "null" },
+                shellOutput = obj.optString("shellOutput").takeIf { it.isNotBlank() && it != "null" }
+            )
+        }
     }
 }

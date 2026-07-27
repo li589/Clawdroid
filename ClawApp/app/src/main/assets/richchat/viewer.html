@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <link rel="stylesheet" href="vendor/katex.min.css" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 8px;
+      background: transparent;
+      color: #1c1b1f;
+      font-family: sans-serif;
+      overflow-x: auto;
+    }
+    body.dark { color: #e6e1e5; }
+    #root { min-height: 24px; }
+    .error {
+      color: #b3261e;
+      white-space: pre-wrap;
+      font-size: 12px;
+    }
+    body.dark .error { color: #f2b8b5; }
+    .svg-wrap svg { max-width: 100%; height: auto; display: block; }
+    .mermaid { text-align: center; }
+    .katex-display { margin: 0.4em 0; overflow-x: auto; overflow-y: hidden; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="vendor/katex.min.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
+  <script>
+    function b64ToUtf8(b64) {
+      var bin = atob(b64);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+
+    function setTheme(dark) {
+      document.body.classList.toggle('dark', !!dark);
+      try {
+        if (window.mermaid) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: dark ? 'dark' : 'default',
+            securityLevel: 'strict'
+          });
+        }
+      } catch (e) {}
+    }
+
+    function showError(msg) {
+      var root = document.getElementById('root');
+      root.innerHTML = '';
+      var el = document.createElement('pre');
+      el.className = 'error';
+      el.textContent = msg || '渲染失败';
+      root.appendChild(el);
+    }
+
+    async function renderPayload(mode, b64, dark) {
+      setTheme(dark);
+      var root = document.getElementById('root');
+      root.innerHTML = '';
+      var text;
+      try {
+        text = b64ToUtf8(b64 || '');
+      } catch (e) {
+        showError('解码失败: ' + e);
+        return;
+      }
+      try {
+        if (mode === 'katex') {
+          var display = text.indexOf('\\n') >= 0 || text.length > 48 || text.indexOf('\\\\') >= 0;
+          katex.render(text.trim(), root, {
+            throwOnError: false,
+            displayMode: display,
+            output: 'html'
+          });
+        } else if (mode === 'mermaid') {
+          if (!window.mermaid) {
+            showError('Mermaid 未加载');
+            return;
+          }
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: dark ? 'dark' : 'default',
+            securityLevel: 'strict'
+          });
+          var id = 'mmd-' + Date.now();
+          var out = await mermaid.render(id, text.trim());
+          root.innerHTML = out.svg;
+        } else if (mode === 'svg') {
+          var wrap = document.createElement('div');
+          wrap.className = 'svg-wrap';
+          var trimmed = text.trim();
+          if (trimmed.indexOf('<svg') === -1) {
+            showError('不是有效的 SVG');
+            return;
+          }
+          wrap.innerHTML = trimmed;
+          root.appendChild(wrap);
+        } else {
+          showError('未知模式: ' + mode);
+        }
+      } catch (e) {
+        showError(String(e && e.message ? e.message : e));
+      }
+    }
+
+    window.clawRichRender = renderPayload;
+    setTheme(false);
+  </script>
+</body>
+</html>

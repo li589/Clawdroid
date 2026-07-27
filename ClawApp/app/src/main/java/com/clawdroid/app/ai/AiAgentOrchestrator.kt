@@ -3,6 +3,8 @@ package com.clawdroid.app.ai
 import android.content.Context
 import com.clawdroid.app.chat.ChatTextLimits
 import com.clawdroid.app.model.ModelApiClient
+import com.clawdroid.app.model.ModelGenerationResult
+import com.clawdroid.app.model.ModelToolCall
 import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCatalog
@@ -46,30 +48,36 @@ internal sealed interface AiAgentPlan {
 }
 
 internal object AiAgentOrchestrator {
-    const val MAX_TOOL_LOOP_TURNS = 4
+    /** @deprecated Prefer [com.clawdroid.app.ui.AgentOrchestrationSettings.maxToolLoopTurns]. */
+    const val MAX_TOOL_LOOP_TURNS = 16
 
     @Volatile
     private var appContext: Context? = null
 
     fun bindContext(context: Context) {
         appContext = context.applicationContext
+        ModelApiClient.bindContext(context)
     }
 
     suspend fun plan(
         settings: ModelSettings,
         prompt: String,
-        runtimeSnapshot: AiRuntimeSnapshot
+        runtimeSnapshot: AiRuntimeSnapshot,
+        userImage: com.clawdroid.app.model.ModelUserImage? = null
     ): Result<AiAgentPlan> {
         val normalizedPrompt = prompt.trim()
-        if (normalizedPrompt.isBlank()) {
+        if (normalizedPrompt.isBlank() && userImage == null) {
             return Result.success(AiAgentPlan.AssistantReply("请输入要执行的内容。"))
         }
-        return ModelApiClient.generateReply(
+        val effectivePrompt = normalizedPrompt.ifBlank { "请根据附图回答。" }
+        return ModelApiClient.generateAgentTurn(
             settings = settings,
-            prompt = normalizedPrompt,
-            systemPrompt = buildSystemPrompt(runtimeSnapshot)
-        ).map { rawReply ->
-            parseAgentPlan(rawReply)
+            prompt = effectivePrompt,
+            systemPrompt = buildSystemPrompt(runtimeSnapshot),
+            enableNativeTools = true,
+            userImage = userImage
+        ).map { generation ->
+            planFromGeneration(generation)
         }
     }
 
@@ -88,22 +96,68 @@ internal object AiAgentOrchestrator {
                 AiAgentPlan.AssistantReply(steps.last().output.trim().ifBlank { "工具已执行，但模型未配置。" })
             )
         }
-        return ModelApiClient.generateReply(
+        return ModelApiClient.generateAgentTurn(
             settings = settings,
             prompt = buildContinueUserPrompt(originalPrompt, steps, remainingTurns),
-            systemPrompt = buildContinueSystemPrompt(runtimeSnapshot, remainingTurns)
-        ).map { rawReply ->
-            parseAgentPlan(rawReply)
+            systemPrompt = buildContinueSystemPrompt(runtimeSnapshot, remainingTurns),
+            enableNativeTools = true
+        ).map { generation ->
+            planFromGeneration(generation)
         }
+    }
+
+    /**
+     * 优先消费原生 tool_calls / tool_use；否则回退解析文本中的约定 JSON。
+     */
+    internal fun planFromGeneration(generation: ModelGenerationResult): AiAgentPlan {
+        val nativeCall = generation.toolCalls.firstOrNull()
+        if (nativeCall != null) {
+            return planFromNativeToolCall(nativeCall, assistantHint = generation.text)
+        }
+        return parseAgentPlan(generation.text)
+    }
+
+    internal fun planFromNativeToolCall(
+        call: ModelToolCall,
+        assistantHint: String = ""
+    ): AiAgentPlan {
+        val replyHint = assistantHint.trim()
+        val tool = ClawTool.byToolId(call.name.trim())
+            ?: return AiAgentPlan.AssistantReply(
+                message = replyHint.ifBlank { "模型调用了未知工具 `${call.name}`，请改用明确指令。" }
+            )
+        val argsObject = runCatching {
+            val raw = call.argumentsJson.trim().ifBlank { "{}" }
+            JSONObject(raw)
+        }.getOrElse {
+            return AiAgentPlan.AssistantReply(
+                message = replyHint.ifBlank { "工具参数 JSON 无法解析，请检查模型输出。" }
+            )
+        }
+        val arguments = linkedMapOf<String, String>()
+        val keys = argsObject.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            arguments[key] = jsonValueToArgumentString(argsObject.opt(key))
+        }
+        val validatedArgs = validateToolArguments(tool, arguments)
+            ?: return AiAgentPlan.AssistantReply(
+                message = replyHint.ifBlank { "工具参数校验失败，请检查参数名和参数值是否符合约束。" }
+            )
+        return AiAgentPlan.ToolExecution(
+            tool = tool,
+            arguments = validatedArgs,
+            assistantMessage = replyHint.ifBlank { defaultAssistantMessage(tool) },
+            reasoning = "native_tool_call"
+        )
     }
 
     internal fun parseAgentPlan(rawReply: String): AiAgentPlan {
         val trimmed = rawReply.trim()
-        if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
-            return AiAgentPlan.AssistantReply(trimmed)
-        }
+        val payload = extractJsonPayload(trimmed)
+            ?: return AiAgentPlan.AssistantReply(trimmed)
 
-        val json = runCatching { JSONObject(trimmed) }.getOrNull()
+        val json = runCatching { JSONObject(payload) }.getOrNull()
             ?: return AiAgentPlan.AssistantReply(trimmed)
 
         val mode = json.optString("mode", "").trim().lowercase()
@@ -120,7 +174,7 @@ internal object AiAgentOrchestrator {
                 message = reply.ifBlank { "模型返回了未知工具 `$toolId`，请改用明确指令。" }
             )
 
-        val arguments = extractArguments(trimmed)
+        val arguments = extractArguments(json)
 
         val validatedArgs = validateToolArguments(tool, arguments)
         if (validatedArgs == null) {
@@ -137,30 +191,69 @@ internal object AiAgentOrchestrator {
         )
     }
 
+    /**
+     * 从模型原文中提取单个 JSON 对象：去 Markdown fence、忽略前后说明文字、
+     * 用括号平衡扫描支持嵌套对象（arguments / steps_json 等）。
+     */
+    internal fun extractJsonPayload(rawReply: String): String? {
+        val trimmed = rawReply.trim()
+        if (trimmed.isEmpty()) return null
+
+        val candidates = buildList {
+            add(trimmed)
+            stripMarkdownFences(trimmed)?.let { add(it) }
+            // 正文中的 ```json ... ``` 片段
+            MARKDOWN_FENCE_FINDER.findAll(trimmed).forEach { match ->
+                match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            }
+        }
+
+        for (candidate in candidates) {
+            val text = candidate.trim()
+            if (text.startsWith("{") && text.endsWith("}")) {
+                if (runCatching { JSONObject(text) }.isSuccess) return text
+            }
+            findBalancedJsonObject(text)?.let { obj ->
+                if (runCatching { JSONObject(obj) }.isSuccess) return obj
+            }
+        }
+        return findBalancedJsonObject(trimmed)?.takeIf {
+            runCatching { JSONObject(it) }.isSuccess
+        }
+    }
+
     internal fun buildSystemPrompt(runtimeSnapshot: AiRuntimeSnapshot): String {
         return buildString {
-            appendLine("你是 Clawdroid 的本地 AI 编排器。")
-            appendLine("你的任务是先判断是否应调用工具，再决定是否直接回复。")
-            appendLine("你必须输出 JSON，且只能输出一个 JSON 对象，不要输出 Markdown。")
-            appendLine("""JSON 结构：{"mode":"tool|chat","reply":"给用户看的简短中文回复","tool":"tool_id","arguments":{"key":"value"},"reason":"简短原因"}""")
-            appendLine("只有在用户明确要求执行动作、查询运行时、截图、读取能力、操作事件流或执行受限命令时，才返回 mode=tool。")
-            appendLine("如果用户是在闲聊、询问解释、或者缺少执行前提，则返回 mode=chat。")
-            appendLine("reply 必须是自然、简洁的中文。")
+            val orchestrator = ClawAssetPromptStore.orchestratorPrompt(appContext)
+            if (orchestrator.isNotBlank()) {
+                appendLine(orchestrator.take(2800))
+            } else {
+                appendLine("你是 Clawdroid 的本地 AI 编排器。")
+                appendLine("优先使用函数/工具调用；否则输出 JSON：mode/tool/arguments/reply/reason。")
+                appendLine("闲聊用 mode=chat；明确动作才 mode=tool。多步优先 run_agent。")
+            }
             appendLine("如要调工具，只能从下列 tool_id 中选择（unavailable 表示当前能力不足，勿强行调用）：")
             appendLine(toolCatalog())
             val usage = ClawAssetPromptStore.toolUsagePrompt(appContext)
             if (usage.isNotBlank()) {
                 appendLine("--- tool-usage ---")
-                appendLine(usage.take(1200))
+                appendLine(usage.take(1400))
             }
             val assist = ClawAssetPromptStore.assistPrompt(appContext)
             if (assist.isNotBlank()) {
                 appendLine("--- assist-mcp ---")
                 appendLine(assist.take(1200))
             }
-            appendLine("多步任务优先使用 run_agent（先 list_agents）；也可在后续轮次继续 mode=tool 串联单个工具。")
-            appendLine("Skill 指导可用 list_skills / get_skill；工具目录可用 list_tools / get_tool。")
-            appendLine("本机工具优先；需要电脑侧能力时用 assist_ping / assist_list_tools / assist_call_tool。")
+            val agents = ClawAssetPromptStore.agentCatalogMarkdown(appContext)
+            if (agents.isNotBlank()) {
+                appendLine("--- agents ---")
+                appendLine(agents.take(1200))
+            }
+            val routing = ClawAssetPromptStore.routingHints(appContext)
+            if (routing.isNotBlank()) {
+                appendLine("--- routing ---")
+                appendLine(routing.take(900))
+            }
             appendLine("参数约定：")
             appendLine("""- inject_tap: {"x":"540","y":"1200","display_id":"0"}""")
             appendLine("""- inject_swipe: {"x1":"540","y1":"1800","x2":"540","y2":"400","duration_ms":"350","display_id":"0"}""")
@@ -181,11 +274,6 @@ internal object AiAgentOrchestrator {
             appendLine("session_summary=${runtimeSnapshot.sessionSummary}")
             appendLine("capability_status=${runtimeSnapshot.capabilityStatus}")
             appendLine("event_streaming=${runtimeSnapshot.eventStreaming}")
-            appendLine("若上下文显示运行时尚未连接，优先建议 probe_session、runtime_ping、run_agent(runtime_health_sweep) 或 get_capabilities，不要臆造执行成功。")
-            appendLine("若用户要求'帮我看看当前能力/状态/连通性/模块'，优先 run_agent(runtime_health_sweep) 或 get_runtime_status / get_capabilities / probe_session。")
-            appendLine("若用户要求'截图并看看'，优先 run_agent(capture_then_preview) 或 capture_screen(read_after_capture=true)。")
-            appendLine("若用户要求确认页面后点击，优先 run_agent(confirm_then_safe_tap)。")
-            appendLine("若用户要求调用电脑 MCP，优先 assist_status / assist_ping，再 assist_call_tool。")
         }
     }
 
@@ -194,16 +282,18 @@ internal object AiAgentOrchestrator {
         remainingTurns: Int
     ): String {
         return buildString {
-            appendLine("你是 Clawdroid 的本地 AI 编排器，正在继续多步工具循环。")
-            appendLine("你必须输出 JSON，且只能输出一个 JSON 对象，不要输出 Markdown。")
-            appendLine("""JSON 结构：{"mode":"tool|chat","reply":"给用户看的简短中文回复","tool":"tool_id","arguments":{"key":"value"},"reason":"简短原因"}""")
-            appendLine("若用户目标尚未完成且仍需调用工具，返回 mode=tool。")
-            appendLine("若目标已完成、无法继续、或剩余轮次不足，返回 mode=chat，并在 reply 中基于真实工具输出做简短总结。")
-            appendLine("不要重复调用刚刚失败且参数相同的工具；不要臆造成功。")
+            val continuePrompt = ClawAssetPromptStore.continuePrompt(appContext)
+            if (continuePrompt.isNotBlank()) {
+                appendLine(continuePrompt.take(1200))
+            } else {
+                appendLine("你是 Clawdroid 的本地 AI 编排器，正在继续多步工具循环。")
+                appendLine("优先原生工具调用；否则只输出一个 JSON：mode/tool/arguments/reply/reason。")
+                appendLine("目标未完成且仍需工具 → mode=tool；目标完成或无法继续 → mode=chat。")
+                appendLine("不要重复失败调用；不要臆造成功。多步优先 run_agent。")
+            }
             appendLine("剩余可继续工具轮次：$remainingTurns")
             appendLine("可选 tool_id：")
             appendLine(toolCatalog())
-            appendLine("多步固定流程优先 run_agent。")
             appendLine("当前运行时上下文：")
             appendLine("session_summary=${runtimeSnapshot.sessionSummary}")
             appendLine("capability_status=${runtimeSnapshot.capabilityStatus}")
@@ -262,6 +352,7 @@ internal object AiAgentOrchestrator {
     }
 
     private fun defaultAssistantMessage(tool: ClawTool): String {
+        ClawAssetPromptStore.phraseForTool(appContext, tool.toolId)?.let { return it }
         return when (tool) {
             ClawTool.RUNTIME_PING -> "我先检查一下 Runtime 是否在线。"
             ClawTool.PROBE_SESSION -> "我先做一次 Runtime 会话探测。"
@@ -278,8 +369,9 @@ internal object AiAgentOrchestrator {
             ClawTool.TASK_SUBMIT -> "我先向 Runtime 提交任务。"
             ClawTool.TASK_GET -> "我先查询 Runtime 任务状态。"
             ClawTool.TASK_LIST -> "我先列出 Runtime 任务。"
+            ClawTool.TASK_WAIT -> "我先等待 Runtime 任务到达终态。"
             ClawTool.TASK_CANCEL -> "我先取消 Runtime 任务。"
-            else -> "我先尝试执行这个动作。"
+            else -> ClawAssetPromptStore.defaultToolPhrase(appContext)
         }
     }
 
@@ -294,10 +386,13 @@ internal object AiAgentOrchestrator {
 
     internal fun buildToolReflectionSystemPrompt(runtimeSnapshot: AiRuntimeSnapshot): String {
         return buildString {
-            appendLine("你是 Clawdroid 的工具执行总结助手。")
-            appendLine("你只能基于真实工具输出总结，不要臆造成功、截图内容或运行状态。")
-            appendLine("如果工具执行失败，要直接指出失败原因，并给出一个简短下一步建议。")
-            appendLine("请输出简洁中文，不要输出 JSON、Markdown 列表或代码块，控制在 2 到 3 句内。")
+            val reflection = ClawAssetPromptStore.toolReflectionPrompt(appContext)
+            if (reflection.isNotBlank()) {
+                appendLine(reflection.take(800))
+            } else {
+                appendLine("你是 Clawdroid 的工具执行总结助手。")
+                appendLine("只基于真实工具输出总结，失败时说明原因并给下一步建议。2–3 句中文。")
+            }
             appendLine("当前运行时上下文：")
             appendLine("session_summary=${runtimeSnapshot.sessionSummary}")
             appendLine("capability_status=${runtimeSnapshot.capabilityStatus}")
@@ -331,18 +426,72 @@ internal object AiAgentOrchestrator {
         }
     }
 
-    private fun extractStringField(content: String, key: String): String? {
-        val match = Regex("""\"$key\"\s*:\s*\"([^\"]*)\"""").find(content) ?: return null
-        return match.groupValues[1]
+    private fun extractArguments(json: JSONObject): Map<String, String> {
+        val args = json.optJSONObject("arguments") ?: return emptyMap()
+        val result = linkedMapOf<String, String>()
+        val keys = args.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            result[key] = jsonValueToArgumentString(args.opt(key))
+        }
+        return result
     }
 
-    private fun extractArguments(content: String): Map<String, String> {
-        val objectMatch = Regex("""\"arguments\"\s*:\s*\{([^}]*)\}""").find(content) ?: return emptyMap()
-        val body = objectMatch.groupValues[1]
-        val pairRegex = Regex("""\"([^\"]+)\"\s*:\s*\"([^\"]*)\"""")
-        return pairRegex.findAll(body).associate { match ->
-            match.groupValues[1] to match.groupValues[2]
+    /**
+     * 工具参数统一为 String map：数字/布尔直接 toString，对象/数组压成紧凑 JSON 字符串
+     *（兼容模型把 x 写成 540、把 steps_json 写成数组等情况）。
+     */
+    internal fun jsonValueToArgumentString(value: Any?): String {
+        return when (value) {
+            null, JSONObject.NULL -> ""
+            is String -> value
+            is Number -> {
+                // 避免 540.0 污染整型参数校验
+                if (value is Double || value is Float) {
+                    val d = value.toDouble()
+                    if (d.isFinite() && d == d.toLong().toDouble()) d.toLong().toString() else value.toString()
+                } else {
+                    value.toString()
+                }
+            }
+            is Boolean -> value.toString()
+            is JSONObject -> value.toString()
+            is JSONArray -> value.toString()
+            else -> value.toString()
         }
+    }
+
+    private fun stripMarkdownFences(text: String): String? {
+        val match = MARKDOWN_FENCE_WHOLE.matchEntire(text.trim()) ?: return null
+        return match.groupValues[1].trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun findBalancedJsonObject(text: String): String? {
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escape = false
+        for (i in start until text.length) {
+            val c = text[i]
+            if (inString) {
+                when {
+                    escape -> escape = false
+                    c == '\\' -> escape = true
+                    c == '"' -> inString = false
+                }
+                continue
+            }
+            when (c) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return text.substring(start, i + 1)
+                }
+            }
+        }
+        return null
     }
 
     private fun validateToolArguments(tool: ClawTool, arguments: Map<String, String>): Map<String, String>? {
@@ -396,4 +545,13 @@ internal object AiAgentOrchestrator {
         """.*(?:;\s*|\|\s*|\&\&\s*|>|<|\$\(|`)\s*(?:rm|mv|cp|chmod|chown|wget|curl|nc|bash|sh)\b"""
     )
     private val PACKAGE_NAME_PATTERN = Regex("""^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$""")
+
+    private val MARKDOWN_FENCE_WHOLE = Regex(
+        """^```(?:json|JSON)?\s*\r?\n?(.*?)\r?\n?```\s*$""",
+        setOf(RegexOption.DOT_MATCHES_ALL)
+    )
+    private val MARKDOWN_FENCE_FINDER = Regex(
+        """```(?:json|JSON)?\s*\r?\n?(.*?)\r?\n?```""",
+        setOf(RegexOption.DOT_MATCHES_ALL)
+    )
 }

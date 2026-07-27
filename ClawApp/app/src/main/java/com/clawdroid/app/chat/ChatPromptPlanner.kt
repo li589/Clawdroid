@@ -18,7 +18,12 @@ internal data class ChatPlannerContext(
     val sessionSummary: String,
     val capabilityStatus: String,
     val eventStreaming: Boolean,
-    val recentChat: List<ChatHistoryTurn> = emptyList()
+    val recentChat: List<ChatHistoryTurn> = emptyList(),
+    val compressedMemory: String = "",
+    /** Retrieved snippets from chat index / memory graph / file index. */
+    val retrievedContext: String = "",
+    /** Current-turn image only; not stored in session history. */
+    val userImage: com.clawdroid.app.model.ModelUserImage? = null
 )
 
 internal enum class ChatLocalAction {
@@ -64,22 +69,34 @@ internal sealed interface ChatPromptPlan {
 internal object ChatPromptPlanner {
     suspend fun plan(
         context: ChatPlannerContext,
-        aiPlanner: suspend (ModelSettings, String, AiRuntimeSnapshot) -> Result<AiAgentPlan> = {
-                settings,
-                prompt,
-                snapshot ->
+        aiPlanner: suspend (
+            ModelSettings,
+            String,
+            AiRuntimeSnapshot,
+            com.clawdroid.app.model.ModelUserImage?
+        ) -> Result<AiAgentPlan> = { settings, prompt, snapshot, image ->
             AiAgentOrchestrator.plan(
                 settings = settings,
                 prompt = prompt,
-                runtimeSnapshot = snapshot
+                runtimeSnapshot = snapshot,
+                userImage = image
             )
         }
     ): ChatPromptPlan {
         val normalizedPrompt = context.prompt.trim()
-        if (normalizedPrompt.isBlank()) {
+        if (normalizedPrompt.isBlank() && context.userImage == null) {
             return ChatPromptPlan.AssistantReply(
                 message = "请输入要执行的内容。",
                 aiStatus = "空输入"
+            )
+        }
+
+        // Attached image: always go through the multimodal AI path (skip text-only rules).
+        if (context.userImage != null) {
+            return planWithAi(
+                context = context,
+                promptForModel = normalizedPrompt.ifBlank { "请根据附图回答。" },
+                aiPlanner = aiPlanner
             )
         }
 
@@ -162,41 +179,10 @@ internal object ChatPromptPlanner {
                     }
 
                     else -> {
-                        aiPlanner(
-                            context.modelSettings,
-                            buildAiPromptWithHistory(normalizedPrompt, context.recentChat),
-                            AiRuntimeSnapshot(
-                                sessionSummary = context.sessionSummary,
-                                capabilityStatus = context.capabilityStatus,
-                                eventStreaming = context.eventStreaming
-                            )
-                        ).fold(
-                            onSuccess = { plan ->
-                                when (plan) {
-                                    is AiAgentPlan.AssistantReply -> {
-                                        ChatPromptPlan.AssistantReply(
-                                            message = plan.message,
-                                            aiStatus = "AI 直接回复"
-                                        )
-                                    }
-
-                                    is AiAgentPlan.ToolExecution -> {
-                                        ChatPromptPlan.ToolExecution(
-                                            tool = plan.tool,
-                                            arguments = plan.arguments,
-                                            assistantMessage = plan.assistantMessage,
-                                            aiStatus = "AI 决策工具: ${plan.tool.displayName}",
-                                            reflectResultWithModel = true
-                                        )
-                                    }
-                                }
-                            },
-                            onFailure = { error ->
-                                ChatPromptPlan.AssistantReply(
-                                    message = "模型请求失败：${error.message ?: error::class.java.simpleName}\n你也可以试试：ping、获取能力、截图、确认页面、点击前检查。",
-                                    aiStatus = "AI 请求失败"
-                                )
-                            }
+                        planWithAi(
+                            context = context,
+                            promptForModel = normalizedPrompt,
+                            aiPlanner = aiPlanner
                         )
                     }
                 }
@@ -204,24 +190,92 @@ internal object ChatPromptPlanner {
         }
     }
 
+    private suspend fun planWithAi(
+        context: ChatPlannerContext,
+        promptForModel: String,
+        aiPlanner: suspend (
+            ModelSettings,
+            String,
+            AiRuntimeSnapshot,
+            com.clawdroid.app.model.ModelUserImage?
+        ) -> Result<AiAgentPlan>
+    ): ChatPromptPlan {
+        return aiPlanner(
+            context.modelSettings,
+            buildAiPromptWithHistory(
+                promptForModel,
+                context.recentChat,
+                compressedMemory = context.compressedMemory,
+                retrievedContext = context.retrievedContext
+            ),
+            AiRuntimeSnapshot(
+                sessionSummary = context.sessionSummary,
+                capabilityStatus = context.capabilityStatus,
+                eventStreaming = context.eventStreaming
+            ),
+            context.userImage
+        ).fold(
+            onSuccess = { plan ->
+                when (plan) {
+                    is AiAgentPlan.AssistantReply -> {
+                        ChatPromptPlan.AssistantReply(
+                            message = plan.message,
+                            aiStatus = "AI 直接回复"
+                        )
+                    }
+
+                    is AiAgentPlan.ToolExecution -> {
+                        ChatPromptPlan.ToolExecution(
+                            tool = plan.tool,
+                            arguments = plan.arguments,
+                            assistantMessage = plan.assistantMessage,
+                            aiStatus = "AI 决策工具: ${plan.tool.displayName}",
+                            reflectResultWithModel = true
+                        )
+                    }
+                }
+            },
+            onFailure = { error ->
+                ChatPromptPlan.AssistantReply(
+                    message = "模型请求失败：${error.message ?: error::class.java.simpleName}\n你也可以试试：ping、获取能力、截图、确认页面、点击前检查。",
+                    aiStatus = "AI 请求失败"
+                )
+            }
+        )
+    }
+
     internal fun buildAiPromptWithHistory(
         currentPrompt: String,
         recentChat: List<ChatHistoryTurn>,
         maxTurns: Int = 6,
-        maxCharsPerTurn: Int = ChatTextLimits.MAX_HISTORY_TURN_CHARS
+        maxCharsPerTurn: Int = ChatTextLimits.MAX_HISTORY_TURN_CHARS,
+        compressedMemory: String = "",
+        retrievedContext: String = ""
     ): String {
-        if (recentChat.isEmpty()) {
+        if (recentChat.isEmpty() && compressedMemory.isBlank() && retrievedContext.isBlank()) {
             return currentPrompt
         }
         return buildString {
-            appendLine("最近对话（供理解指代，不要复述）：")
-            recentChat.takeLast(maxTurns).forEach { turn ->
-                val clipped = ChatTextLimits.truncateForContext(turn.content, maxCharsPerTurn)
-                if (clipped.isNotBlank()) {
-                    appendLine("- ${turn.role}: $clipped")
-                }
+            if (compressedMemory.isNotBlank()) {
+                appendLine("压缩记忆（旧轮摘要）：")
+                appendLine(ChatTextLimits.truncateForContext(compressedMemory, 1200))
+                appendLine()
             }
-            appendLine()
+            if (retrievedContext.isNotBlank()) {
+                appendLine("检索上下文（文件/聊天索引/记忆图谱）：")
+                appendLine(ChatTextLimits.truncateForContext(retrievedContext, 1000))
+                appendLine()
+            }
+            if (recentChat.isNotEmpty()) {
+                appendLine("最近对话（供理解指代，不要复述）：")
+                recentChat.takeLast(maxTurns).forEach { turn ->
+                    val clipped = ChatTextLimits.truncateForContext(turn.content, maxCharsPerTurn)
+                    if (clipped.isNotBlank()) {
+                        appendLine("- ${turn.role}: $clipped")
+                    }
+                }
+                appendLine()
+            }
             appendLine("当前用户请求：")
             append(currentPrompt.trim())
         }
@@ -261,6 +315,7 @@ internal object ChatPromptPlanner {
         return prompt.contains("滑动后截图") ||
             prompt.contains("滑动并截图") ||
             prompt.contains("滑动后截屏") ||
-            (prompt.contains("滑动") && prompt.contains("截图"))
+            // 仅短命令式组合；长句交给 AI
+            (prompt.length <= 24 && prompt.contains("滑动") && prompt.contains("截图"))
     }
 }

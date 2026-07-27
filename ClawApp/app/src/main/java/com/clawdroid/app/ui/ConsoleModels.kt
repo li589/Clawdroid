@@ -23,17 +23,18 @@ internal enum class ModelProvider(
     val supportsStreaming: Boolean = true,
     val supportsSystemPrompt: Boolean = true,
     val authHeaderName: String = "Authorization",
-    val authHeaderPrefix: String = "Bearer"
+    val authHeaderPrefix: String = "Bearer",
+    val defaultModelName: String = ""
 ) {
     OpenAI(
         displayName = "OpenAI",
-        hint = "官方 OpenAI GPT 系列模型",
+        hint = "官方 GPT / o 系列 · OpenAI 协议 · Bearer",
         defaultBaseUrl = "https://api.openai.com/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     Anthropic(
         displayName = "Anthropic",
-        hint = "官方 Claude 系列模型",
+        hint = "官方 Claude · Anthropic Messages · x-api-key",
         defaultBaseUrl = "https://api.anthropic.com/v1",
         apiPathStyle = ApiPathStyle.Anthropic,
         authHeaderName = "x-api-key",
@@ -41,95 +42,100 @@ internal enum class ModelProvider(
     ),
     Gemini(
         displayName = "Gemini",
-        hint = "Google Gemini 系列模型",
+        hint = "Google Gemini · OpenAI 兼容网关 · Bearer",
         defaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     Deepseek(
         displayName = "DeepSeek",
-        hint = "DeepSeek 系列模型",
+        hint = "DeepSeek Chat/Reasoner · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://api.deepseek.com/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     Kimi(
         displayName = "Kimi",
-        hint = "Moonshot Kimi 系列模型",
+        hint = "Moonshot Kimi · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://api.moonshot.cn/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     Qwen(
         displayName = "Qwen",
-        hint = "阿里通义千问系列模型",
+        hint = "阿里通义千问 · 兼容模式 · Bearer",
         defaultBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     Zhipu(
         displayName = "智谱 GLM",
-        hint = "智谱 AI GLM 系列模型",
+        hint = "智谱 GLM · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://open.bigmodel.cn/api/paas/v4",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     TencentHunyuan(
         displayName = "腾讯混元",
-        hint = "腾讯混元大模型",
+        hint = "腾讯混元官方 · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://api.hunyuan.cloud.tencent.com/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
+    TencentTokenHub(
+        displayName = "腾讯云 TokenHub",
+        hint = "腾讯云 MaaS TokenHub · OpenAI 兼容 · 免费额度 · 默认 hy3",
+        defaultBaseUrl = "https://tokenhub.tencentmaas.com/v1",
+        apiPathStyle = ApiPathStyle.OpenAI,
+        defaultModelName = "hy3"
+    ),
     Baidu(
         displayName = "百度文心",
-        hint = "百度文心一言 / ERNIE 系列",
+        hint = "文心 / ERNIE · 千帆 OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://qianfan.baidubce.com/v2",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     MiniMax(
         displayName = "MiniMax",
-        hint = "MiniMax 海螺 AI",
+        hint = "MiniMax 海螺 · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://api.minimax.chat/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     SiliconFlow(
         displayName = "硅基流动",
-        hint = "SiliconFlow OpenAI 兼容接口（含 /v1/models）",
+        hint = "SiliconFlow 聚合 · OpenAI 兼容 · 支持 /models",
         defaultBaseUrl = "https://api.siliconflow.cn/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     OpenRouter(
         displayName = "OpenRouter",
-        hint = "OpenRouter 聚合网关，支持 100+ 模型",
+        hint = "多模型聚合网关 · 需 /api/v1 · Bearer",
         defaultBaseUrl = "https://openrouter.ai/api/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     TogetherAI(
         displayName = "Together AI",
-        hint = "Together AI 聚合平台",
+        hint = "Together 聚合推理 · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://api.together.xyz/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     Groq(
         displayName = "Groq",
-        hint = "Groq 超低延迟推理",
+        hint = "Groq 低延迟推理 · OpenAI 兼容 · Bearer",
         defaultBaseUrl = "https://api.groq.com/openai/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
-    // 协议兼容模式：用户填入自定义地址，程序按所选协议组装请求
     OpenAICompatible(
         displayName = "OpenAI 兼容",
-        hint = "中转站 / NewAPI / OneAPI：Base 填到 /v1，自动拉 /models",
+        hint = "中转站 / NewAPI / OneAPI · Base 填到 /v1 · Bearer",
         defaultBaseUrl = "https://api.openai.com/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
     AnthropicCompatible(
         displayName = "Anthropic 兼容",
-        hint = "Claude 中转：Base 填到 /v1，使用 x-api-key",
+        hint = "Claude 中转 · Base 填到 /v1 · x-api-key",
         defaultBaseUrl = "https://api.anthropic.com/v1",
         apiPathStyle = ApiPathStyle.Anthropic,
         authHeaderName = "x-api-key",
         authHeaderPrefix = ""
     ),
-    // Claude Code / Codex 等专用工具接口
     ClaudeCode(
         displayName = "Claude Code",
-        hint = "Anthropic Claude Code CLI 接口（需要项目令牌）",
+        hint = "Claude Code / 项目令牌 · Anthropic Messages · x-api-key",
         defaultBaseUrl = "https://api.anthropic.com/v1",
         apiPathStyle = ApiPathStyle.Anthropic,
         authHeaderName = "x-api-key",
@@ -137,41 +143,91 @@ internal enum class ModelProvider(
     ),
     Codex(
         displayName = "Codex (OpenAI)",
-        hint = "OpenAI Codex 接口（Codex CLI / Copilot 底层）",
+        hint = "OpenAI Codex / Copilot 底层 · OpenAI 协议 · Bearer",
         defaultBaseUrl = "https://api.openai.com/v1",
         apiPathStyle = ApiPathStyle.OpenAI
     ),
-    // 自定义：完全由用户控制 URL 和路径
     Custom(
         displayName = "自定义",
-        hint = "完全自定义 URL 和请求参数",
+        hint = "完全自定义 URL 与路径 · 自行指定协议形态",
         defaultBaseUrl = "",
         apiPathStyle = ApiPathStyle.Custom
     ),
-    // 本地模型：Ollama / LM Studio / vLLM 等
     Local(
         displayName = "本地模型",
-        hint = "Ollama / LM Studio / vLLM 等本地推理服务",
+        hint = "Ollama / LM Studio / vLLM · 本机 OpenAI 兼容 · 通常无需 Key",
         defaultBaseUrl = "",
         apiPathStyle = ApiPathStyle.OpenAI,
-        authHeaderPrefix = ""  // 本地通常不需要鉴权
+        authHeaderPrefix = ""
     );
 
+    fun protocolLabel(): String = when (apiPathStyle) {
+        ApiPathStyle.OpenAI -> "OpenAI /chat/completions"
+        ApiPathStyle.Anthropic -> "Anthropic /messages"
+        ApiPathStyle.Custom -> "自定义路径"
+    }
+
+    fun authLabel(): String {
+        if (authHeaderName.equals("x-api-key", ignoreCase = true) || authHeaderPrefix.isBlank()) {
+            return if (this == Local) {
+                "通常无需鉴权（可留空）"
+            } else {
+                "Header: x-api-key（兼容 Bearer）"
+            }
+        }
+        return "Header: $authHeaderName = $authHeaderPrefix …"
+    }
+
+    fun baseUrlGuidance(): String = when (this) {
+        OpenAICompatible -> "中转站示例: https://你的域名/v1（不要填到 chat/completions）"
+        AnthropicCompatible -> "Claude 中转示例: https://你的域名/v1"
+        SiliconFlow -> "默认: https://api.siliconflow.cn/v1"
+        OpenRouter -> "必须含 /api/v1，例如 https://openrouter.ai/api/v1"
+        TencentTokenHub -> "默认: https://tokenhub.tencentmaas.com/v1（模型可填 hy3）"
+        Custom -> "填写完整 URL，包含路径"
+        Local -> "Ollama 默认 http://127.0.0.1:11434/v1"
+        else -> if (defaultBaseUrl.isNotBlank()) {
+            "默认: $defaultBaseUrl"
+        } else {
+            "按供应商文档填写 Base URL"
+        }
+    }
+
+    fun unifiedDescription(): String = buildString {
+        append(hint)
+        append("\n协议:")
+        append(protocolLabel())
+        append("\n鉴权:")
+        append(authLabel())
+        if (defaultBaseUrl.isNotBlank()) {
+            append("\n默认地址:")
+            append(defaultBaseUrl)
+        }
+        if (defaultModelName.isNotBlank()) {
+            append("\n默认模型:")
+            append(defaultModelName)
+        }
+        if (this@ModelProvider == Local) {
+            append("\n说明: 填写本机接口与模型名；可点连通探测验证")
+        }
+    }
+
     companion object {
-        /**
-         * 官方支持的供应商（用于 UI 分类展示）
-         */
         val officialProviders = listOf(
             OpenAI, Anthropic, Gemini
         )
         val chineseProviders = listOf(
-            Deepseek, Kimi, Qwen, Zhipu, TencentHunyuan, Baidu, MiniMax, SiliconFlow
+            Deepseek, Kimi, Qwen, Zhipu, TencentHunyuan, TencentTokenHub,
+            Baidu, MiniMax, SiliconFlow
         )
         val aggregatorProviders = listOf(
             OpenRouter, TogetherAI, Groq
         )
         val protocolProviders = listOf(
             OpenAICompatible, AnthropicCompatible, ClaudeCode, Codex
+        )
+        val otherProviders = listOf(
+            Custom, Local
         )
         val all = entries.toList()
     }
@@ -197,21 +253,13 @@ internal data class ModelSettings(
     val baseUrl: String = "https://api.openai.com/v1",
     val apiKey: String = "",
     val modelName: String = "",
-    // 本地模型专用
     val localEndpoint: String = "http://127.0.0.1:11434/v1",
     val localModelName: String = "",
-    // 自定义路径（仅 Custom / 部分协议兼容模式使用）
     val customApiPath: String = "/chat/completions",
-    // 请求路径拼接策略：自动补全（默认）或用户输入完整路径
     val urlPathMode: UrlPathMode = UrlPathMode.AutoAppend,
-    // 网络代理：跟随系统/VPN，或本地 HTTP/SOCKS 代理（Clash / V2Ray 等）
     val proxySettings: NetworkProxySettings = NetworkProxySettings(),
-    // 上下文参数
     val contextSettings: ContextSettings = ContextSettings()
 ) {
-    /**
-     * 解析最终使用的 endpoint（自动去除末尾斜杠）
-     */
     fun resolvedEndpoint(): String {
         return when (provider) {
             ModelProvider.Local -> localEndpoint.trimEnd('/')
@@ -219,9 +267,6 @@ internal data class ModelSettings(
         }
     }
 
-    /**
-     * 解析最终使用的模型名称
-     */
     fun resolvedModelName(): String {
         return when (provider) {
             ModelProvider.Local -> localModelName
@@ -230,24 +275,12 @@ internal data class ModelSettings(
     }
 }
 
-/**
- * URL 路径拼接模式：
- * - AutoAppend: 自动拼接 /chat/completions、/messages 或列表时的 /models
- * - FullUrl: 用户输入完整 URL；拉模型列表时会把 chat/messages 后缀替换为 /models
- * - AppendCustom: 域名 + 自定义聊天路径；拉列表时自动改成 /models
- */
 internal enum class UrlPathMode {
-    AutoAppend,   // 自动补全（默认）：如用户填 https://xxx.com/v1，追加 /chat/completions
-    FullUrl,      // 完整 URL：直接使用用户输入的 URL（列表请求会智能改写）
-    AppendCustom  // 追加自定义路径：用户输入域名 + 手动填路径
+    AutoAppend,
+    FullUrl,
+    AppendCustom
 }
 
-/**
- * AI 请求网络出口：
- * - System: 跟随系统路由（含已连接的 VPN）
- * - Http: 本地/远程 HTTP 代理（常见 7890 Clash）
- * - Socks: SOCKS5 代理
- */
 internal enum class NetworkProxyMode(val displayName: String) {
     System("跟随系统 / VPN"),
     Http("HTTP 代理"),
@@ -277,16 +310,24 @@ internal data class NetworkProxySettings(
 // ---------------------------------------------------------------------------
 internal data class ContextSettings(
     val systemPrompt: String = "",
+    /** Max tokens for a single model response (completion). */
     val maxTokens: Int = 4096,
+    /**
+     * Model context window (input+output budget) in tokens.
+     * 0 = auto from [ModelContextWindowCatalog] by model name.
+     */
+    val contextWindowTokens: Int = 0,
     val temperature: Float = 0.7f,
     val topP: Float = 1.0f,
-    val topK: Int? = null,           // 仅 Anthropic 系列
+    val topK: Int? = null,
     val stopSequences: List<String> = emptyList(),
-    val thinkingBudget: Int? = null  // 仅 Claude 3.7+ 支持 extended thinking
+    val thinkingBudget: Int? = null
 ) {
     companion object {
         const val MIN_MAX_TOKENS = 1
         const val MAX_MAX_TOKENS = 200000
+        const val MIN_CONTEXT_WINDOW = 0
+        const val MAX_CONTEXT_WINDOW = 2_000_000
         const val MIN_TEMPERATURE = 0f
         const val MAX_TEMPERATURE = 2f
         const val MIN_TOP_P = 0f
@@ -296,24 +337,141 @@ internal data class ContextSettings(
         const val MIN_THINKING_BUDGET = 1024
         const val MAX_THINKING_BUDGET = 200000
     }
+
+    fun effectiveContextWindow(modelName: String): Int {
+        if (contextWindowTokens > 0) return contextWindowTokens.coerceIn(1024, MAX_CONTEXT_WINDOW)
+        return ModelContextWindowCatalog.resolve(modelName)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent 编排设置
+// ---------------------------------------------------------------------------
+internal data class AgentOrchestrationSettings(
+    val maxToolLoopTurns: Int = DEFAULT_MAX_TOOL_LOOP_TURNS,
+    val maxModelApiCalls: Int = DEFAULT_MAX_MODEL_API_CALLS,
+    val contextCompressionEnabled: Boolean = true,
+    val toolAllowlist: Set<String> = emptySet(),
+    val toolAllowlistCustomized: Boolean = false,
+    /** When true, dispatcher rejects tools outside the effective allowlist. */
+    val enforceToolAllowlist: Boolean = true,
+    /** When false, run_agent / run_agents_parallel are blocked. */
+    val agentCallsEnabled: Boolean = true,
+    /** When true, dangerous tools require an in-chat confirm before execute. */
+    val requireCommandReview: Boolean = false
+) {
+    fun effectiveAllowlist(): Set<String> =
+        if (toolAllowlistCustomized) toolAllowlist else Companion.defaultAllowlist()
+
+    fun isToolAllowed(toolId: String): Boolean {
+        if (!enforceToolAllowlist) return true
+        return toolId in effectiveAllowlist()
+    }
+
+    fun isAgentCallTool(toolId: String): Boolean =
+        toolId == "run_agent" || toolId == "run_agents_parallel"
+
+    fun needsCommandReview(toolId: String): Boolean =
+        requireCommandReview && toolId in defaultDangerousTools()
+
+    companion object {
+        const val DEFAULT_MAX_TOOL_LOOP_TURNS = 16
+        const val DEFAULT_MAX_MODEL_API_CALLS = 1000
+        const val MIN_TOOL_LOOP_TURNS = 1
+        const val MAX_TOOL_LOOP_TURNS_CAP = 64
+        const val MIN_MODEL_API_CALLS = 10
+        const val MAX_MODEL_API_CALLS_CAP = 10000
+
+        fun defaultDangerousTools(): Set<String> = setOf(
+            "sandbox_shell",
+            "termux_exec",
+            "execute_shell_limited",
+            "shizuku_exec",
+            "shizuku_request",
+            "file_write",
+            "file_replace",
+            "camera_capture",
+            "camera_record",
+            "ftp_transfer",
+            "app_launch"
+        )
+
+        fun defaultAllowlist(): Set<String> = setOf(
+            "file_read",
+            "file_write",
+            "file_replace",
+            "file_stat",
+            "file_list",
+            "runtime_ping",
+            "get_version",
+            "get_health",
+            "get_runtime_status",
+            "get_last_error",
+            "probe_session",
+            "get_capabilities",
+            "capture_screen",
+            "read_latest_capture",
+            "run_agent",
+            "run_agents_parallel",
+            "list_agents",
+            "list_skills",
+            "get_skill",
+            "list_tools",
+            "get_tool",
+            "task_get",
+            "task_list",
+            "task_submit",
+            "task_cancel",
+            "task_wait",
+            "assist_status",
+            "assist_ping",
+            "assist_list_tools",
+            "assist_call_tool",
+            "sandbox_shell",
+            "termux_exec",
+            "execute_shell_limited",
+            "app_list",
+            "app_info",
+            "app_launch",
+            "web_preview",
+            "web_search",
+            "notification_list",
+            "download_start",
+            "download_status",
+            "download_cancel",
+            "download_verify"
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 设置导航
+// ---------------------------------------------------------------------------
+internal enum class SettingsCategoryId(val title: String, val subtitle: String) {
+    Appearance("外观", "主题与显示"),
+    Model("模型接入", "供应商、密钥与上下文参数"),
+    AgentTools("Agent 与工具", "循环步数、API 预算、权限与命令审查"),
+    PromptsSkills("提示词与 Skills", "编排文案与技能包"),
+    AssistMcp("协助 MCP", "电脑侧 MCP 桥接"),
+    TermuxShell("Termux 与 Shell", "终端会话与沙箱"),
+    Diagnostics("运行诊断", "探测、权限与就绪状态")
+}
+
+internal sealed interface SettingsNav {
+    data object Hub : SettingsNav
+    data class Category(val id: SettingsCategoryId) : SettingsNav
 }
 
 // ---------------------------------------------------------------------------
 // 辅助函数
 // ---------------------------------------------------------------------------
-internal fun defaultBaseUrlFor(provider: ModelProvider): String {
-    return provider.defaultBaseUrl
-}
+internal fun defaultBaseUrlFor(provider: ModelProvider): String = provider.defaultBaseUrl
 
-/**
- * 获取模型供应商的显示标签
- */
 internal fun modelProviderLabel(provider: ModelProvider): String = provider.displayName
 
-/**
- * 获取模型供应商的简短提示
- */
 internal fun modelProviderHint(provider: ModelProvider): String = provider.hint
+
+internal fun modelProviderDescription(provider: ModelProvider): String = provider.unifiedDescription()
 
 // ---------------------------------------------------------------------------
 // 聊天消息
@@ -325,7 +483,9 @@ internal enum class ChatRole {
 
 internal enum class ChatMessageState {
     Final,
-    Streaming
+    Streaming,
+    /** Process killed / user interrupt — UI shows 「已终止」 instead of 「输入中」. */
+    Terminated
 }
 
 internal data class ChatMessage(
@@ -340,3 +500,21 @@ internal data class ChatMessage(
 internal fun newChatMessageId(): String {
     return "msg-${System.currentTimeMillis()}-${(0..9999).random()}"
 }
+
+internal fun parseChatRole(raw: String): ChatRole =
+    ChatRole.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: ChatRole.Assistant
+
+/** Convert abandoned Streaming bubbles to Terminated after process death or interrupt. */
+internal fun ChatMessage.asTerminated(reasonSuffix: String = "（已终止）"): ChatMessage {
+    if (state != ChatMessageState.Streaming) return this
+    val placeholder = setOf("正在分析指令...", "…", "...")
+    val nextContent = when {
+        content.isBlank() || content.trim() in placeholder -> reasonSuffix
+        content.contains("已终止") || content.contains("已停止") -> content
+        else -> "$content\n\n$reasonSuffix"
+    }
+    return copy(content = nextContent, state = ChatMessageState.Terminated)
+}
+
+internal fun List<ChatMessage>.finalizeAbandonedStreaming(): List<ChatMessage> =
+    map { it.asTerminated() }

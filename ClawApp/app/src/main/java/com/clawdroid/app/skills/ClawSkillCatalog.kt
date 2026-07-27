@@ -82,20 +82,11 @@ object ClawSkillCatalog {
     }
 
     private fun builtins(): List<ClawSkill> {
-        val assistBody = ClawAssetPromptStore.assistSkillBody(appContext).ifBlank {
-            """
-                # Assist MCP Bridge
-
-                Prefer on-device tools; use assist_* when PC MCP is needed.
-                1. assist_status 2. assist_ping 3. assist_list_tools 4. assist_call_tool
-                Re-run adb reverse on tunnel_down.
-            """.trimIndent()
-        }
         return listOf(
             ClawSkill(
                 id = "phone-runtime-ops",
                 name = "Device Runtime Ops",
-                description = "Use when connecting to ClawRuntime, checking module health, or diagnosing agent readiness.",
+                description = "连接 ClawRuntime、检查模块健康或诊断 Agent 就绪时使用。",
                 relatedAgentId = "runtime_health_sweep",
                 relatedTools = listOf(
                     "runtime_ping",
@@ -104,27 +95,15 @@ object ClawSkillCatalog {
                     "get_capabilities",
                     "get_last_error"
                 ),
-                bodyMarkdown = """
-                    # Device Runtime Ops
-
-                    Prefer on-device tools over guessing device state. Use assist_* only for PC-side work.
-
-                    ## Workflow
-                    1. `runtime_ping` or `probe_session`
-                    2. `get_runtime_status` for Magisk/module/daemon summary
-                    3. `get_capabilities` for feature switches
-                    4. On failure, `get_last_error`
-
-                    ## Rules
-                    - Do not invent Root/Accessibility/LSPosed status.
-                    - If auth or IPC fails, stop and report the exact tool output.
-                    - Prefer `run_agent` with `runtime_health_sweep` for a full sweep.
-                """.trimIndent()
+                bodyMarkdown = skillMarkdown(
+                    "phone-runtime-ops",
+                    "# Device Runtime Ops\n\nPrefer runtime_ping / probe_session / get_capabilities. Use run_agent(runtime_health_sweep)."
+                )
             ),
             ClawSkill(
                 id = "phone-ui-automation",
                 name = "Device UI Automation",
-                description = "Use when tapping, swiping, confirming pages, or driving UI through accessibility + Runtime inject.",
+                description = "点击、滑动、页面确认或 inject 驱动界面时使用。",
                 relatedAgentId = "confirm_then_safe_tap",
                 relatedTools = listOf(
                     "page_confirm",
@@ -134,28 +113,15 @@ object ClawSkillCatalog {
                     "inject_swipe",
                     "inject_keyevent"
                 ),
-                bodyMarkdown = """
-                    # Device UI Automation
-
-                    ## Safe click path
-                    1. `page_confirm` with expected package/text/viewId
-                    2. `click_precheck` for the target
-                    3. `safe_tap` using the resolved point
-
-                    ## Direct inject
-                    - `inject_tap` / `inject_swipe` / `inject_keyevent` when coordinates or keys are known
-                    - Prefer named keys (`BACK`, `HOME`, `ENTER`) for `inject_keyevent`
-
-                    ## Rules
-                    - Prefer safe_tap over blind inject when a11y is available.
-                    - If page_confirm fails, do not continue to tap.
-                    - For multi-step flows, prefer `run_agent`.
-                """.trimIndent()
+                bodyMarkdown = skillMarkdown(
+                    "phone-ui-automation",
+                    "# Device UI Automation\n\npage_confirm → click_precheck → safe_tap. Prefer run_agent for multi-step."
+                )
             ),
             ClawSkill(
                 id = "phone-capture-inspect",
                 name = "Capture & File Inspect",
-                description = "Use when taking screenshots, previewing captures, or reading/writing allowlisted files.",
+                description = "截图、预览或读写白名单文件时使用。",
                 relatedAgentId = "capture_then_preview",
                 relatedTools = listOf(
                     "capture_screen",
@@ -165,55 +131,25 @@ object ClawSkillCatalog {
                     "file_stat",
                     "read_file_limited"
                 ),
-                bodyMarkdown = """
-                    # Capture & File Inspect
-
-                    ## Screenshot
-                    - `capture_screen` with `read_after_capture=true` when the user wants to see the image
-                    - Or run agent `capture_then_preview`
-
-                    ## Files
-                    - Prefer `file_read` / `file_write` / `file_replace` / `file_stat`
-                    - Sandbox paths are Basic; system allowlisted paths need Runtime
-                    - `read_file_limited` remains for compatibility
-
-                    ## Rules
-                    - Capture success does not imply preview success; check both outputs.
-                """.trimIndent()
+                bodyMarkdown = skillMarkdown(
+                    "phone-capture-inspect",
+                    "# Capture & File Inspect\n\ncapture_screen(read_after_capture=true) or run_agent(capture_then_preview)."
+                )
             ),
             ClawSkill(
                 id = "phone-agent-orchestration",
                 name = "Agent Orchestration",
-                description = "Use when choosing multi-step agents/skills instead of calling many low-level tools manually.",
+                description = "选择多步 Agent/Skill，而不是手搓大量底层工具时使用。",
                 relatedTools = listOf("list_skills", "get_skill", "list_agents", "run_agent", "list_tools", "get_tool"),
-                bodyMarkdown = """
-                    # Agent Orchestration
-
-                    ## Discovery
-                    - `list_tools` / `get_tool` for permissioned tool catalog
-                    - `list_skills` / `get_skill` for guidance documents
-                    - `list_agents` for executable multi-step workflows
-
-                    ## Execution
-                    - Call `run_agent` with an agent id from `list_agents`
-                    - Pass optional swipe/page args when the agent supports them
-
-                    ## Available agents
-                    - `runtime_health_sweep`
-                    - `probe_then_capabilities`
-                    - `capture_then_preview`
-                    - `swipe_then_capture`
-                    - `confirm_then_safe_tap`
-                    - `assist_then_runtime`
-
-                    Prefer agents for recurring workflows; use atomic tools for one-off actions.
-                    Prefer on-device tools; use assist_* for PC MCP.
-                """.trimIndent()
+                bodyMarkdown = skillMarkdown(
+                    "phone-agent-orchestration",
+                    "# Agent Orchestration\n\nlist_agents / run_agent. Prefer agents for recurring workflows."
+                )
             ),
             ClawSkill(
                 id = "assist-mcp-bridge",
                 name = "Assist MCP Bridge",
-                description = "Use when calling computer MCP tools over adb reverse, or diagnosing assist tunnels.",
+                description = "通过 adb reverse 调用电脑 MCP，或诊断协助隧道时使用。",
                 relatedAgentId = "assist_then_runtime",
                 relatedTools = listOf(
                     "assist_status",
@@ -221,8 +157,15 @@ object ClawSkillCatalog {
                     "assist_list_tools",
                     "assist_call_tool"
                 ),
-                bodyMarkdown = assistBody
+                bodyMarkdown = skillMarkdown(
+                    "assist-mcp-bridge",
+                    "# Assist MCP Bridge\n\nassist_status → assist_ping → assist_list_tools → assist_call_tool."
+                )
             )
         )
+    }
+
+    private fun skillMarkdown(skillId: String, fallback: String): String {
+        return ClawAssetPromptStore.skillBody(appContext, skillId).ifBlank { fallback.trimIndent() }
     }
 }

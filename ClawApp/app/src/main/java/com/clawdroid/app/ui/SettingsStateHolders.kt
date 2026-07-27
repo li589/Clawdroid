@@ -5,6 +5,8 @@ internal data class SettingsScreenState(
     val packageName: String,
     val socketName: String,
     val currentThemeMode: ThemeMode,
+    val settingsNav: SettingsNav = SettingsNav.Hub,
+    val agentSettings: AgentOrchestrationSettings = AgentOrchestrationSettings(),
     val connectionSummary: String,
     val modelSettings: ModelSettings,
     val modelTestStatus: String,
@@ -17,6 +19,7 @@ internal data class SettingsScreenState(
     val runtimeHealthStatus: String,
     val runtimeLastErrorStatus: String,
     val runtimeConfigSummary: String,
+    val runtimeCompatBanner: String = "",
     val configMemory: ModelConfigMemory = ModelConfigMemory(),
     val memoryStatus: String = "",
     val inputWarning: String = "",
@@ -56,7 +59,10 @@ internal data class SettingsScreenActions(
     val onAssistEnabledChanged: (Boolean) -> Unit = {},
     val onAssistHostUrlChanged: (String) -> Unit = {},
     val onAssistTokenChanged: (String) -> Unit = {},
-    val onAssistProbe: () -> Unit = {}
+    val onAssistProbe: () -> Unit = {},
+    val onOpenCategory: (SettingsCategoryId) -> Unit = {},
+    val onNavigateHub: () -> Unit = {},
+    val onAgentSettingsChanged: (AgentOrchestrationSettings) -> Unit = {}
 )
 
 internal fun buildSettingsScreenState(
@@ -68,6 +74,7 @@ internal fun buildSettingsScreenState(
     runtimeHealthStatus: String,
     runtimeLastErrorStatus: String,
     runtimeConfigSummary: String,
+    runtimeCompatBanner: String = "",
     settingsState: SettingsUiState,
     mcpState: com.clawdroid.app.mcp.McpServerUiState,
     assistState: com.clawdroid.app.mcp.assist.AssistMcpUiState
@@ -77,6 +84,8 @@ internal fun buildSettingsScreenState(
         packageName = packageName,
         socketName = socketName,
         currentThemeMode = settingsState.themeMode,
+        settingsNav = settingsState.settingsNav,
+        agentSettings = settingsState.agentSettings,
         connectionSummary = connectionSummary,
         modelSettings = settingsState.modelSettings,
         modelTestStatus = settingsState.modelTestStatus,
@@ -89,6 +98,7 @@ internal fun buildSettingsScreenState(
         runtimeHealthStatus = runtimeHealthStatus,
         runtimeLastErrorStatus = runtimeLastErrorStatus,
         runtimeConfigSummary = runtimeConfigSummary,
+        runtimeCompatBanner = runtimeCompatBanner,
         configMemory = settingsState.configMemory,
         memoryStatus = settingsState.memoryStatus,
         inputWarning = settingsState.inputWarning,
@@ -138,6 +148,9 @@ internal fun SettingsViewModel.buildSettingsScreenActions(
         onAssistEnabledChanged = onAssistEnabledChanged,
         onAssistHostUrlChanged = onAssistHostUrlChanged,
         onAssistTokenChanged = onAssistTokenChanged,
-        onAssistProbe = onAssistProbe
+        onAssistProbe = onAssistProbe,
+        onOpenCategory = ::openCategory,
+        onNavigateHub = ::navigateHub,
+        onAgentSettingsChanged = ::updateAgentSettings
     )
 }

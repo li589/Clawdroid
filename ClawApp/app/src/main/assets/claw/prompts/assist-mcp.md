@@ -9,4 +9,6 @@ Clawdroid 协助 MCP 是双向桥：
 
 - 本机工具优先；仅当需要电脑侧能力（浏览器自动化、本地文件、IDE 等）时使用 `assist_call_tool`。
 - ADB 断开后需重新执行 forward/reverse；用 `assist_ping` / `assist_status` 诊断。
+- 调用前先 `assist_list_tools`，不要臆造 host 工具名。
 - 不要在 MCP JSON-RPC 中传输大二进制；大文件用 `download_*` 或电脑侧工具落盘后再读。
+- 设置入口：应用内「设置 → 协助 MCP」。

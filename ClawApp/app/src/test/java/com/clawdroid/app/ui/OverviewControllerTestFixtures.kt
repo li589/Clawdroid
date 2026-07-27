@@ -1,6 +1,7 @@
 package com.clawdroid.app.ui
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.clawdroid.app.env.LocalEnvironmentStatus
 import com.clawdroid.app.env.RootActionResult
 import com.clawdroid.app.env.StartupPermissionState
@@ -16,6 +17,7 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.runs
+import java.util.concurrent.ConcurrentHashMap
 
 internal fun overviewEnvironmentStatus(
     rootGranted: Boolean? = null,
@@ -147,7 +149,120 @@ internal fun createToolExecutorMock(): ClawToolExecutor {
 }
 
 internal fun createAppContextMock(): Context {
-    return mockk(relaxed = true)
+    val prefsByName = ConcurrentHashMap<String, SharedPreferences>()
+    return mockk(relaxed = true) {
+        every { getSharedPreferences(any(), any()) } answers {
+            val name = firstArg<String>()
+            prefsByName.getOrPut(name) { InMemorySharedPreferences() }
+        }
+    }
+}
+
+/** Lightweight SharedPreferences for JVM unit tests (session / history stores). */
+internal class InMemorySharedPreferences : SharedPreferences {
+    private val values = ConcurrentHashMap<String, Any?>()
+
+    override fun getAll(): MutableMap<String, *> = HashMap(values)
+
+    override fun getString(key: String?, defValue: String?): String? {
+        val value = values[key ?: return defValue]
+        return value as? String ?: defValue
+    }
+
+    override fun getStringSet(key: String?, defValues: MutableSet<String>?): MutableSet<String>? {
+        @Suppress("UNCHECKED_CAST")
+        return (values[key] as? Set<String>)?.toMutableSet() ?: defValues
+    }
+
+    override fun getInt(key: String?, defValue: Int): Int = values[key] as? Int ?: defValue
+
+    override fun getLong(key: String?, defValue: Long): Long = values[key] as? Long ?: defValue
+
+    override fun getFloat(key: String?, defValue: Float): Float = values[key] as? Float ?: defValue
+
+    override fun getBoolean(key: String?, defValue: Boolean): Boolean =
+        values[key] as? Boolean ?: defValue
+
+    override fun contains(key: String?): Boolean = key != null && values.containsKey(key)
+
+    override fun edit(): SharedPreferences.Editor = Editor()
+
+    override fun registerOnSharedPreferenceChangeListener(
+        listener: SharedPreferences.OnSharedPreferenceChangeListener?
+    ) = Unit
+
+    override fun unregisterOnSharedPreferenceChangeListener(
+        listener: SharedPreferences.OnSharedPreferenceChangeListener?
+    ) = Unit
+
+    private inner class Editor : SharedPreferences.Editor {
+        private val pending = LinkedHashMap<String, Any?>()
+        private val removals = LinkedHashSet<String>()
+        private var clearAll = false
+
+        override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+            if (key != null) pending[key] = value
+            return this
+        }
+
+        override fun putStringSet(key: String?, values: MutableSet<String>?): SharedPreferences.Editor {
+            if (key != null) pending[key] = values?.toSet()
+            return this
+        }
+
+        override fun putInt(key: String?, value: Int): SharedPreferences.Editor {
+            if (key != null) pending[key] = value
+            return this
+        }
+
+        override fun putLong(key: String?, value: Long): SharedPreferences.Editor {
+            if (key != null) pending[key] = value
+            return this
+        }
+
+        override fun putFloat(key: String?, value: Float): SharedPreferences.Editor {
+            if (key != null) pending[key] = value
+            return this
+        }
+
+        override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor {
+            if (key != null) pending[key] = value
+            return this
+        }
+
+        override fun remove(key: String?): SharedPreferences.Editor {
+            if (key != null) {
+                removals.add(key)
+                pending.remove(key)
+            }
+            return this
+        }
+
+        override fun clear(): SharedPreferences.Editor {
+            clearAll = true
+            pending.clear()
+            removals.clear()
+            return this
+        }
+
+        override fun commit(): Boolean {
+            apply()
+            return true
+        }
+
+        override fun apply() {
+            if (clearAll) {
+                values.clear()
+            }
+            removals.forEach { values.remove(it) }
+            pending.forEach { (key, value) ->
+                if (value == null) values.remove(key) else values[key] = value
+            }
+            pending.clear()
+            removals.clear()
+            clearAll = false
+        }
+    }
 }
 
 internal class FakeOverviewEnvironmentGateway(

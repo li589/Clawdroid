@@ -140,6 +140,22 @@ data class StatFileLimitedResult(
     val isDir: Boolean = false
 )
 
+data class ListDirEntry(
+    val name: String,
+    val isDir: Boolean,
+    val size: Long = 0L,
+    val mtimeMs: Long = 0L
+)
+
+data class ListDirLimitedResult(
+    val path: String,
+    val offset: Int,
+    val limit: Int,
+    val total: Int,
+    val truncated: Boolean,
+    val entries: List<ListDirEntry>
+)
+
 data class ReportXposedFocusResult(
     val accepted: Boolean,
     val packageName: String,
@@ -295,7 +311,8 @@ data class ExecShellLimitedResult(
     val stdoutTruncated: Boolean,
     val stderrTruncated: Boolean,
     val timedOut: Boolean,
-    val allowedCommands: List<String>
+    val allowedCommands: List<String>,
+    val jobId: String = ""
 )
 
 data class ClawRuntimeEventFrame(
@@ -751,6 +768,44 @@ class ClawRuntimeIpcClient(
         )
     }
 
+    suspend fun listDirLimited(
+        path: String,
+        offset: Int = 0,
+        limit: Int = 100
+    ): Result<ListDirLimitedResult> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.LIST_DIR_LIMITED,
+                args = mapOf(
+                    "path" to path,
+                    "offset" to offset,
+                    "limit" to limit
+                )
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.LIST_DIR_LIMITED)
+        val rawEntries = response.data["entries"] as? List<*> ?: emptyList<Any?>()
+        val entries = rawEntries.mapNotNull { item ->
+            val map = item as? Map<*, *> ?: return@mapNotNull null
+            ListDirEntry(
+                name = map["name"]?.toString().orEmpty(),
+                isDir = map["is_dir"] as? Boolean ?: false,
+                size = (map["size"] as? Number)?.toLong() ?: 0L,
+                mtimeMs = (map["mtime_ms"] as? Number)?.toLong() ?: 0L
+            )
+        }
+        ListDirLimitedResult(
+            path = response.data["path"]?.toString().orEmpty(),
+            offset = (response.data["offset"] as? Number)?.toInt() ?: offset,
+            limit = (response.data["limit"] as? Number)?.toInt() ?: limit,
+            total = (response.data["total"] as? Number)?.toInt() ?: entries.size,
+            truncated = response.data["truncated"] as? Boolean ?: false,
+            entries = entries
+        )
+    }
+
     suspend fun injectTap(
         x: Int,
         y: Int,
@@ -916,8 +971,39 @@ class ClawRuntimeIpcClient(
             stdoutTruncated = response.data["stdout_truncated"] as? Boolean ?: false,
             stderrTruncated = response.data["stderr_truncated"] as? Boolean ?: false,
             timedOut = response.data["timed_out"] as? Boolean ?: false,
-            allowedCommands = (response.data["allowed_commands"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+            allowedCommands = (response.data["allowed_commands"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+            jobId = response.data["job_id"]?.toString().orEmpty()
         )
+    }
+
+    suspend fun shellJobList(limit: Int = 16): Result<List<Map<String, Any?>>> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.SHELL_JOB_LIST,
+                args = mapOf("limit" to limit)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.SHELL_JOB_LIST)
+        @Suppress("UNCHECKED_CAST")
+        (response.data["jobs"] as? List<*>)?.mapNotNull { item ->
+            item as? Map<String, Any?>
+        } ?: emptyList()
+    }
+
+    suspend fun shellJobGet(jobId: String): Result<Map<String, Any?>> = runCatching {
+        val response = send(
+            catalogRequest(
+                requestId = newRequestId(),
+                timestamp = nowSeconds(),
+                action = RuntimeActionCatalog.SHELL_JOB_GET,
+                args = mapOf("job_id" to jobId)
+            )
+        )
+        ensureSuccess(response, RuntimeActionCatalog.SHELL_JOB_GET)
+        @Suppress("UNCHECKED_CAST")
+        (response.data["job"] as? Map<String, Any?>) ?: emptyMap()
     }
 
     suspend fun subscribeEvents(
@@ -942,7 +1028,8 @@ class ClawRuntimeIpcClient(
                         timestamp = nowSeconds(),
                         action = RuntimeActionCatalog.SUBSCRIBE_EVENTS,
                         args = mapOf("events" to events)
-                    )
+                    ),
+                    socket = socket
                 )
                 ensureSuccess(response, RuntimeActionCatalog.SUBSCRIBE_EVENTS)
 
@@ -1016,7 +1103,8 @@ class ClawRuntimeIpcClient(
                             timestamp = nowSeconds(),
                             action = RuntimeActionCatalog.SUBSCRIBE_EVENTS,
                             args = mapOf("events" to JSONArray(events))
-                        )
+                        ),
+                        socket = socket
                     )
                     ensureSuccess(response, RuntimeActionCatalog.SUBSCRIBE_EVENTS)
                     // Event stream may idle longer than handshake timeout.
@@ -1119,7 +1207,8 @@ class ClawRuntimeIpcClient(
                 val pingResponse = sendOnConnection(
                     writer = writer,
                     reader = reader,
-                    request = buildPingRequest(newRequestId(), nowSeconds())
+                    request = buildPingRequest(newRequestId(), nowSeconds()),
+                    socket = socket
                 )
                 ensureSuccess(pingResponse, RuntimeActionCatalog.PING)
 
@@ -1130,7 +1219,8 @@ class ClawRuntimeIpcClient(
                         requestId = newRequestId(),
                         timestamp = nowSeconds(),
                         action = RuntimeActionCatalog.GET_CAPABILITIES
-                    )
+                    ),
+                    socket = socket
                 )
                 ensureSuccess(capabilitiesResponse, RuntimeActionCatalog.GET_CAPABILITIES)
 
@@ -1228,13 +1318,22 @@ class ClawRuntimeIpcClient(
         return untimed
     }
 
-    private suspend fun send(request: ClawRuntimeRequest): ClawRuntimeResponse = withContext(Dispatchers.IO) {
+    private suspend fun send(
+        request: ClawRuntimeRequest,
+        readTimeoutMs: Int = defaultReadTimeoutMs(request.action, request.args)
+    ): ClawRuntimeResponse = withContext(Dispatchers.IO) {
         val socket = openAbstractSocket(timeoutMs = 5000)
         try {
+            socket.soTimeout = readTimeoutMs.coerceIn(1_000, 600_000)
             val reader = socket.inputStream
             val writer = socket.outputStream
             performHandshake(reader, writer)
-            sendOnConnection(writer, reader, request)
+            sendOnConnection(writer, reader, request, readTimeoutMs, socket)
+        } catch (error: java.net.SocketTimeoutException) {
+            throw IpcError.SocketTimeout(
+                message = "IPC 读超时（${readTimeoutMs}ms）action=${request.action}",
+                cause = error
+            )
         } finally {
             socket.close()
         }
@@ -1276,11 +1375,40 @@ class ClawRuntimeIpcClient(
     private fun sendOnConnection(
         writer: OutputStream,
         reader: InputStream,
-        request: ClawRuntimeRequest
+        request: ClawRuntimeRequest,
+        readTimeoutMs: Int = defaultReadTimeoutMs(request.action, request.args),
+        socket: LocalSocket? = null
     ): ClawRuntimeResponse {
+        socket?.soTimeout = readTimeoutMs.coerceIn(1_000, 600_000)
         writeFramedText(writer, request.toJson().toString())
-        val responseText = readFramedText(reader)
+        val responseText = try {
+            readFramedText(reader)
+        } catch (error: java.net.SocketTimeoutException) {
+            throw IpcError.SocketTimeout(
+                message = "IPC 读超时（${readTimeoutMs}ms）action=${request.action}",
+                cause = error
+            )
+        }
         return parseResponse(responseText)
+    }
+
+    private fun defaultReadTimeoutMs(action: String, args: Map<String, Any?>): Int {
+        return when (action) {
+            RuntimeActionCatalog.CAPTURE_SCREEN -> 45_000
+            RuntimeActionCatalog.EXEC_SHELL_LIMITED -> {
+                val shellTimeout = (args["timeout_ms"] as? Number)?.toInt() ?: 3_000
+                (shellTimeout + 2_000).coerceIn(5_000, 120_000)
+            }
+            RuntimeActionCatalog.READ_FILE_LIMITED,
+            RuntimeActionCatalog.WRITE_FILE_LIMITED,
+            RuntimeActionCatalog.STAT_FILE_LIMITED,
+            RuntimeActionCatalog.LIST_DIR_LIMITED -> 15_000
+            RuntimeActionCatalog.TASK_SUBMIT,
+            RuntimeActionCatalog.TASK_GET,
+            RuntimeActionCatalog.TASK_LIST,
+            RuntimeActionCatalog.TASK_CANCEL -> 15_000
+            else -> 10_000
+        }
     }
 
     private fun performHandshake(
@@ -1548,28 +1676,30 @@ class ClawRuntimeIpcClient(
         }
 
         fun resolveSignatureDigest(context: Context, packageName: String): String {
-            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                context.packageManager.getPackageInfo(
-                    packageName,
-                    PackageManager.GET_SIGNING_CERTIFICATES
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(
-                    packageName,
-                    PackageManager.GET_SIGNATURES
-                )
-            }
-            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                packageInfo.signingInfo?.apkContentsSigners
-            } else {
-                @Suppress("DEPRECATION")
-                packageInfo.signatures
-            } ?: error("no APK signatures available")
-            val firstSignature = signatures.firstOrNull()
-                ?: error("empty APK signature list")
-            val digest = MessageDigest.getInstance("SHA-256").digest(firstSignature.toByteArray())
-            return "sha256:" + digest.joinToString("") { byte -> "%02x".format(byte) }
+            return runCatching {
+                val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    context.packageManager.getPackageInfo(
+                        packageName,
+                        PackageManager.GET_SIGNING_CERTIFICATES
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.packageManager.getPackageInfo(
+                        packageName,
+                        PackageManager.GET_SIGNATURES
+                    )
+                }
+                val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    packageInfo.signingInfo?.apkContentsSigners
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageInfo.signatures
+                }
+                val firstSignature = signatures?.firstOrNull()
+                    ?: return@runCatching ""
+                val digest = MessageDigest.getInstance("SHA-256").digest(firstSignature.toByteArray())
+                "sha256:" + digest.joinToString("") { byte -> "%02x".format(byte) }
+            }.getOrDefault("")
         }
     }
 }

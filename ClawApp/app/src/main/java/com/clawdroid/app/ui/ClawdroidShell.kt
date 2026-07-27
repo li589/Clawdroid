@@ -2,13 +2,31 @@ package com.clawdroid.app.ui
 
 import android.content.Intent
 import android.speech.RecognizerIntent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,9 +34,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.clawdroid.app.env.ShizukuSupport
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -27,28 +49,16 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clawdroid.app.BuildConfig
 import com.clawdroid.app.env.AppPermissionManager
-import com.clawdroid.app.mcp.McpJsonRpcHandler
-import com.clawdroid.app.mcp.McpServerController
-import com.clawdroid.app.mcp.assist.AssistMcpController
 import com.clawdroid.app.runtime.ClawRuntimeClient
-import com.clawdroid.app.focus.XposedFocusRuntimeReporter
-import com.clawdroid.app.focus.XposedViewRuntimeReporter
-import com.clawdroid.app.runtime.RuntimeEventService
-import com.clawdroid.app.ai.AiAgentOrchestrator
-import com.clawdroid.app.skills.ClawSkillCatalog
-import com.clawdroid.app.tools.CapabilityProbe
-import com.clawdroid.app.tools.ClawToolDispatcher
 import com.clawdroid.app.tools.ClawToolExecutor
 import com.clawdroid.app.tools.LiveToolCapabilityStore
-import com.clawdroid.app.tools.RuntimeEventToolBridge
-import com.clawdroid.app.tools.ToolPermissionGate
-import com.clawdroid.app.tools.ToolServiceRegistry
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 
-private val floatingNavReservedHeight = 108.dp
+/** Visible floating pill height (excludes system nav inset). Real pill ~68dp; keep buffer. */
+private val floatingNavPillHeight = 68.dp
+private val floatingNavGap = 2.dp
+private const val chatNavAutoHideMs = 2800L
+private val imeVisibleThreshold = 64.dp
 
 @Composable
 internal fun ClawdroidShell(
@@ -59,127 +69,32 @@ internal fun ClawdroidShell(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val eventScope = remember {
-        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    }
-    DisposableEffect(eventScope) {
-        onDispose { eventScope.cancel() }
-    }
-    val runtimeEventService = remember(runtimeClient, eventScope) {
-        RuntimeEventService(runtimeClient, eventScope)
-    }
-    DisposableEffect(runtimeEventService) {
-        onDispose { runtimeEventService.shutdown() }
-    }
-    val xposedFocusReporter = remember(runtimeClient, eventScope) {
-        XposedFocusRuntimeReporter(runtimeClient, eventScope)
-    }
-    DisposableEffect(xposedFocusReporter) {
-        xposedFocusReporter.start()
-        onDispose { xposedFocusReporter.stop() }
-    }
-    val xposedViewReporter = remember(runtimeClient, eventScope) {
-        XposedViewRuntimeReporter(runtimeClient, eventScope)
-    }
-    DisposableEffect(xposedViewReporter) {
-        xposedViewReporter.start()
-        onDispose { xposedViewReporter.stop() }
-    }
-    val overviewController = rememberOverviewController(
-        context = context,
+    val graph = rememberClawdroidCompositionRoot(
         runtimeClient = runtimeClient,
         toolExecutor = toolExecutor,
-        previewLimitBytes = previewLimitBytes,
-        eventService = runtimeEventService
+        previewLimitBytes = previewLimitBytes
     )
+    val overviewController = graph.overviewController
+    val chatViewModel = graph.chatViewModel
+    val settingsViewModel = graph.settingsViewModel
+    val navigationViewModel = graph.navigationViewModel
+    val assistController = graph.assistController
+    val mcpController = graph.mcpController
+
     val overviewUiState by overviewController.uiState.collectAsStateWithLifecycle()
     val overviewDashboardMetrics by overviewController.dashboardMetrics.collectAsStateWithLifecycle()
     val overviewCapturePreview by overviewController.latestCapturePreview.collectAsStateWithLifecycle()
     val automationUiState by overviewController.automationController.state.collectAsStateWithLifecycle()
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    val assistController = remember(context) {
-        AssistMcpController(context.applicationContext)
-    }
-    val toolServices = remember(context, runtimeClient, assistController) {
-        ToolServiceRegistry.create(
-            context = context.applicationContext,
-            runtimeClient = runtimeClient,
-            assist = assistController
-        )
-    }
-    LaunchedEffect(toolExecutor) {
-        runCatching { CapabilityProbe(toolExecutor).refreshIfStale() }
-    }
-    LaunchedEffect(context) {
-        ClawSkillCatalog.bindContext(context.applicationContext)
-        AiAgentOrchestrator.bindContext(context.applicationContext)
-    }
-    val toolDispatcher = remember(
-        toolExecutor,
-        runtimeEventService,
-        previewLimitBytes,
-        toolServices
-    ) {
-        ClawToolDispatcher(
-            executor = toolExecutor,
-            previewLimitBytes = previewLimitBytes,
-            permissionGate = ToolPermissionGate(
-                context = context.applicationContext,
-                assistEnabled = { assistController.isEnabled() },
-                knownCapabilities = { LiveToolCapabilityStore.snapshot() }
-            ),
-            appContext = context.applicationContext,
-            services = toolServices,
-            eventBridge = RuntimeEventToolBridge(runtimeEventService)
-        )
-    }
-    DisposableEffect(overviewController, toolDispatcher) {
-        overviewController.setCaptureArtifactListener { artifact ->
-            toolDispatcher.rememberCapture(artifact)
-        }
-        onDispose {
-            overviewController.setCaptureArtifactListener(null)
-        }
-    }
-    val chatViewModel = rememberChatViewModel(context, overviewController, toolDispatcher)
-    DisposableEffect(overviewController, chatViewModel) {
-        overviewController.setRuntimeTaskEventListener { snapshot ->
-            chatViewModel.onRuntimeTaskEvent(snapshot)
-        }
-        onDispose {
-            overviewController.setRuntimeTaskEventListener(null)
-        }
-    }
     val chatUiState by chatViewModel.uiState.collectAsStateWithLifecycle()
-    val settingsViewModel = rememberSettingsViewModel(context)
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
-    val navigationViewModel = rememberNavigationViewModel()
     val navigationUiState by navigationViewModel.uiState.collectAsStateWithLifecycle()
-
-    val mcpController = remember(context, toolDispatcher) {
-        McpServerController(
-            appContext = context.applicationContext,
-            handlerFactory = {
-                McpJsonRpcHandler(
-                    dispatcher = toolDispatcher,
-                    appContext = context.applicationContext,
-                    capabilityProbe = CapabilityProbe(toolExecutor)
-                )
-            }
-        )
-    }
     val mcpUiState by mcpController.state.collectAsStateWithLifecycle()
     val assistUiState by assistController.state.collectAsStateWithLifecycle()
-
-    DisposableEffect(mcpController) {
-        mcpController.restoreIfEnabled()
-        onDispose { mcpController.pause() }
-    }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner, overviewController) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START) {
+            if (event == Lifecycle.Event.ON_RESUME) {
                 overviewController.onHostStarted()
             }
         }
@@ -192,9 +107,8 @@ internal fun ClawdroidShell(
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        val label = uri?.lastPathSegment ?: uri?.toString()
-        if (!label.isNullOrBlank()) {
-            chatViewModel.onImagePicked(label)
+        if (uri != null) {
+            chatViewModel.onImagePicked(uri)
         }
     }
 
@@ -217,10 +131,13 @@ internal fun ClawdroidShell(
         overviewController.handleSystemSettingsReturned()
     }
 
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        overviewController.handleNotificationPermissionResult(granted)
+    LaunchedEffect(Unit) {
+        ShizukuSupport.ensureInitialized {
+            overviewController.refreshLocalEnvironment()
+        }
+        ShizukuSupport.addPermissionResultListener { _, _ ->
+            overviewController.refreshLocalEnvironment()
+        }
     }
 
     LaunchedEffect(navigationUiState.currentPage) {
@@ -240,7 +157,9 @@ internal fun ClawdroidShell(
             if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) {
                 overviewController.markNotificationPermissionNotRequired()
             } else {
-                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                // Prefer system notification settings page for toggle UX consistency.
+                overviewController.markOpeningNotificationSettings()
+                systemSettingsLauncher.launch(AppPermissionManager.notificationSettingsIntent(context))
             }
         },
         onOpenAccessibilitySettings = {
@@ -254,6 +173,17 @@ internal fun ClawdroidShell(
         onOpenAllFilesAccess = {
             overviewController.markOpeningAllFilesAccess()
             systemSettingsLauncher.launch(AppPermissionManager.allFilesAccessIntent(context))
+        },
+        onOpenNotificationListenerSettings = {
+            overviewController.markOpeningNotificationListenerSettings()
+            systemSettingsLauncher.launch(AppPermissionManager.notificationListenerSettingsIntent(context))
+        },
+        onRequestShizukuPermission = {
+            overviewController.requestShizukuPermission(
+                openManager = {
+                    systemSettingsLauncher.launch(AppPermissionManager.shizukuManagerIntent(context))
+                }
+            )
         }
     )
     val overviewAutomationActions = overviewController.automationController.buildOverviewAutomationActions()
@@ -270,6 +200,7 @@ internal fun ClawdroidShell(
         runtimeHealthStatus = overviewRuntimeState.healthStatus,
         runtimeLastErrorStatus = overviewRuntimeState.lastErrorStatus,
         runtimeConfigSummary = overviewRuntimeState.runtimeConfigSummary,
+        runtimeCompatBanner = overviewRuntimeState.compatBanner,
         settingsState = settingsUiState,
         mcpState = mcpUiState,
         assistState = assistUiState
@@ -283,95 +214,228 @@ internal fun ClawdroidShell(
         onAssistTokenChanged = assistController::updateToken,
         onAssistProbe = assistController::probe
     )
-    val chatConsoleState = buildChatConsoleState(
-        chatState = chatUiState,
-        modelSettings = settingsUiState.modelSettings,
-        eventStreaming = overviewEventState.eventStreaming,
-        connectionSummary = connectionSummary
-    )
-    val chatConsoleActions = chatViewModel.buildChatConsoleActions(
-        modelSettings = settingsUiState.modelSettings,
-        eventStreaming = overviewEventState.eventStreaming,
-        onModelCallSuccess = settingsViewModel::markLatestModelCallSuccess,
-        onVoiceClick = {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(
-                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                )
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你要执行的指令")
-            }
-            voiceInputLauncher.launch(intent)
-        },
-        onImageClick = { imagePickerLauncher.launch("image/*") }
-    )
+    val chatConsoleState = remember(
+        chatUiState,
+        settingsUiState.modelSettings,
+        overviewEventState.eventStreaming,
+        connectionSummary
+    ) {
+        buildChatConsoleState(
+            chatState = chatUiState,
+            modelSettings = settingsUiState.modelSettings,
+            eventStreaming = overviewEventState.eventStreaming,
+            connectionSummary = connectionSummary
+        )
+    }
+    val latestVoiceClick = rememberUpdatedState(newValue = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你要执行的指令")
+        }
+        voiceInputLauncher.launch(intent)
+    })
+    val latestImageClick = rememberUpdatedState(newValue = {
+        imagePickerLauncher.launch("image/*")
+    })
+    val chatConsoleActions = remember(
+        chatViewModel,
+        settingsUiState.modelSettings,
+        overviewEventState.eventStreaming
+    ) {
+        chatViewModel.buildChatConsoleActions(
+            modelSettings = settingsUiState.modelSettings,
+            eventStreaming = overviewEventState.eventStreaming,
+            onModelCallSuccess = settingsViewModel::markLatestModelCallSuccess,
+            onVoiceClick = { latestVoiceClick.value.invoke() },
+            onImageClick = { latestImageClick.value.invoke() }
+        )
+    }
+
+    val currentPage = navigationUiState.currentPage
+    var bottomNavVisible by remember { mutableStateOf(true) }
+    var navRevealToken by remember { mutableStateOf(0) }
+    val navBarsBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val isImeVisible = imeBottom > imeVisibleThreshold
+    // While IME is open: hide floating nav and do not reserve pill space.
+    val showFloatingNav = bottomNavVisible && !isImeVisible
+    val contentBottomPad = when {
+        isImeVisible -> 4.dp
+        showFloatingNav -> navBarsBottom + floatingNavPillHeight + floatingNavGap
+        else -> navBarsBottom + 4.dp
+    }
+
+    BackHandler(enabled = currentPage == ConsolePage.Settings) {
+        when (settingsUiState.settingsNav) {
+            is SettingsNav.Category -> settingsViewModel.navigateHub()
+            SettingsNav.Hub -> navigationViewModel.selectPage(ConsolePage.Overview)
+        }
+    }
+
+    LaunchedEffect(currentPage) {
+        bottomNavVisible = true
+        navRevealToken += 1
+        if (currentPage != ConsolePage.Settings) {
+            settingsViewModel.navigateHub()
+        }
+    }
+
+    LaunchedEffect(currentPage, bottomNavVisible, navRevealToken, isImeVisible) {
+        if (currentPage != ConsolePage.Chat || !bottomNavVisible || isImeVisible) return@LaunchedEffect
+        delay(chatNavAutoHideMs)
+        bottomNavVisible = false
+    }
+
+    fun revealBottomNav() {
+        if (isImeVisible) return
+        bottomNavVisible = true
+        navRevealToken += 1
+    }
 
     ClawdroidTheme(themeMode = settingsUiState.themeMode) {
         Surface(
-            modifier = modifier.fillMaxSize(),
+            modifier = modifier
+                .fillMaxSize()
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                    )
+                ),
             color = MaterialTheme.colorScheme.background
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        // Reserve viewport space so cards never render beneath the floating nav.
-                        .padding(bottom = floatingNavReservedHeight),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                    contentPadding = PaddingValues(
-                        start = 16.dp,
-                        top = 12.dp,
-                        end = 16.dp,
-                        bottom = 28.dp
-                    )
-                ) {
-                    when (navigationUiState.currentPage) {
-                        ConsolePage.Chat -> {
-                            chatConsoleScreen(
-                                state = chatConsoleState,
-                                actions = chatConsoleActions
-                            )
-                        }
+                when (currentPage) {
+                    ConsolePage.Chat -> {
+                        ChatPage(
+                            state = chatConsoleState,
+                            actions = chatConsoleActions,
+                            onScrollTowardBottom = { bottomNavVisible = false },
+                            onScrollTowardTop = { revealBottomNav() },
+                            onComposerInteract = { revealBottomNav() },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(bottom = contentBottomPad)
+                        )
+                    }
 
-                        ConsolePage.Overview -> {
-                            statusOverviewScreen(
-                                permissionState = overviewPermissionState,
-                                permissionActions = overviewPermissionActions,
-                                automationState = automationUiState,
-                                automationActions = overviewAutomationActions,
-                                runtimeState = overviewRuntimeState,
-                                dashboardMetrics = overviewDashboardMetrics,
-                                latestCapturePreview = overviewCapturePreview,
-                                runtimeActions = overviewRuntimeActions,
-                                eventState = overviewEventState,
-                                eventActions = overviewEventActions,
-                                assistMcpStatus = AssistMcpOverviewStatus(
-                                    phoneServerRunning = mcpUiState.running,
-                                    phoneServerStatus = mcpUiState.statusText,
-                                    assistClientEnabled = assistUiState.enabled,
-                                    assistClientStatus = assistUiState.statusText,
-                                    assistLastError = assistUiState.lastError,
-                                    liveCapabilityCount = LiveToolCapabilityStore.snapshot().size
-                                ),
-                                debugHighlightLongContent = BuildConfig.DEBUG && debugSeedLongOverview
+                    ConsolePage.Overview, ConsolePage.Settings -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(bottom = contentBottomPad),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                top = 10.dp,
+                                end = 16.dp,
+                                bottom = 20.dp
                             )
-                        }
+                        ) {
+                            item(key = "brand-header") {
+                                val settingsCategory = (settingsUiState.settingsNav as? SettingsNav.Category)?.id
+                                val settingsBackClick: (() -> Unit)? =
+                                    if (currentPage != ConsolePage.Settings) {
+                                        null
+                                    } else {
+                                        when (settingsUiState.settingsNav) {
+                                            is SettingsNav.Category -> {
+                                                { settingsViewModel.navigateHub() }
+                                            }
+                                            SettingsNav.Hub -> {
+                                                { navigationViewModel.selectPage(ConsolePage.Overview) }
+                                            }
+                                        }
+                                    }
+                                when (currentPage) {
+                                    ConsolePage.Settings -> {
+                                        if (settingsCategory != null) {
+                                            BrandPageHeader(
+                                                title = settingsCategory.title,
+                                                subtitle = settingsCategory.subtitle,
+                                                onBackClick = settingsBackClick,
+                                                compactTitle = true
+                                            )
+                                        } else {
+                                            BrandPageHeader(
+                                                subtitle = "模型、提示词与协助接入",
+                                                onBackClick = settingsBackClick
+                                            )
+                                        }
+                                    }
+                                    ConsolePage.Overview -> BrandPageHeader(
+                                        subtitle = "状态与快捷操作"
+                                    )
+                                    else -> BrandPageHeader()
+                                }
+                            }
+                            when (currentPage) {
+                                ConsolePage.Overview -> {
+                                    statusOverviewScreen(
+                                        permissionState = overviewPermissionState,
+                                        permissionActions = overviewPermissionActions,
+                                        automationState = automationUiState,
+                                        automationActions = overviewAutomationActions,
+                                        runtimeState = overviewRuntimeState,
+                                        dashboardMetrics = overviewDashboardMetrics,
+                                        latestCapturePreview = overviewCapturePreview,
+                                        runtimeActions = overviewRuntimeActions,
+                                        eventState = overviewEventState,
+                                        eventActions = overviewEventActions,
+                                        assistMcpStatus = AssistMcpOverviewStatus(
+                                            phoneServerRunning = mcpUiState.running,
+                                            phoneServerStatus = mcpUiState.statusText,
+                                            assistClientEnabled = assistUiState.enabled,
+                                            assistClientStatus = assistUiState.statusText,
+                                            assistLastError = assistUiState.lastError,
+                                            liveCapabilityCount = LiveToolCapabilityStore.snapshot().size
+                                        ),
+                                        debugHighlightLongContent = BuildConfig.DEBUG && debugSeedLongOverview
+                                    )
+                                }
 
-                        ConsolePage.Settings -> {
-                            settingsScreen(
-                                state = settingsScreenState,
-                                actions = settingsScreenActions
-                            )
+                                ConsolePage.Settings -> {
+                                    settingsScreen(
+                                        state = settingsScreenState,
+                                        actions = settingsScreenActions
+                                    )
+                                }
+
+                                ConsolePage.Chat -> Unit
+                            }
                         }
                     }
                 }
-                FloatingBottomNavBar(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 6.dp),
-                    currentPage = navigationUiState.currentPage,
-                    onPageSelected = navigationViewModel::selectPage
-                )
+
+                if (!showFloatingNav && currentPage == ConsolePage.Chat && !isImeVisible) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(navBarsBottom + 18.dp)
+                            .clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() }
+                            ) { revealBottomNav() }
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showFloatingNav,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    enter = fadeIn() + slideInVertically { it },
+                    exit = fadeOut() + slideOutVertically { it }
+                ) {
+                    FloatingBottomNavBar(
+                        currentPage = currentPage,
+                        onPageSelected = { page ->
+                            revealBottomNav()
+                            navigationViewModel.selectPage(page)
+                        }
+                    )
+                }
             }
         }
     }

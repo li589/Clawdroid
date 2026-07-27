@@ -1,6 +1,7 @@
 package com.clawdroid.app.ui
 
 import com.clawdroid.app.ai.AiAgentOrchestrator
+import com.clawdroid.app.data.ChatSessionSummary
 
 internal data class ChatConsoleState(
     val messages: List<ChatMessage>,
@@ -13,14 +14,24 @@ internal data class ChatConsoleState(
     val eventStreaming: Boolean,
     val modelLabel: String,
     val aiSummary: String,
-    val connectionSummary: String
+    val connectionSummary: String,
+    val activeSessionId: String = "",
+    val activeSessionTitle: String = "新对话",
+    val sessionSummaries: List<ChatSessionSummary> = emptyList(),
+    val agentEvents: List<com.clawdroid.app.ai.AgentRunEvent> = emptyList(),
+    val agentTimelineExpanded: Boolean = false,
+    val apiCallsRemaining: Int = AgentOrchestrationSettings.DEFAULT_MAX_MODEL_API_CALLS,
+    val awaitingBudgetContinue: Boolean = false,
+    val pendingCommandReview: PendingCommandReview? = null
 )
 
 internal data class ChatConsoleActions(
     val onInputChange: (String) -> Unit,
     val onSend: () -> Unit,
+    val onSubmitPrompt: (String) -> Unit = {},
     val onVoiceClick: () -> Unit,
     val onImageClick: () -> Unit,
+    val onClearPendingImage: () -> Unit = {},
     val onQuickPing: () -> Unit,
     val onQuickRuntimeCheck: () -> Unit,
     val onQuickCapabilities: () -> Unit,
@@ -31,11 +42,18 @@ internal data class ChatConsoleActions(
     val onQuickSwipeCaptureTask: () -> Unit,
     val onQuickToggleEvents: () -> Unit,
     val onClearHistory: () -> Unit,
+    val onCreateSession: () -> Unit = {},
+    val onDeleteCurrentSession: () -> Unit = {},
+    val onSelectSession: (String) -> Unit = {},
     val onCancelTaskExecution: () -> Unit,
+    val onInterruptGeneration: () -> Unit = {},
     val onClearCurrentTaskExecution: () -> Unit,
     val onClearTaskHistory: () -> Unit,
     val onRetryTaskExecution: (ChatTaskExecutionState) -> Unit,
-    val onTaskHistoryFilterChange: (ChatTaskHistoryFilter) -> Unit
+    val onTaskHistoryFilterChange: (ChatTaskHistoryFilter) -> Unit,
+    val onToggleAgentTimeline: () -> Unit = {},
+    val onApproveCommandReview: () -> Unit = {},
+    val onDenyCommandReview: () -> Unit = {}
 )
 
 internal fun buildChatConsoleState(
@@ -55,7 +73,15 @@ internal fun buildChatConsoleState(
         eventStreaming = eventStreaming,
         modelLabel = modelSettings.provider.name,
         aiSummary = AiAgentOrchestrator.readinessSummary(modelSettings) + "\n最近状态: ${chatState.latestAiStatus}",
-        connectionSummary = connectionSummary
+        connectionSummary = connectionSummary,
+        activeSessionId = chatState.activeSessionId,
+        activeSessionTitle = chatState.activeSessionTitle,
+        sessionSummaries = chatState.sessionSummaries,
+        agentEvents = chatState.agentEvents,
+        agentTimelineExpanded = chatState.agentTimelineExpanded,
+        apiCallsRemaining = chatState.apiCallsRemaining,
+        awaitingBudgetContinue = chatState.awaitingBudgetContinue,
+        pendingCommandReview = chatState.pendingCommandReview
     )
 }
 
@@ -69,8 +95,10 @@ internal fun ChatViewModel.buildChatConsoleActions(
     return ChatConsoleActions(
         onInputChange = ::updateInput,
         onSend = { submitCurrentInput(modelSettings, onModelCallSuccess) },
+        onSubmitPrompt = { prompt -> submitPrompt(prompt, modelSettings, onModelCallSuccess) },
         onVoiceClick = onVoiceClick,
         onImageClick = onImageClick,
+        onClearPendingImage = ::clearPendingImage,
         onQuickPing = { submitPrompt("ping ClawRuntime", modelSettings, onModelCallSuccess) },
         onQuickRuntimeCheck = { submitPrompt("检查运行时状态", modelSettings, onModelCallSuccess) },
         onQuickCapabilities = { submitPrompt("获取能力", modelSettings, onModelCallSuccess) },
@@ -87,10 +115,17 @@ internal fun ChatViewModel.buildChatConsoleActions(
             )
         },
         onClearHistory = { clearHistory() },
+        onCreateSession = ::createNewSession,
+        onDeleteCurrentSession = ::deleteCurrentSession,
+        onSelectSession = ::selectSession,
         onCancelTaskExecution = { cancelCurrentTaskExecution() },
+        onInterruptGeneration = { interruptGeneration() },
         onClearCurrentTaskExecution = { clearCurrentTaskExecution() },
         onClearTaskHistory = { clearTaskHistory() },
         onRetryTaskExecution = { task -> retryTask(task) },
-        onTaskHistoryFilterChange = { filter -> setTaskHistoryFilter(filter) }
+        onTaskHistoryFilterChange = { filter -> setTaskHistoryFilter(filter) },
+        onToggleAgentTimeline = ::toggleAgentTimeline,
+        onApproveCommandReview = { resolvePendingCommandReview(approved = true) },
+        onDenyCommandReview = { resolvePendingCommandReview(approved = false) }
     )
 }

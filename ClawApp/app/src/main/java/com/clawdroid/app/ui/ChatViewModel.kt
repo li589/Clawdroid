@@ -7,6 +7,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.clawdroid.app.ai.AgentRunEvent
+import com.clawdroid.app.ai.AgentRunEventKind
+import com.clawdroid.app.ai.AgentToolLoopController
+import com.clawdroid.app.ai.AgentToolLoopHost
+import com.clawdroid.app.ai.ContextCompressor
+import com.clawdroid.app.chat.ChatSessionCoordinator
+import com.clawdroid.app.chat.ChatTaskExecutionController
+import com.clawdroid.app.chat.ChatContextIndexStore
+import com.clawdroid.app.chat.FileIndexStore
+import com.clawdroid.app.chat.MemoryGraphStore
+import com.clawdroid.app.data.AppSettingsStore
+import com.clawdroid.app.data.ChatSessionSummary
 import com.clawdroid.app.ai.AiAgentOrchestrator
 import com.clawdroid.app.ai.AiAgentPlan
 import com.clawdroid.app.ai.AiToolReflectionInput
@@ -30,6 +42,7 @@ import com.clawdroid.app.skills.RuntimeTaskPoller
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolDispatcher
+import com.clawdroid.app.tools.InputGuards
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -44,11 +57,27 @@ internal data class ChatUiState(
     val input: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val pendingImageLabel: String? = null,
+    val pendingImageUri: android.net.Uri? = null,
     val chatBusy: Boolean = false,
     val latestAiStatus: String = "规则优先，模型待命",
     val taskExecution: ChatTaskExecutionState? = null,
     val taskHistory: List<ChatTaskExecutionState> = emptyList(),
-    val taskHistoryFilter: ChatTaskHistoryFilter = ChatTaskHistoryFilter.All
+    val taskHistoryFilter: ChatTaskHistoryFilter = ChatTaskHistoryFilter.All,
+    val activeSessionId: String = "",
+    val activeSessionTitle: String = "新对话",
+    val sessionSummaries: List<ChatSessionSummary> = emptyList(),
+    val agentEvents: List<AgentRunEvent> = emptyList(),
+    val agentTimelineExpanded: Boolean = false,
+    val apiCallsRemaining: Int = AgentOrchestrationSettings.DEFAULT_MAX_MODEL_API_CALLS,
+    val awaitingBudgetContinue: Boolean = false,
+    val compressedMemory: String = "",
+    val pendingCommandReview: PendingCommandReview? = null
+)
+
+internal data class PendingCommandReview(
+    val toolId: String,
+    val toolDisplayName: String,
+    val argumentsPreview: String
 )
 
 internal enum class ChatTaskProgressState {
@@ -101,21 +130,142 @@ internal data class ChatTaskExecutionState(
 internal class ChatViewModel(
     private val appContext: Context,
     private val overviewController: OverviewController,
-    private val toolDispatcher: ClawToolDispatcher? = null
-) : ViewModel() {
+    override val toolDispatcher: ClawToolDispatcher? = null
+) : ViewModel(), AgentToolLoopHost {
     private val _uiState = MutableStateFlow(ChatUiState())
-    val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
-    private var currentTaskJob: Job? = null
+    override val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+    override var currentTaskJob: Job? = null
+    private var historySaveJob: Job? = null
+    private var turnApiCallsUsed: Int = 0
+    private var activeChatJob: Job? = null
+    private var commandReviewDeferred: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+    private val taskController = ChatTaskExecutionController(
+        appContext = appContext,
+        scope = viewModelScope,
+        toolDispatcher = toolDispatcher,
+        getState = { uiState.value },
+        updateState = ::updateState,
+        getCurrentTaskJob = { currentTaskJob },
+        setCurrentTaskJob = { currentTaskJob = it },
+        appendChat = { role, content, state ->
+            appendChat(role, content, state = state)
+        }
+    )
+
+    private val sessionCoordinator = ChatSessionCoordinator(
+        appContext = appContext,
+        scope = viewModelScope,
+        getState = { uiState.value },
+        updateState = ::updateState,
+        getHistorySaveJob = { historySaveJob },
+        setHistorySaveJob = { historySaveJob = it },
+        isSessionChangeBlocked = {
+            uiState.value.chatBusy ||
+                currentTaskJob?.isActive == true ||
+                activeChatJob?.isActive == true
+        },
+        onCreateSessionBlocked = {
+            appendChat(
+                ChatRole.Assistant,
+                "当前仍有指令在执行，请等待完成或先取消任务后再新建对话。",
+                state = ChatMessageState.Final
+            )
+        },
+        onSelectSessionBlocked = {
+            appendChat(
+                ChatRole.Assistant,
+                "当前仍有指令在执行，请等待完成或先取消任务后再切换对话。",
+                state = ChatMessageState.Final
+            )
+        },
+        onDeleteSessionBlocked = {
+            appendChat(
+                ChatRole.Assistant,
+                "当前仍有指令在执行，请等待完成或先取消任务后再删除对话。",
+                state = ChatMessageState.Final
+            )
+        },
+        cancelActiveTaskJob = {
+            activeChatJob?.cancel()
+            activeChatJob = null
+            currentTaskJob?.cancel()
+            currentTaskJob = null
+        },
+        welcomeMessage = ::welcomeMessage
+    )
+
+    private val toolLoopController = AgentToolLoopController(
+        host = this,
+        overviewController = overviewController
+    )
 
     init {
         viewModelScope.launch {
-            restoreHistory()
+            sessionCoordinator.restoreHistory()
+            val agentSettings = AppSettingsStore.loadAgentOrchestrationSettings(appContext)
+            updateState {
+                it.copy(apiCallsRemaining = agentSettings.maxModelApiCalls)
+            }
         }
-        restoreTaskState()
+        taskController.restoreTaskState()
+    }
+
+    fun toggleAgentTimeline() {
+        updateState { it.copy(agentTimelineExpanded = !it.agentTimelineExpanded) }
+    }
+
+    override fun appendAgentEvent(event: AgentRunEvent) {
+        updateState { state ->
+            state.copy(agentEvents = (state.agentEvents + event).takeLast(80))
+        }
+    }
+
+    private fun clearAgentEvents() {
+        updateState { it.copy(agentEvents = emptyList(), agentTimelineExpanded = false) }
+    }
+
+    override fun loadAgentSettings(): AgentOrchestrationSettings =
+        AppSettingsStore.loadAgentOrchestrationSettings(appContext)
+
+    override fun noteModelApiCall(onModelCallSuccess: () -> Unit): Boolean {
+        val settings = loadAgentSettings()
+        turnApiCallsUsed += 1
+        val remaining = (settings.maxModelApiCalls - turnApiCallsUsed).coerceAtLeast(0)
+        updateState {
+            it.copy(
+                apiCallsRemaining = remaining,
+                awaitingBudgetContinue = remaining <= 0
+            )
+        }
+        onModelCallSuccess()
+        if (remaining <= 0) {
+            appendAgentEvent(
+                AgentRunEvent(
+                    kind = AgentRunEventKind.Budget,
+                    title = "本轮 API 预算已耗尽",
+                    detail = "本条消息的回复过程已用满 ${settings.maxModelApiCalls} 次模型调用。发送下一条消息会重新计数。"
+                )
+            )
+            return false
+        }
+        return true
+    }
+
+    private fun resetTurnApiBudget() {
+        val settings = loadAgentSettings()
+        turnApiCallsUsed = 0
+        updateState {
+            it.copy(
+                apiCallsRemaining = settings.maxModelApiCalls,
+                awaitingBudgetContinue = false
+            )
+        }
     }
 
     fun updateInput(value: String) {
-        updateState { it.copy(input = value) }
+        val (sanitized, _) = com.clawdroid.app.tools.InputGuards.sanitizePromptInput(value)
+        updateState { it.copy(input = sanitized) }
     }
 
     fun applyVoiceTranscript(transcript: String) {
@@ -126,225 +276,143 @@ internal class ChatViewModel(
         updateState { it.copy(input = normalized) }
     }
 
-    fun onImagePicked(label: String) {
-        if (label.isBlank()) {
-            return
+    fun onImagePicked(uri: android.net.Uri) {
+        val label = uri.lastPathSegment?.takeIf { it.isNotBlank() } ?: uri.toString()
+        updateState {
+            it.copy(
+                pendingImageUri = uri,
+                pendingImageLabel = label
+            )
         }
-        updateState { it.copy(pendingImageLabel = label) }
-        appendChat(ChatRole.User, "附加了一张图片", label)
-        appendChat(
-            ChatRole.Assistant,
-            "图片入口已准备好，当前版本已记录附件，下一步会接入视觉理解与基于图片的控制指令。"
-        )
+    }
+
+    fun clearPendingImage() {
+        updateState {
+            it.copy(pendingImageUri = null, pendingImageLabel = null)
+        }
     }
 
     fun clearHistory(systemMessage: String = "聊天历史已清空。") {
-        currentTaskJob?.cancel()
-        currentTaskJob = null
+        createNewSession()
+        appendChat(ChatRole.Assistant, systemMessage, state = ChatMessageState.Final)
+    }
+
+    fun createNewSession() = sessionCoordinator.createNewSession()
+
+    fun selectSession(sessionId: String) = sessionCoordinator.selectSession(sessionId)
+
+    fun deleteCurrentSession() = sessionCoordinator.deleteCurrentSession()
+
+    fun cancelCurrentTaskExecution() = taskController.cancelCurrentTaskExecution()
+
+    /** 打断当前正在生成/思考/工具循环的回复。 */
+    fun interruptGeneration() {
+        finalizeStreamingAsTerminated("（已终止）")
+        resolvePendingCommandReview(approved = false)
+        val job = activeChatJob ?: currentTaskJob
+        if (job?.isActive == true) {
+            job.cancel(CancellationException("用户打断输出"))
+            return
+        }
+        if (uiState.value.taskExecution?.status == ChatTaskProgressState.Running) {
+            taskController.cancelCurrentTaskExecution()
+        }
+        if (uiState.value.chatBusy) {
+            finishChat()
+        }
+    }
+
+    fun resolvePendingCommandReview(approved: Boolean) {
+        val deferred = commandReviewDeferred
+        commandReviewDeferred = null
+        updateState { it.copy(pendingCommandReview = null) }
+        deferred?.complete(approved)
+    }
+
+    override suspend fun awaitCommandReview(
+        tool: ClawTool,
+        arguments: Map<String, String>
+    ): Boolean {
+        val settings = loadAgentSettings()
+        if (!settings.needsCommandReview(tool.toolId)) {
+            return true
+        }
+        commandReviewDeferred?.complete(false)
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        commandReviewDeferred = deferred
+        val preview = arguments.entries
+            .take(6)
+            .joinToString(", ") { "${it.key}=${it.value.take(48)}" }
+            .ifBlank { "(无参数)" }
         updateState {
             it.copy(
-                input = "",
-                chatBusy = false,
-                pendingImageLabel = null,
-                taskExecution = null,
-                taskHistory = emptyList()
-            )
-        }
-        ChatTaskHistoryStore.clear(appContext)
-        val messages = buildList {
-            add(welcomeMessage())
-            add(ChatMessage(role = ChatRole.Assistant, content = systemMessage))
-        }
-        replaceMessages(messages)
-    }
-
-    fun cancelCurrentTaskExecution() {
-        val runningTask = uiState.value.taskExecution
-            ?.takeIf { it.status == ChatTaskProgressState.Running }
-            ?: return
-        val runtimeTaskId = runningTask.runtimeTaskId
-        val hadActiveJob = currentTaskJob?.isActive == true
-        currentTaskJob?.cancel(
-            CancellationException("用户取消任务：${runningTask.title}")
-        )
-        if (hadActiveJob) {
-            // Local job catch path marks Cancelled; still best-effort stop Runtime work.
-            if (!runtimeTaskId.isNullOrBlank()) {
-                requestCancelRuntimeTask(runtimeTaskId)
-            }
-            return
-        }
-        if (runtimeTaskId.isNullOrBlank()) {
-            cancelTaskExecution("任务已取消。")
-            return
-        }
-        viewModelScope.launch {
-            val cancelResult = runCatching {
-                toolDispatcher?.execute(
-                    ClawTool.TASK_CANCEL,
-                    mapOf("task_id" to runtimeTaskId)
+                pendingCommandReview = PendingCommandReview(
+                    toolId = tool.toolId,
+                    toolDisplayName = tool.displayName,
+                    argumentsPreview = preview
                 )
-            }.getOrNull()
-            val stillTrackingSame = uiState.value.taskExecution
-                ?.takeIf { it.status == ChatTaskProgressState.Running }
-                ?.runtimeTaskId == runtimeTaskId
-            if (!stillTrackingSame) {
-                return@launch
-            }
-            if (cancelResult == null || cancelResult.success) {
-                cancelResult?.taskSnapshot?.let { applyRuntimeTaskSnapshot(it) }
-                if (uiState.value.taskExecution?.status == ChatTaskProgressState.Running) {
-                    cancelTaskExecution("任务已取消：已停止 Runtime 任务 $runtimeTaskId。")
-                }
-            } else {
-                updateTaskExecution { task ->
-                    task.copy(
-                        summary = "取消请求失败：${cancelResult.output.trim()}（任务仍在运行）"
-                    )
-                }
-            }
-        }
-    }
-
-    fun onRuntimeTaskEvent(snapshot: ClawRuntimeTaskSnapshot) {
-        if (snapshot.taskId.isBlank()) {
-            return
-        }
-        val current = uiState.value.taskExecution
-        when {
-            current == null -> {
-                if (isActiveRuntimeTaskState(snapshot.state)) {
-                    trackRuntimeTask(
-                        runtimeTaskId = snapshot.taskId,
-                        originPrompt = "runtime:${snapshot.taskId}",
-                        snapshotName = snapshot.name
-                    )
-                    applyRuntimeTaskSnapshot(snapshot)
-                }
-            }
-            // Only sync events for the Runtime task this chat card already tracks.
-            // Do not auto-bind foreign events onto InApp agents (blank runtimeTaskId).
-            current.runtimeTaskId == snapshot.taskId -> {
-                applyRuntimeTaskSnapshot(snapshot)
-            }
-        }
-    }
-
-    fun clearCurrentTaskExecution() {
-        updateState { state ->
-            val currentTask = state.taskExecution ?: return@updateState state
-            state.copy(
-                taskExecution = null,
-                taskHistory = appendTaskHistory(state.taskHistory, currentTask)
             )
         }
-        persistTaskState()
+        return try {
+            deferred.await()
+        } finally {
+            if (commandReviewDeferred === deferred) {
+                commandReviewDeferred = null
+            }
+            updateState { state ->
+                if (state.pendingCommandReview?.toolId == tool.toolId) {
+                    state.copy(pendingCommandReview = null)
+                } else {
+                    state
+                }
+            }
+        }
     }
 
-    fun clearTaskHistory() {
-        updateState { it.copy(taskHistory = emptyList()) }
-        persistTaskState()
+    private fun finalizeStreamingAsTerminated(suffix: String = "（已终止）") {
+        val current = uiState.value.messages
+        if (current.none { it.state == ChatMessageState.Streaming }) return
+        sessionCoordinator.replaceMessages(
+            current.map { it.asTerminated(suffix) },
+            persistImmediately = true
+        )
     }
 
-    fun setTaskHistoryFilter(filter: ChatTaskHistoryFilter) {
-        updateState { it.copy(taskHistoryFilter = filter) }
-    }
+    fun onRuntimeTaskEvent(snapshot: ClawRuntimeTaskSnapshot) =
+        taskController.onRuntimeTaskEvent(snapshot)
+
+    fun clearCurrentTaskExecution() = taskController.clearCurrentTaskExecution()
+
+    fun clearTaskHistory() = taskController.clearTaskHistory()
+
+    fun setTaskHistoryFilter(filter: ChatTaskHistoryFilter) =
+        taskController.setTaskHistoryFilter(filter)
 
     fun retryTask(task: ChatTaskExecutionState) {
         val action = task.taskAction ?: return
-        if (uiState.value.chatBusy || currentTaskJob?.isActive == true) {
-            appendChat(
-                ChatRole.Assistant,
-                "当前仍有指令在执行，请等待完成或先取消任务后再重试。",
-                state = ChatMessageState.Final
-            )
+        if (taskController.isRetryBlocked()) {
+            taskController.notifyRetryBlocked()
             return
         }
         updateState { it.copy(chatBusy = true) }
-        startTaskExecution(
-            action = action,
-            originPrompt = task.originPrompt.ifBlank { task.title },
-            retryCount = task.retryCount + 1,
-            retryFromTaskId = task.taskId
-        )
         viewModelScope.launch {
+            currentTaskJob = currentCoroutineContext()[Job]
             try {
-                currentTaskJob = currentCoroutineContext()[Job]
+                taskController.startTaskExecution(
+                    action = action,
+                    originPrompt = task.originPrompt.ifBlank { task.title },
+                    retryCount = task.retryCount + 1,
+                    retryFromTaskId = task.taskId,
+                    preserveJob = currentTaskJob
+                )
                 executeUnifiedAgentTask(action)
             } catch (_: CancellationException) {
-                cancelTaskExecution("任务已取消：已停止后续步骤。")
+                taskController.cancelTaskExecution("任务已取消：已停止后续步骤。")
             } finally {
                 currentTaskJob = null
                 finishChat()
             }
         }
-    }
-
-    private fun restoreTaskState() {
-        val persistedState = ChatTaskHistoryStore.load(appContext)
-        val restoredCurrent = persistedState.currentTask?.normalizeRestoredTask()
-        updateState {
-            it.copy(
-                taskExecution = restoredCurrent,
-                taskHistory = persistedState.taskHistory.take(MAX_TASK_HISTORY_ITEMS)
-            )
-        }
-        val runtimeTaskId = restoredCurrent
-            ?.takeIf { it.status == ChatTaskProgressState.Running }
-            ?.runtimeTaskId
-            ?.takeIf { it.isNotBlank() }
-        if (!runtimeTaskId.isNullOrBlank()) {
-            viewModelScope.launch {
-                resyncRuntimeTaskAfterRestore(runtimeTaskId)
-            }
-        }
-    }
-
-    private suspend fun resyncRuntimeTaskAfterRestore(runtimeTaskId: String) {
-        val dispatcher = toolDispatcher ?: return
-        val stillTracking = {
-            uiState.value.taskExecution
-                ?.takeIf { it.status == ChatTaskProgressState.Running }
-                ?.runtimeTaskId == runtimeTaskId
-        }
-        if (!stillTracking()) {
-            return
-        }
-        val getResult = runCatching {
-            dispatcher.execute(ClawTool.TASK_GET, mapOf("task_id" to runtimeTaskId))
-        }.getOrNull()
-        val getSnapshot = getResult?.taskSnapshot?.takeIf { getResult.success }
-        if (getSnapshot != null && stillTracking()) {
-            applyRuntimeTaskSnapshot(getSnapshot)
-            return
-        }
-        val listResult = runCatching {
-            dispatcher.execute(ClawTool.TASK_LIST)
-        }.getOrNull()
-        val listed = listResult?.taskSnapshots
-            ?.firstOrNull { it.taskId == runtimeTaskId }
-        if (listed != null && stillTracking()) {
-            applyRuntimeTaskSnapshot(listed)
-            return
-        }
-        if (stillTracking()) {
-            cancelTaskExecution(
-                "应用重启后未能找到 Runtime 任务 $runtimeTaskId，已停止跟踪。"
-            )
-        }
-    }
-
-    private fun persistTaskState() {
-        val currentState = uiState.value
-        if (currentState.taskExecution == null && currentState.taskHistory.isEmpty()) {
-            ChatTaskHistoryStore.clear(appContext)
-            return
-        }
-        ChatTaskHistoryStore.save(
-            context = appContext,
-            currentTask = currentState.taskExecution,
-            taskHistory = currentState.taskHistory.take(MAX_TASK_HISTORY_ITEMS)
-        )
     }
 
     fun submitCurrentInput(
@@ -360,43 +428,66 @@ internal class ChatViewModel(
         onModelCallSuccess: () -> Unit = {}
     ) {
         val normalized = prompt.trim()
-        if (normalized.isBlank()) {
+        val hasAttachment = uiState.value.pendingImageUri != null
+        if (normalized.isBlank() && !hasAttachment) {
             return
         }
-        if (uiState.value.chatBusy || currentTaskJob?.isActive == true) {
+        if (normalized.isNotBlank()) {
+            InputGuards.validatePromptForSubmit(normalized)?.let { err ->
+                appendChat(ChatRole.Assistant, err.message, state = ChatMessageState.Final)
+                return
+            }
+        }
+        if (uiState.value.chatBusy || currentTaskJob?.isActive == true || activeChatJob?.isActive == true) {
             appendChat(
                 ChatRole.Assistant,
-                "当前仍有指令在执行，请等待完成或先取消任务。",
+                "当前仍有指令在执行，请等待完成或先点停止打断。",
                 state = ChatMessageState.Final
             )
             return
         }
-        if (normalized.length > MAX_PROMPT_LENGTH) {
-            appendChat(ChatRole.Assistant, "输入内容过长，请控制在 $MAX_PROMPT_LENGTH 字符以内。", state = ChatMessageState.Final)
-            return
-        }
-        val attachment = uiState.value.pendingImageLabel
-        val userMessageId = appendChat(ChatRole.User, normalized, attachment)
+        clearAgentEvents()
+        resetTurnApiBudget()
+        val attachmentLabel = uiState.value.pendingImageLabel
+        val attachmentUri = uiState.value.pendingImageUri
+        val userText = normalized.ifBlank { "（附图）" }
+        val userMessageId = appendChat(ChatRole.User, userText, attachmentLabel)
         updateState {
             it.copy(
                 input = "",
                 pendingImageLabel = null,
+                pendingImageUri = null,
                 chatBusy = true
             )
         }
-        viewModelScope.launch {
+        activeChatJob = viewModelScope.launch {
             var replyMessageId: String? = null
+            currentTaskJob = currentCoroutineContext()[Job]
             try {
             replyMessageId = appendChat(
                 ChatRole.Assistant,
                 "正在分析指令...",
                 state = ChatMessageState.Streaming
             )
+            val userImage = if (attachmentUri != null) {
+                com.clawdroid.app.chat.ChatImageEncoder.encode(appContext, attachmentUri)
+                    .getOrElse { error ->
+                        patchChatMessage(
+                            replyMessageId,
+                            "无法读取附图：${error.message ?: error::class.java.simpleName}",
+                            ChatMessageState.Final
+                        )
+                        finishChat()
+                        return@launch
+                    }
+            } else {
+                null
+            }
             val overviewUiState = overviewController.uiState.value
             val automationUiState = overviewController.automationController.state.value
             val automationTaskInputs = overviewController.automationController.currentTaskInputs()
             val excludedIds = setOf(userMessageId, replyMessageId)
-            val recentChat = uiState.value.messages
+            val historyTurns = uiState.value.messages
                 .asReversed()
                 .asSequence()
                 .filter { message ->
@@ -404,7 +495,7 @@ internal class ChatViewModel(
                         message.state == ChatMessageState.Final &&
                         message.content.isNotBlank()
                 }
-                .take(6)
+                .take(24)
                 .toList()
                 .asReversed()
                 .map { message ->
@@ -416,6 +507,34 @@ internal class ChatViewModel(
                         content = message.content
                     )
                 }
+            ChatContextIndexStore.indexTurn(
+                appContext,
+                sessionId = uiState.value.activeSessionId,
+                role = "user",
+                content = normalized
+            )
+            val agentSettings = AppSettingsStore.loadAgentOrchestrationSettings(appContext)
+            val modelName = modelSettings.modelName.ifBlank { modelSettings.localModelName }
+            val contextWindow = modelSettings.contextSettings.effectiveContextWindow(modelName)
+            var compressedMemory = uiState.value.compressedMemory
+            var recentChat = historyTurns.takeLast(
+                ContextCompressor.keepRecentForWindow(contextWindow).coerceAtLeast(6)
+            )
+            if (agentSettings.contextCompressionEnabled) {
+                val compressed = ContextCompressor.maybeCompress(
+                    settings = modelSettings,
+                    history = historyTurns,
+                    existingCompressed = compressedMemory,
+                    appContext = appContext,
+                    contextWindowTokens = contextWindow
+                )
+                if (compressed.didCompress) {
+                    compressedMemory = compressed.compressedMemory
+                    recentChat = compressed.recentChat
+                    updateState { it.copy(compressedMemory = compressedMemory) }
+                }
+            }
+            val retrievedContext = buildRetrievedContext(normalized)
             val plan = ChatPromptPlanner.plan(
                 ChatPlannerContext(
                     prompt = normalized,
@@ -423,7 +542,10 @@ internal class ChatViewModel(
                     sessionSummary = overviewUiState.runtimeState.session.summary,
                     capabilityStatus = overviewUiState.runtimeState.capabilityStatus,
                     eventStreaming = overviewUiState.eventState.eventStreaming,
-                    recentChat = recentChat
+                    recentChat = recentChat,
+                    compressedMemory = compressedMemory,
+                    retrievedContext = retrievedContext,
+                    userImage = userImage
                 )
             )
             updateState {
@@ -439,58 +561,62 @@ internal class ChatViewModel(
             when (plan) {
                 is ChatPromptPlan.AssistantReply -> {
                     if (plan.aiStatus.startsWith("AI ") && plan.aiStatus != "AI 请求失败") {
-                        onModelCallSuccess()
+                        noteModelApiCall(onModelCallSuccess)
                     }
-                    updateChatMessage(replyMessageId, plan.message, ChatMessageState.Final)
+                    patchChatMessage(replyMessageId, plan.message, ChatMessageState.Final)
                     finishChat()
                 }
 
                 is ChatPromptPlan.LocalActionExecution -> {
-                    updateChatMessage(replyMessageId, plan.assistantMessage, ChatMessageState.Streaming)
+                    patchChatMessage(replyMessageId, plan.assistantMessage, ChatMessageState.Streaming)
                     when (plan.action) {
                         ChatLocalAction.SafeTap -> {
                             val reply = overviewController.automationController.safeTapUsingResolvedTarget()
-                            updateChatMessage(replyMessageId, reply, ChatMessageState.Final)
+                            patchChatMessage(replyMessageId, reply, ChatMessageState.Final)
                             finishChat()
                         }
 
                         ChatLocalAction.ReadScreenSize -> {
                             val reply = overviewController.readScreenSizeForChat()
-                            updateChatMessage(replyMessageId, reply, ChatMessageState.Final)
+                            patchChatMessage(replyMessageId, reply, ChatMessageState.Final)
                             finishChat()
                         }
                     }
                 }
 
                 is ChatPromptPlan.TaskExecution -> {
-                    startTaskExecution(
+                    taskController.startTaskExecution(
                         action = plan.action,
-                        originPrompt = normalized
+                        originPrompt = normalized,
+                        preserveJob = currentTaskJob
                     )
-                    currentTaskJob = currentCoroutineContext()[Job]
                     try {
-                        updateChatMessage(replyMessageId, plan.assistantMessage, ChatMessageState.Streaming)
+                        patchChatMessage(replyMessageId, plan.assistantMessage, ChatMessageState.Streaming)
                         val reply = executeUnifiedAgentTask(plan.action, automationTaskInputs)
-                        updateChatMessage(replyMessageId, reply, ChatMessageState.Final)
+                        patchChatMessage(replyMessageId, reply, ChatMessageState.Final)
                     } catch (_: CancellationException) {
-                        cancelTaskExecution("任务已取消：已停止后续步骤。")
-                        updateChatMessage(
+                        taskController.cancelTaskExecution("已停止：用户打断了当前任务。")
+                        patchChatMessage(
                             replyMessageId,
-                            "任务已取消：已停止后续步骤。",
+                            "已停止：用户打断了当前任务。",
                             ChatMessageState.Final
                         )
-                    } finally {
-                        currentTaskJob = null
-                        finishChat()
                     }
                 }
 
                 is ChatPromptPlan.ToolExecution -> {
                     if (plan.reflectResultWithModel) {
-                        onModelCallSuccess()
-                        currentTaskJob = currentCoroutineContext()[Job]
+                        if (!noteModelApiCall(onModelCallSuccess)) {
+                            patchChatMessage(
+                                replyMessageId,
+                                "本轮 API 预算已耗尽，已停止。发送下一条消息会重新计数。",
+                                ChatMessageState.Final
+                            )
+                            finishChat()
+                            return@launch
+                        }
                         try {
-                            runAiToolLoop(
+                            toolLoopController.runAiToolLoop(
                                 initialTool = plan.tool,
                                 initialArguments = plan.arguments,
                                 initialAssistantMessage = plan.assistantMessage,
@@ -501,15 +627,12 @@ internal class ChatViewModel(
                                 onModelCallSuccess = onModelCallSuccess
                             )
                         } catch (_: CancellationException) {
-                            cancelTaskExecution("任务已取消：已停止 AI 工具循环。")
-                            updateChatMessage(
+                            taskController.cancelTaskExecution("已终止：用户打断了 AI 工具循环。")
+                            patchChatMessage(
                                 replyMessageId,
-                                "任务已取消：已停止后续工具步骤。",
-                                ChatMessageState.Final
+                                "已终止：用户打断了输出。",
+                                ChatMessageState.Terminated
                             )
-                            finishChat()
-                        } finally {
-                            currentTaskJob = null
                         }
                     } else {
                         handleToolIntent(
@@ -527,31 +650,49 @@ internal class ChatViewModel(
                 }
             }
             } catch (cancelled: CancellationException) {
-                throw cancelled
+                val id = replyMessageId
+                if (id != null) {
+                    val existing = uiState.value.messages.firstOrNull { it.id == id }
+                    if (existing?.state == ChatMessageState.Streaming ||
+                        existing?.state == ChatMessageState.Final
+                    ) {
+                        val keepPartial = existing.content
+                            .takeIf { it.isNotBlank() && it != "正在分析指令..." }
+                            ?.let { content ->
+                                if (content.contains("已终止") || content.contains("已停止")) {
+                                    content
+                                } else {
+                                    "$content\n\n（已终止）"
+                                }
+                            }
+                            ?: "已终止：用户打断了思考/输出。"
+                        patchChatMessage(id, keepPartial, ChatMessageState.Terminated)
+                    }
+                } else {
+                    finalizeStreamingAsTerminated()
+                }
+                if (uiState.value.taskExecution?.status == ChatTaskProgressState.Running) {
+                    taskController.cancelTaskExecution("已终止：用户打断。")
+                }
+                resolvePendingCommandReview(approved = false)
             } catch (error: Throwable) {
                 FaultIsolation.recordFault("chat:submitPrompt", error)
                 val isolated = FaultIsolation.formatIsolatedError("chat", error)
                 val id = replyMessageId
                 if (id != null) {
-                    updateChatMessage(id, isolated, ChatMessageState.Final)
+                    patchChatMessage(id, isolated, ChatMessageState.Final)
                 } else {
                     appendChat(ChatRole.Assistant, isolated, state = ChatMessageState.Final)
                 }
                 if (uiState.value.taskExecution?.status == ChatTaskProgressState.Running) {
-                    cancelTaskExecution(isolated)
+                    taskController.cancelTaskExecution(isolated)
                 }
                 updateState { it.copy(latestAiStatus = FaultCodes.ORCHESTRATOR_FAULT) }
+            } finally {
+                currentTaskJob = null
+                activeChatJob = null
                 finishChat()
             }
-        }
-    }
-
-    private suspend fun restoreHistory() {
-        val restoredMessages = ChatHistoryStore.load(appContext)
-        if (restoredMessages.isNotEmpty()) {
-            replaceMessages(restoredMessages)
-        } else {
-            replaceMessages(listOf(welcomeMessage()))
         }
     }
 
@@ -568,11 +709,14 @@ internal class ChatViewModel(
             state = state
         )
         val updatedMessages = uiState.value.messages + message
-        replaceMessages(updatedMessages)
+        replaceMessages(
+            messages = updatedMessages,
+            persistImmediately = state == ChatMessageState.Final
+        )
         return message.id
     }
 
-    private fun updateChatMessage(
+    private fun patchChatMessage(
         messageId: String,
         content: String,
         state: ChatMessageState = ChatMessageState.Streaming,
@@ -591,13 +735,33 @@ internal class ChatViewModel(
                 attachmentLabel = attachmentLabel ?: existing.attachmentLabel
             )
         }
-        replaceMessages(updatedMessages)
+        replaceMessages(
+            messages = updatedMessages,
+            persistImmediately = state == ChatMessageState.Final
+        )
     }
 
-    private fun replaceMessages(messages: List<ChatMessage>) {
-        val windowed = ChatTextLimits.windowMessages(messages)
-        runCatching { ChatHistoryStore.save(appContext, windowed) }
-        updateState { it.copy(messages = windowed) }
+    override fun updateChatMessage(
+        messageId: String,
+        content: String,
+        state: ChatMessageState,
+        attachmentLabel: String?
+    ) = patchChatMessage(messageId, content, state, attachmentLabel)
+
+    private fun replaceMessages(
+        messages: List<ChatMessage>,
+        persistImmediately: Boolean = false
+    ) {
+        sessionCoordinator.replaceMessages(messages, persistImmediately)
+    }
+
+    override fun onCleared() {
+        sessionCoordinator.onCleared()
+        activeChatJob?.cancel()
+        activeChatJob = null
+        currentTaskJob?.cancel()
+        currentTaskJob = null
+        super.onCleared()
     }
 
     private suspend fun executeUnifiedAgentTask(
@@ -619,16 +783,15 @@ internal class ChatViewModel(
                 automationTaskInputs.pageConfirmViewId
             }
         )
-        return executeAgentById(
+        return runAgentById(
             agentId = agent.id,
             arguments = arguments,
             ensureTaskUi = false,
-            // Task card already started by startTaskExecution / retryTask.
             finishTaskUi = true
         )
     }
 
-    private suspend fun executeAgentById(
+    private suspend fun runAgentById(
         agentId: String,
         arguments: Map<String, Any?> = emptyMap(),
         ensureTaskUi: Boolean,
@@ -639,7 +802,7 @@ internal class ChatViewModel(
         val dispatcher = toolDispatcher
         if (dispatcher == null) {
             if (uiState.value.taskExecution?.status == ChatTaskProgressState.Running) {
-                finishTaskExecution(success = false, summary = "任务失败：工具分发器未就绪。")
+                taskController.finishTaskExecution(success = false, summary = "任务失败：工具分发器未就绪。")
             }
             return "任务失败：工具分发器未就绪，无法执行 Agent。"
         }
@@ -649,11 +812,12 @@ internal class ChatViewModel(
             val running = uiState.value.taskExecution
                 ?.takeIf { it.status == ChatTaskProgressState.Running }
             if (running == null) {
-                startDynamicTaskExecution(
+                taskController.startDynamicTaskExecution(
                     title = agent.name,
                     summary = "正在按“${agent.stepTitles.joinToString(" -> ")}”推进任务。",
                     initialStepTitles = agent.stepTitles,
-                    originPrompt = originPrompt.ifBlank { agent.name }
+                    originPrompt = originPrompt.ifBlank { agent.name },
+                    preserveJob = currentTaskJob ?: currentCoroutineContext()[Job]
                 )
             }
         }
@@ -663,12 +827,12 @@ internal class ChatViewModel(
             arguments = arguments,
             stepListener = AgentStepListener { index, stepId, title, started, stepResult ->
                 if (started) {
-                    ensureTaskStepSlot(index, title)
-                    markTaskStepRunning(index, "正在执行$title")
+                    taskController.ensureTaskStepSlot(index, title)
+                    taskController.markTaskStepRunning(index, "正在执行$title")
                 } else {
                     val output = stepResult?.output.orEmpty()
                     val ok = stepResult?.success == true
-                    markTaskStepFinished(index, ok, output)
+                    taskController.markTaskStepFinished(index, ok, output)
                     renderedSteps += renderTaskStep(index + 1, title, output)
                     if (stepResult != null) {
                         applyAgentStepSideEffects(stepId, arguments, stepResult)
@@ -677,7 +841,7 @@ internal class ChatViewModel(
             },
             onRuntimeTaskSubmitted = if (bindRuntimeOnSubmit) {
                 { runtimeId ->
-                    trackRuntimeTask(
+                    taskController.trackRuntimeTask(
                         runtimeTaskId = runtimeId,
                         originPrompt = originPrompt.ifBlank { agent.name },
                         snapshotName = agent.name
@@ -696,7 +860,7 @@ internal class ChatViewModel(
             result.taskSnapshot?.takeIf { snapshot ->
                 snapshot.taskId.isNotBlank() &&
                     uiState.value.taskExecution?.runtimeTaskId == snapshot.taskId
-            }?.let { applyRuntimeTaskSnapshot(it) }
+            }?.let { taskController.applyRuntimeTaskSnapshot(it) }
         }
         val footer = when {
             detached -> {
@@ -710,11 +874,11 @@ internal class ChatViewModel(
             uiState.value.taskExecution?.status == ChatTaskProgressState.Running
         ) {
             if (detached) {
-                updateTaskExecution { task ->
+                taskController.updateTaskExecution { task ->
                     task.copy(summary = footer)
                 }
             } else {
-                finishTaskExecution(
+                taskController.finishTaskExecution(
                     success = result.success,
                     summary = if (result.success) {
                         "任务已完成：${agent.name}。"
@@ -727,213 +891,23 @@ internal class ChatViewModel(
         return (renderedSteps + footer).joinToString("\n\n")
     }
 
-    private suspend fun runAiToolLoop(
-        initialTool: ClawTool,
-        initialArguments: Map<String, String>,
-        initialAssistantMessage: String?,
-        normalizedPrompt: String,
-        replyMessageId: String,
-        modelSettings: ModelSettings,
-        automationUiState: OverviewAutomationState,
-        onModelCallSuccess: () -> Unit
-    ) {
-        val dispatcher = toolDispatcher
-        if (dispatcher == null) {
-            handleToolIntent(
-                tool = initialTool,
-                arguments = initialArguments,
-                normalizedPrompt = normalizedPrompt,
-                replyMessageId = replyMessageId,
-                assistantMessage = initialAssistantMessage,
-                reflectResultWithModel = true,
-                modelSettings = modelSettings,
-                automationUiState = automationUiState,
-                onModelCallSuccess = onModelCallSuccess
-            )
-            return
-        }
+    override suspend fun executeAgentById(
+        agentId: String,
+        arguments: Map<String, Any?>,
+        ensureTaskUi: Boolean,
+        originPrompt: String,
+        finishTaskUi: Boolean,
+        bindRuntimeOnSubmit: Boolean
+    ): String = runAgentById(
+        agentId = agentId,
+        arguments = arguments,
+        ensureTaskUi = ensureTaskUi,
+        originPrompt = originPrompt,
+        finishTaskUi = finishTaskUi,
+        bindRuntimeOnSubmit = bindRuntimeOnSubmit
+    )
 
-        val steps = mutableListOf<AiToolStepRecord>()
-        var tool = initialTool
-        var arguments = initialArguments
-        var assistantMessage = initialAssistantMessage
-        val maxTurns = AiAgentOrchestrator.MAX_TOOL_LOOP_TURNS
-        startDynamicTaskExecution(
-            title = "AI 工具循环",
-            summary = "正在按模型决策执行工具，最多 $maxTurns 步；可随时取消。",
-            initialStepTitles = listOf(tool.displayName),
-            originPrompt = normalizedPrompt
-        )
-
-        repeat(maxTurns) { turnIndex ->
-            currentCoroutineContext().ensureActive()
-            val turn = turnIndex + 1
-            ensureTaskStepSlot(turnIndex, tool.displayName)
-            markTaskStepRunning(turnIndex, "正在执行 ${tool.displayName}")
-            updateState { state ->
-                state.copy(latestAiStatus = "AI 工具循环 $turn/$maxTurns: ${tool.displayName}")
-            }
-            updateChatMessage(
-                replyMessageId,
-                assistantMessage ?: "正在执行 ${tool.displayName}（第 $turn 步）...",
-                ChatMessageState.Streaming
-            )
-
-            val enrichedArgs = enrichToolArguments(tool, arguments, automationUiState, normalizedPrompt)
-            val (stepSuccess, stepOutput) = if (tool == ClawTool.RUN_AGENT) {
-                val agentId = enrichedArgs.stringArg("agent_id", "agent", "id", "name")
-                val reply = if (agentId.isBlank()) {
-                    "失败: agent_id 不能为空"
-                } else {
-                    executeAgentById(
-                        agentId = agentId,
-                        arguments = enrichedArgs.mapValues { (_, value) -> value },
-                        ensureTaskUi = false,
-                        finishTaskUi = false,
-                        // Bind Runtime task id so cancel / event sync reach the daemon task.
-                        bindRuntimeOnSubmit = true,
-                        originPrompt = normalizedPrompt
-                    )
-                }
-                val ok = !reply.startsWith("失败") && !reply.contains("任务中止")
-                ok to reply
-            } else {
-                var result = dispatcher.execute(tool, enrichedArgs.mapValues { (_, value) -> value })
-                overviewController.applyChatToolEffects(tool, enrichedArgs, result)
-                if (result.captureArtifact != null) {
-                    dispatcher.rememberCapture(result.captureArtifact)
-                }
-                syncRuntimeTaskTracking(tool, enrichedArgs, result, normalizedPrompt)
-                if (tool == ClawTool.TASK_SUBMIT && result.success) {
-                    result = awaitSubmittedRuntimeTask(dispatcher, result)
-                }
-                result.success to result.output
-            }
-            markTaskStepFinished(turnIndex, stepSuccess, stepOutput)
-            steps += AiToolStepRecord(
-                tool = tool,
-                arguments = enrichedArgs,
-                success = stepSuccess,
-                output = stepOutput
-            )
-
-            val remainingTurns = maxTurns - turn
-            if (remainingTurns <= 0) {
-                val allOk = steps.all { it.success }
-                finishAiLoopTaskExecution(
-                    success = allOk,
-                    summary = if (allOk) {
-                        "AI 工具循环已结束（达到最大步数）。"
-                    } else {
-                        "AI 工具循环已结束：部分步骤失败。"
-                    }
-                )
-                finalizeToolReply(
-                    replyMessageId = replyMessageId,
-                    normalizedPrompt = normalizedPrompt,
-                    tool = tool,
-                    arguments = enrichedArgs,
-                    assistantMessage = assistantMessage,
-                    result = ChatAiLoop.buildTranscript(steps),
-                    reflectResultWithModel = true,
-                    modelSettings = modelSettings,
-                    onModelCallSuccess = onModelCallSuccess
-                )
-                return
-            }
-
-            currentCoroutineContext().ensureActive()
-            val continuePlan = AiAgentOrchestrator.continueAfterTool(
-                settings = modelSettings,
-                originalPrompt = normalizedPrompt,
-                steps = steps,
-                runtimeSnapshot = currentAiRuntimeSnapshot(),
-                remainingTurns = remainingTurns
-            ).fold(
-                onSuccess = {
-                    onModelCallSuccess()
-                    it
-                },
-                onFailure = { error ->
-                    finishAiLoopTaskExecution(
-                        success = false,
-                        summary = "AI 续步失败，已停止工具循环。"
-                    )
-                    updateState { state ->
-                        state.copy(latestAiStatus = "AI 续步失败，已回退原始结果")
-                    }
-                    updateChatMessage(
-                        replyMessageId,
-                        buildAssistantReply(
-                            assistantMessage,
-                            "模型续步失败：${error.message ?: error::class.java.simpleName}",
-                            ChatAiLoop.buildTranscript(steps)
-                        ),
-                        ChatMessageState.Final
-                    )
-                    finishChat()
-                    return
-                }
-            )
-
-            when (continuePlan) {
-                is AiAgentPlan.AssistantReply -> {
-                    val allOk = steps.all { it.success }
-                    finishAiLoopTaskExecution(
-                        success = allOk,
-                        summary = if (allOk) {
-                            "AI 工具循环已完成。"
-                        } else {
-                            "AI 工具循环已结束：存在失败步骤。"
-                        }
-                    )
-                    updateState { state -> state.copy(latestAiStatus = "AI 工具循环已完成") }
-                    updateChatMessage(
-                        replyMessageId,
-                        buildAssistantReply(assistantMessage, continuePlan.message, ChatAiLoop.buildTranscript(steps)),
-                        ChatMessageState.Final
-                    )
-                    finishChat()
-                    return
-                }
-
-                is AiAgentPlan.ToolExecution -> {
-                    val nextEnriched = enrichToolArguments(
-                        tool = continuePlan.tool,
-                        arguments = continuePlan.arguments,
-                        automationUiState = automationUiState,
-                        normalizedPrompt = normalizedPrompt
-                    )
-                    val duplicated = steps.any {
-                        it.tool == continuePlan.tool && it.arguments == nextEnriched
-                    }
-                    if (duplicated) {
-                        finishAiLoopTaskExecution(
-                            success = steps.all { it.success },
-                            summary = "AI 工具循环已停止（重复步骤）。"
-                        )
-                        updateState { state -> state.copy(latestAiStatus = "AI 工具循环已停止（重复步骤）") }
-                        updateChatMessage(
-                            replyMessageId,
-                            buildAssistantReply(
-                                continuePlan.assistantMessage,
-                                "检测到重复工具步骤，已停止继续调用。",
-                                ChatAiLoop.buildTranscript(steps)
-                            ),
-                            ChatMessageState.Final
-                        )
-                        finishChat()
-                        return
-                    }
-                    tool = continuePlan.tool
-                    arguments = continuePlan.arguments
-                    assistantMessage = continuePlan.assistantMessage
-                }
-            }
-        }
-    }
-
-    private fun currentAiRuntimeSnapshot(): AiRuntimeSnapshot {
+    override fun currentAiRuntimeSnapshot(): AiRuntimeSnapshot {
         val overviewUiState = overviewController.uiState.value
         return AiRuntimeSnapshot(
             sessionSummary = overviewUiState.runtimeState.session.summary,
@@ -942,7 +916,7 @@ internal class ChatViewModel(
         )
     }
 
-    private fun enrichToolArguments(
+    override fun enrichToolArguments(
         tool: ClawTool,
         arguments: Map<String, String>,
         automationUiState: OverviewAutomationState,
@@ -1001,18 +975,33 @@ internal class ChatViewModel(
         }
     }
 
-    private suspend fun awaitSubmittedRuntimeTask(
+    override suspend fun awaitSubmittedRuntimeTask(
         dispatcher: ClawToolDispatcher,
         submitResult: ClawToolCallResult
     ): ClawToolCallResult {
-        val taskId = submitResult.runtimeTaskId?.takeIf { it.isNotBlank() }
-            ?: return submitResult
+        val taskId = RuntimeTaskPoller.resolveTaskId(submitResult)
+            ?: return submitResult.copy(
+                success = false,
+                output = buildString {
+                    append(submitResult.output.trim())
+                    if (isNotEmpty()) append("\n\n")
+                    append("失败: task_submit 未返回可跟踪的 task_id，无法轮询。")
+                },
+                error = submitResult.error ?: "missing_task_id"
+            )
+        if (uiState.value.taskExecution?.status == ChatTaskProgressState.Running) {
+            taskController.trackRuntimeTask(
+                runtimeTaskId = taskId,
+                originPrompt = uiState.value.taskExecution?.originPrompt.orEmpty(),
+                snapshotName = submitResult.taskSnapshot?.name
+            )
+        }
         val awaited = RuntimeTaskPoller.awaitTerminal(
             dispatcher = dispatcher,
             taskId = taskId,
             onSnapshot = { snapshot ->
                 if (uiState.value.taskExecution?.runtimeTaskId == snapshot.taskId) {
-                    applyRuntimeTaskSnapshot(snapshot)
+                    taskController.applyRuntimeTaskSnapshot(snapshot)
                 }
             }
         )
@@ -1029,22 +1018,7 @@ internal class ChatViewModel(
      * Finish the AI-loop task card only when it is still local-owned.
      * If a Runtime task id is bound and still Running, keep the card open for event sync.
      */
-    private fun finishAiLoopTaskExecution(success: Boolean, summary: String) {
-        val task = uiState.value.taskExecution ?: return
-        if (task.status != ChatTaskProgressState.Running) {
-            return
-        }
-        val runtimeId = task.runtimeTaskId?.trim().orEmpty()
-        if (runtimeId.isNotEmpty()) {
-            updateTaskExecution { current ->
-                current.copy(summary = summary)
-            }
-            return
-        }
-        finishTaskExecution(success = success, summary = summary)
-    }
-
-    private fun syncRuntimeTaskTracking(
+    override fun syncRuntimeTaskTracking(
         tool: ClawTool,
         arguments: Map<String, String>,
         result: ClawToolCallResult,
@@ -1053,19 +1027,19 @@ internal class ChatViewModel(
         when (tool) {
             ClawTool.TASK_SUBMIT -> {
                 result.runtimeTaskId?.takeIf { it.isNotBlank() }?.let { runtimeId ->
-                    trackRuntimeTask(
+                    taskController.trackRuntimeTask(
                         runtimeTaskId = runtimeId,
                         originPrompt = normalizedPrompt,
                         snapshotName = arguments["name"]
                     )
                 }
-                result.taskSnapshot?.let { applyRuntimeTaskSnapshot(it) }
+                result.taskSnapshot?.let { taskController.applyRuntimeTaskSnapshot(it) }
             }
-            ClawTool.TASK_GET, ClawTool.TASK_CANCEL -> {
+            ClawTool.TASK_GET, ClawTool.TASK_CANCEL, ClawTool.TASK_WAIT -> {
                 result.taskSnapshot?.let { snapshot ->
                     val current = uiState.value.taskExecution ?: return@let
                     if (current.runtimeTaskId == snapshot.taskId) {
-                        applyRuntimeTaskSnapshot(snapshot)
+                        taskController.applyRuntimeTaskSnapshot(snapshot)
                     }
                 }
             }
@@ -1148,7 +1122,7 @@ internal class ChatViewModel(
         }
     }
 
-    private suspend fun finalizeToolReply(
+    override suspend fun finalizeToolReply(
         replyMessageId: String,
         normalizedPrompt: String,
         tool: ClawTool,
@@ -1189,12 +1163,72 @@ internal class ChatViewModel(
         } else {
             null
         }
-        updateChatMessage(
+        patchChatMessage(
             replyMessageId,
             buildAssistantReply(assistantMessage, reflectionMessage, result),
             ChatMessageState.Final
         )
         finishChat()
+    }
+
+    override suspend fun handleToolIntentWhenDispatcherMissing(
+        tool: ClawTool,
+        arguments: Map<String, String>,
+        normalizedPrompt: String,
+        replyMessageId: String,
+        assistantMessage: String?,
+        reflectResultWithModel: Boolean,
+        modelSettings: ModelSettings,
+        automationUiState: OverviewAutomationState,
+        onModelCallSuccess: () -> Unit
+    ) {
+        handleToolIntent(
+            tool = tool,
+            arguments = arguments,
+            normalizedPrompt = normalizedPrompt,
+            replyMessageId = replyMessageId,
+            assistantMessage = assistantMessage,
+            reflectResultWithModel = reflectResultWithModel,
+            modelSettings = modelSettings,
+            automationUiState = automationUiState,
+            onModelCallSuccess = onModelCallSuccess
+        )
+    }
+
+    override fun applyChatToolEffects(
+        tool: ClawTool,
+        arguments: Map<String, String>,
+        result: ClawToolCallResult
+    ) {
+        overviewController.applyChatToolEffects(tool, arguments, result)
+    }
+
+    override fun finishAiLoopTaskExecution(success: Boolean, summary: String) =
+        taskController.finishAiLoopTaskExecution(success, summary)
+
+    override fun ensureTaskStepSlot(stepIndex: Int, title: String) =
+        taskController.ensureTaskStepSlot(stepIndex, title)
+
+    override fun markTaskStepRunning(stepIndex: Int, detail: String) =
+        taskController.markTaskStepRunning(stepIndex, detail)
+
+    override fun markTaskStepFinished(stepIndex: Int, success: Boolean, detail: String) =
+        taskController.markTaskStepFinished(stepIndex, success, detail)
+
+    override fun startDynamicTaskExecution(
+        title: String,
+        summary: String,
+        initialStepTitles: List<String>,
+        originPrompt: String,
+        preserveJob: Job?
+    ) {
+        taskController.startDynamicTaskExecution(
+            title = title,
+            summary = summary,
+            initialStepTitles = initialStepTitles,
+            originPrompt = originPrompt,
+            preserveJob = preserveJob
+        )
     }
 
     private suspend fun handleToolIntent(
@@ -1225,14 +1259,27 @@ internal class ChatViewModel(
                     )
                     return
                 }
-                updateChatMessage(
+                if (!awaitCommandReview(tool, arguments)) {
+                    finalizeToolReply(
+                        replyMessageId = replyMessageId,
+                        normalizedPrompt = normalizedPrompt,
+                        tool = tool,
+                        arguments = arguments,
+                        assistantMessage = assistantMessage,
+                        result = "已拒绝：用户未批准 Agent 调用 $agentId。",
+                        reflectResultWithModel = false,
+                        modelSettings = modelSettings,
+                        onModelCallSuccess = onModelCallSuccess
+                    )
+                    return
+                }
+                patchChatMessage(
                     replyMessageId,
                     assistantMessage ?: "正在执行 Agent $agentId...",
                     ChatMessageState.Streaming
                 )
-                currentTaskJob = currentCoroutineContext()[Job]
                 try {
-                    val reply = executeAgentById(
+                    val reply = runAgentById(
                         agentId = agentId,
                         arguments = arguments.mapValues { (_, value) -> value },
                         ensureTaskUi = true,
@@ -1250,15 +1297,13 @@ internal class ChatViewModel(
                         onModelCallSuccess = onModelCallSuccess
                     )
                 } catch (_: CancellationException) {
-                    cancelTaskExecution("任务已取消：已停止 Agent 步骤。")
-                    updateChatMessage(
+                    taskController.cancelTaskExecution("已终止：用户打断了 Agent 步骤。")
+                    patchChatMessage(
                         replyMessageId,
-                        "任务已取消：已停止 Agent 步骤。",
-                        ChatMessageState.Final
+                        "已终止：用户打断了 Agent 步骤。",
+                        ChatMessageState.Terminated
                     )
                     finishChat()
-                } finally {
-                    currentTaskJob = null
                 }
             }
 
@@ -1287,7 +1332,7 @@ internal class ChatViewModel(
                 if (tool == ClawTool.EXECUTE_SHELL_LIMITED &&
                     enrichedArgs.stringArg("command").isBlank()
                 ) {
-                    updateChatMessage(
+                    patchChatMessage(
                         replyMessageId,
                         mergeAssistantMessage(
                             assistantMessage,
@@ -1333,11 +1378,25 @@ internal class ChatViewModel(
                     }
                     else -> "正在执行 ${tool.displayName}..."
                 }
-                updateChatMessage(
+                patchChatMessage(
                     replyMessageId,
                     assistantMessage ?: streamingLabel,
                     ChatMessageState.Streaming
                 )
+                if (!awaitCommandReview(tool, enrichedArgs)) {
+                    finalizeToolReply(
+                        replyMessageId = replyMessageId,
+                        normalizedPrompt = normalizedPrompt,
+                        tool = tool,
+                        arguments = enrichedArgs,
+                        assistantMessage = assistantMessage,
+                        result = "已拒绝：用户未批准执行 ${tool.displayName}。",
+                        reflectResultWithModel = false,
+                        modelSettings = modelSettings,
+                        onModelCallSuccess = onModelCallSuccess
+                    )
+                    return
+                }
                 val result = dispatcher.execute(
                     tool,
                     enrichedArgs.mapValues { (_, value) -> value }
@@ -1347,19 +1406,57 @@ internal class ChatViewModel(
                     dispatcher.rememberCapture(result.captureArtifact)
                 }
                 syncRuntimeTaskTracking(tool, enrichedArgs, result, normalizedPrompt)
+                val polled = if (tool == ClawTool.TASK_SUBMIT &&
+                    result.success &&
+                    !isRebootOrientedTaskForViewModel(enrichedArgs)
+                ) {
+                    awaitSubmittedRuntimeTask(dispatcher, result)
+                } else {
+                    result
+                }
                 finalizeToolReply(
                     replyMessageId = replyMessageId,
                     normalizedPrompt = normalizedPrompt,
                     tool = tool,
                     arguments = enrichedArgs,
                     assistantMessage = assistantMessage,
-                    result = formatChatToolOutput(tool, result),
+                    result = formatChatToolOutput(tool, polled),
                     reflectResultWithModel = reflectResultWithModel,
                     modelSettings = modelSettings,
                     onModelCallSuccess = onModelCallSuccess
                 )
             }
         }
+    }
+
+    private fun buildRetrievedContext(prompt: String): String {
+        val chatHits = ChatContextIndexStore.search(appContext, prompt, limit = 4)
+        val memoryHits = MemoryGraphStore.search(appContext, prompt, limit = 4)
+        val fileHits = FileIndexStore.search(appContext, prompt, limit = 4)
+        if (chatHits.isEmpty() && memoryHits.isEmpty() && fileHits.isEmpty()) return ""
+        return buildString {
+            if (chatHits.isNotEmpty()) {
+                appendLine("聊天索引：")
+                chatHits.forEach { hit ->
+                    appendLine("- [${hit.role}] ${hit.snippet.take(160)}")
+                }
+            }
+            if (memoryHits.isNotEmpty()) {
+                appendLine("记忆图谱：")
+                memoryHits.forEach { node ->
+                    appendLine("- ${node.label}: ${node.content.take(160)}")
+                }
+            }
+            if (fileHits.isNotEmpty()) {
+                appendLine("文件索引：")
+                fileHits.forEach { path -> appendLine("- $path") }
+            }
+        }.trim()
+    }
+
+    private fun isRebootOrientedTaskForViewModel(arguments: Map<String, String>): Boolean {
+        val blob = arguments.values.joinToString(" ").lowercase()
+        return blob.contains("reboot") || blob.contains("svc power reboot")
     }
 
     private fun welcomeMessage(): ChatMessage {
@@ -1369,384 +1466,15 @@ internal class ChatViewModel(
         )
     }
 
-    private fun finishChat() {
+    override fun finishChat() {
         updateState { it.copy(chatBusy = false) }
     }
 
-    private fun updateState(transform: (ChatUiState) -> ChatUiState) {
+    override fun updateState(transform: (ChatUiState) -> ChatUiState) {
         _uiState.update(transform)
     }
 
-    private fun startTaskExecution(
-        action: ChatTaskAction,
-        originPrompt: String,
-        retryCount: Int = 0,
-        retryFromTaskId: String? = null
-    ) {
-        val agent = action.toAgentDefinition()
-        val stepFlow = agent.stepTitles.joinToString(" -> ")
-        beginTaskExecution(
-            title = agent.name,
-            summary = "正在按“$stepFlow”推进任务。",
-            stepTitles = agent.stepTitles,
-            originPrompt = originPrompt,
-            taskAction = action,
-            retryCount = retryCount,
-            retryFromTaskId = retryFromTaskId
-        )
-    }
-
-    private fun startDynamicTaskExecution(
-        title: String,
-        summary: String,
-        initialStepTitles: List<String>,
-        originPrompt: String
-    ) {
-        beginTaskExecution(
-            title = title,
-            summary = summary,
-            stepTitles = initialStepTitles.ifEmpty { listOf("执行中") },
-            originPrompt = originPrompt,
-            taskAction = null
-        )
-    }
-
-    private fun beginTaskExecution(
-        title: String,
-        summary: String,
-        stepTitles: List<String>,
-        originPrompt: String,
-        taskAction: ChatTaskAction?,
-        retryCount: Int = 0,
-        retryFromTaskId: String? = null
-    ) {
-        if (currentTaskJob?.isActive == true) {
-            currentTaskJob?.cancel(CancellationException("被新任务替换：$title"))
-            currentTaskJob = null
-        }
-        val previousRuntimeTaskId = uiState.value.taskExecution
-            ?.takeIf { it.status == ChatTaskProgressState.Running }
-            ?.runtimeTaskId
-            ?.takeIf { it.isNotBlank() }
-        if (!previousRuntimeTaskId.isNullOrBlank()) {
-            requestCancelRuntimeTask(previousRuntimeTaskId)
-        }
-        val startedAt = System.currentTimeMillis()
-        updateState {
-            val archivedHistory = it.taskExecution?.let { existingTask ->
-                val archivedTask = if (existingTask.status == ChatTaskProgressState.Running) {
-                    existingTask.copy(
-                        status = ChatTaskProgressState.Cancelled,
-                        summary = "已被新任务替换，未继续执行。",
-                        finishedAtEpochMs = startedAt,
-                        failureReason = "被新任务替换",
-                        failure = ChatTaskFailureState(
-                            code = "task_replaced",
-                            summary = "任务被替换",
-                            rawDetail = "启动新任务前，先前运行中的任务已标记为取消"
-                        ),
-                        steps = existingTask.steps.map { step ->
-                            if (step.status == ChatTaskProgressState.Running ||
-                                step.status == ChatTaskProgressState.Pending
-                            ) {
-                                step.copy(
-                                    status = ChatTaskProgressState.Cancelled,
-                                    detail = "被新任务替换",
-                                    finishedAtEpochMs = startedAt
-                                )
-                            } else {
-                                step
-                            }
-                        }
-                    )
-                } else {
-                    existingTask
-                }
-                appendTaskHistory(it.taskHistory, archivedTask)
-            } ?: it.taskHistory
-            it.copy(
-                taskExecution = ChatTaskExecutionState(
-                    taskId = buildChatTaskId(),
-                    title = title,
-                    summary = summary,
-                    status = ChatTaskProgressState.Running,
-                    startedAtEpochMs = startedAt,
-                    steps = stepTitles.map { stepTitle ->
-                        ChatTaskStepState(title = stepTitle)
-                    },
-                    finishedAtEpochMs = 0L,
-                    taskAction = taskAction,
-                    runtimeTaskId = null,
-                    failureReason = null,
-                    originPrompt = originPrompt,
-                    retryCount = retryCount,
-                    retryFromTaskId = retryFromTaskId,
-                    failure = null
-                ),
-                taskHistory = archivedHistory
-            )
-        }
-        persistTaskState()
-    }
-
-    private fun isActiveRuntimeTaskState(state: String): Boolean {
-        return when (state.lowercase()) {
-            "created", "queued", "running", "retrying", "waitingsignal", "compensating" -> true
-            else -> false
-        }
-    }
-
-    private fun ensureTaskStepSlot(stepIndex: Int, title: String) {
-        updateTaskExecution { task ->
-            if (stepIndex < task.steps.size) {
-                val current = task.steps[stepIndex]
-                if (current.title == title) {
-                    task
-                } else {
-                    task.copy(
-                        steps = task.steps.mapIndexed { index, step ->
-                            if (index == stepIndex) step.copy(title = title) else step
-                        }
-                    )
-                }
-            } else {
-                val padded = task.steps.toMutableList()
-                while (padded.size < stepIndex) {
-                    padded += ChatTaskStepState(title = "步骤 ${padded.size + 1}")
-                }
-                padded += ChatTaskStepState(title = title)
-                task.copy(steps = padded)
-            }
-        }
-    }
-
-    private fun bindRuntimeTaskId(runtimeTaskId: String) {
-        updateTaskExecution { task ->
-            task.copy(runtimeTaskId = runtimeTaskId)
-        }
-    }
-
-    private fun requestCancelRuntimeTask(runtimeTaskId: String) {
-        if (runtimeTaskId.isBlank()) {
-            return
-        }
-        viewModelScope.launch {
-            runCatching {
-                toolDispatcher?.execute(
-                    ClawTool.TASK_CANCEL,
-                    mapOf("task_id" to runtimeTaskId)
-                )
-            }
-        }
-    }
-
-    private fun trackRuntimeTask(
-        runtimeTaskId: String,
-        originPrompt: String,
-        snapshotName: String? = null
-    ) {
-        val current = uiState.value.taskExecution
-        if (current?.status == ChatTaskProgressState.Running) {
-            val previousId = current.runtimeTaskId
-            when {
-                previousId.isNullOrBlank() || previousId == runtimeTaskId -> {
-                    bindRuntimeTaskId(runtimeTaskId)
-                    if (!snapshotName.isNullOrBlank()) {
-                        updateTaskExecution { task ->
-                            task.copy(
-                                title = snapshotName,
-                                summary = "正在跟踪 Runtime 任务 $runtimeTaskId"
-                            )
-                        }
-                    }
-                }
-                else -> {
-                    // Switch tracking to a new Runtime task; stop the previous daemon job.
-                    requestCancelRuntimeTask(previousId)
-                    startDynamicTaskExecution(
-                        title = snapshotName?.takeIf { it.isNotBlank() } ?: "Runtime 任务",
-                        summary = "正在跟踪 Runtime 任务 $runtimeTaskId（需保持事件订阅）。",
-                        initialStepTitles = listOf("排队/执行中"),
-                        originPrompt = originPrompt
-                    )
-                    bindRuntimeTaskId(runtimeTaskId)
-                }
-            }
-            return
-        }
-        startDynamicTaskExecution(
-            title = snapshotName?.takeIf { it.isNotBlank() } ?: "Runtime 任务",
-            summary = "正在跟踪 Runtime 任务 $runtimeTaskId（需保持事件订阅）。",
-            initialStepTitles = listOf("排队/执行中"),
-            originPrompt = originPrompt
-        )
-        bindRuntimeTaskId(runtimeTaskId)
-    }
-
-    internal fun applyRuntimeTaskSnapshot(snapshot: ClawRuntimeTaskSnapshot) {
-        updateTaskExecution { task ->
-            task.withRuntimeSnapshot(snapshot)
-        }
-    }
-
-    private fun markTaskStepRunning(stepIndex: Int, detail: String) {
-        val startedAt = System.currentTimeMillis()
-        updateTaskExecution { task ->
-            task.copy(
-                steps = task.steps.mapIndexed { index, step ->
-                    if (index == stepIndex) {
-                        step.copy(
-                            status = ChatTaskProgressState.Running,
-                            detail = detail,
-                            startedAtEpochMs = if (step.startedAtEpochMs > 0L) step.startedAtEpochMs else startedAt
-                        )
-                    } else {
-                        step
-                    }
-                }
-            )
-        }
-    }
-
-    private fun markTaskStepFinished(stepIndex: Int, success: Boolean, detail: String) {
-        val finishedAt = System.currentTimeMillis()
-        updateTaskExecution { task ->
-            task.copy(
-                steps = task.steps.mapIndexed { index, step ->
-                    if (index == stepIndex) {
-                        step.copy(
-                            status = if (success) ChatTaskProgressState.Succeeded else ChatTaskProgressState.Failed,
-                            detail = detail,
-                            finishedAtEpochMs = finishedAt,
-                            startedAtEpochMs = if (step.startedAtEpochMs > 0L) step.startedAtEpochMs else finishedAt
-                        )
-                    } else {
-                        step
-                    }
-                }
-            )
-        }
-    }
-
-    private fun finishTaskExecution(success: Boolean, summary: String) {
-        val finishedAt = System.currentTimeMillis()
-        updateTaskExecution { task ->
-            val failureDetail = if (!success) {
-                task.steps.firstOrNull { it.status == ChatTaskProgressState.Failed }?.detail ?: summary
-            } else {
-                null
-            }
-            task.copy(
-                summary = summary,
-                status = if (success) ChatTaskProgressState.Succeeded else ChatTaskProgressState.Failed,
-                finishedAtEpochMs = finishedAt,
-                failureReason = failureDetail,
-                failure = if (success) {
-                    null
-                } else {
-                    buildTaskFailureState(
-                        summary = summary,
-                        rawDetail = failureDetail.orEmpty()
-                    )
-                }
-            )
-        }
-    }
-
-    private fun cancelTaskExecution(summary: String) {
-        val finishedAt = System.currentTimeMillis()
-        updateTaskExecution { task ->
-            task.copy(
-                summary = summary,
-                status = ChatTaskProgressState.Cancelled,
-                finishedAtEpochMs = finishedAt,
-                failureReason = summary,
-                failure = ChatTaskFailureState(
-                    code = "task_cancelled",
-                    summary = "任务已取消",
-                    rawDetail = summary
-                ),
-                steps = task.steps.map { step ->
-                    if (step.status == ChatTaskProgressState.Running) {
-                        step.copy(
-                            status = ChatTaskProgressState.Cancelled,
-                            detail = "用户已取消该步骤",
-                            startedAtEpochMs = if (step.startedAtEpochMs > 0L) step.startedAtEpochMs else finishedAt,
-                            finishedAtEpochMs = finishedAt
-                        )
-                    } else {
-                        step
-                    }
-                }
-            )
-        }
-    }
-
-    private fun updateTaskExecution(transform: (ChatTaskExecutionState) -> ChatTaskExecutionState) {
-        updateState { state ->
-            val task = state.taskExecution ?: return@updateState state
-            state.copy(taskExecution = transform(task))
-        }
-        persistTaskState()
-    }
-
-    private fun buildChatTaskId(): String {
-        return "chat-task-${System.currentTimeMillis()}"
-    }
-
-    private fun appendTaskHistory(
-        history: List<ChatTaskExecutionState>,
-        task: ChatTaskExecutionState
-    ): List<ChatTaskExecutionState> {
-        return listOf(task) + history.filterNot { it.taskId == task.taskId }
-            .take(MAX_TASK_HISTORY_ITEMS - 1)
-    }
-
-    private fun ChatTaskExecutionState.normalizeRestoredTask(): ChatTaskExecutionState {
-        if (status != ChatTaskProgressState.Running) {
-            return this
-        }
-        // Runtime-backed tasks can be reattached via task_get / task_list after restart.
-        if (!runtimeTaskId.isNullOrBlank()) {
-            return copy(
-                summary = "应用重启后正在重新同步 Runtime 任务 $runtimeTaskId…",
-                failureReason = null,
-                failure = null
-            )
-        }
-        val restoredAt = System.currentTimeMillis()
-        return copy(
-            status = ChatTaskProgressState.Cancelled,
-            summary = "应用已重启，之前运行中的本地任务未继续执行。",
-            finishedAtEpochMs = if (finishedAtEpochMs > 0L) finishedAtEpochMs else restoredAt,
-            failureReason = "应用重启导致任务中断",
-            failure = ChatTaskFailureState(
-                code = "app_restarted",
-                summary = "应用重启导致任务中断",
-                rawDetail = "应用恢复时发现该本地任务仍处于执行中，且无法恢复协程，已自动标记为取消"
-            ),
-            steps = steps.map { step ->
-                if (step.status == ChatTaskProgressState.Running) {
-                    step.copy(
-                        status = ChatTaskProgressState.Cancelled,
-                        detail = "应用重启后，该步骤未继续执行",
-                        finishedAtEpochMs = if (step.finishedAtEpochMs > 0L) {
-                            step.finishedAtEpochMs
-                        } else {
-                            restoredAt
-                        }
-                    )
-                } else {
-                    step
-                }
-            }
-        )
-    }
-
     companion object {
-        private const val MAX_TASK_HISTORY_ITEMS = 20
-        private const val MAX_PROMPT_LENGTH = 8192
-
         fun provideFactory(
             appContext: Context,
             overviewController: OverviewController,
@@ -1767,36 +1495,6 @@ internal class ChatViewModel(
             }
         }
     }
-}
-
-private fun buildTaskFailureState(
-    summary: String,
-    rawDetail: String
-): ChatTaskFailureState {
-    val normalized = "$summary\n$rawDetail".lowercase()
-    val code = when {
-        "页面确认" in summary || "matched=false" in normalized -> "page_confirm_failed"
-        "点击前检查" in summary || "target" in normalized -> "click_precheck_failed"
-        "安全点击" in summary || "accepted=false" in normalized -> "safe_tap_failed"
-        "runtime probe" in normalized -> "runtime_probe_failed"
-        "能力" in summary || "capabilities" in normalized -> "capabilities_failed"
-        "denied" in normalized -> "permission_denied"
-        else -> "task_failed"
-    }
-    val failureSummary = when (code) {
-        "page_confirm_failed" -> "页面确认未通过"
-        "click_precheck_failed" -> "点击前检查未通过"
-        "safe_tap_failed" -> "安全点击未成功"
-        "runtime_probe_failed" -> "Runtime Probe 未通过"
-        "capabilities_failed" -> "能力读取未通过"
-        "permission_denied" -> "权限或执行条件不足"
-        else -> summary.ifBlank { "任务执行失败" }
-    }
-    return ChatTaskFailureState(
-        code = code,
-        summary = failureSummary,
-        rawDetail = rawDetail.ifBlank { summary }
-    )
 }
 
 @Composable

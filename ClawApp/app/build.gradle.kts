@@ -56,12 +56,12 @@ val hasReleaseSigningConfig = !releaseKeystorePath.isNullOrEmpty() &&
 
 android {
     namespace = "com.clawdroid.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.clawdroid.app"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
         buildConfigField("String", "CLAW_RUNTIME_SHARED_SECRET", "\"$clawRuntimeSharedSecret\"")
@@ -155,6 +155,12 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("org.commonmark:commonmark:0.22.0")
+    implementation("org.commonmark:commonmark-ext-gfm-tables:0.22.0")
+    implementation("com.mikepenz:multiplatform-markdown-renderer:0.26.0")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.26.0")
+    implementation("androidx.webkit:webkit:1.11.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("io.mockk:mockk:1.13.12")

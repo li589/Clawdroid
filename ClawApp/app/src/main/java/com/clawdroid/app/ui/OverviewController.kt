@@ -11,6 +11,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clawdroid.app.BuildConfig
 import com.clawdroid.app.env.LocalEnvironmentStatus
 import com.clawdroid.app.env.RootActionResult
+import com.clawdroid.app.env.ShizukuSupport
 import com.clawdroid.app.env.StartupAutoGrantPlan
 import com.clawdroid.app.env.buildLocalEnvironmentDiagnosis
 import com.clawdroid.app.env.buildStartupAutoGrantPlan
@@ -39,7 +40,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 internal class OverviewController(
-    appContext: Context,
+    private val appContext: Context,
     private val runtimeClient: ClawRuntimeClient,
     private val toolExecutor: ClawToolExecutor,
     private val previewLimitBytes: Int,
@@ -146,7 +147,12 @@ internal class OverviewController(
         LiveXposedViewStore.addListener(xposedViewListener)
         if (autoStart) {
             safeLaunch("overview:startup", onError = onOverviewError("overview:startup") { msg ->
-                updatePermissionState { it.copy(permissionActionStatus = msg) }
+                updatePermissionState {
+                    it.copy(
+                        permissionActionStatus = msg,
+                        environmentOpsFeedback = msg
+                    )
+                }
             }) {
                 performStartupChecks()
             }
@@ -157,23 +163,35 @@ internal class OverviewController(
 
     fun refreshLocalEnvironment() {
         safeLaunch("overview:env", onError = onOverviewError("overview:env") { msg ->
-            updatePermissionState { it.copy(permissionActionStatus = msg) }
+            updatePermissionState { it.copy(environmentOpsFeedback = msg) }
         }) {
+            updatePermissionState {
+                it.copy(
+                    localEnvironmentSummary = "检测中...",
+                    environmentOpsFeedback = ""
+                )
+            }
             refreshLocalEnvironmentState(includeRootCheck = true)
+            updatePermissionState {
+                it.copy(environmentOpsFeedback = "环境检测完成")
+            }
         }
     }
 
     suspend fun refreshLocalEnvironmentState(includeRootCheck: Boolean) {
-        updatePermissionState { it.copy(localEnvironmentSummary = "检测中...") }
         val status = environmentGateway.probeLocalEnvironment(includeRootCheck = includeRootCheck)
-
         environmentGateway.rememberGrantedPermissions(status)
+        val remembered = environmentGateway.loadStartupPermissionState()
         updatePermissionState {
             it.copy(
                 localEnvironmentStatus = status,
                 localEnvironmentSummary = buildLocalEnvironmentSummary(status),
                 localEnvironmentDiagnosis = buildLocalEnvironmentDiagnosis(status).asMultilineString(),
-                permissionSummary = buildPermissionSummary(status)
+                permissionSummary = buildPermissionSummary(status),
+                rememberedNotification = remembered.notificationGrantRemembered,
+                rememberedWriteSettings = remembered.writeSettingsGrantRemembered,
+                rememberedAllFiles = remembered.allFilesGrantRemembered,
+                rememberedAccessibility = remembered.accessibilityGrantRemembered
             )
         }
     }
@@ -182,8 +200,17 @@ internal class OverviewController(
         safeLaunch("overview:settings-return", onError = onOverviewError("overview:settings-return") { msg ->
             updatePermissionState { it.copy(permissionActionStatus = msg) }
         }) {
-            refreshLocalEnvironmentState(includeRootCheck = true)
-            updatePermissionState { it.copy(permissionActionStatus = "已从系统设置返回，请查看最新权限状态") }
+            val remembered = environmentGateway.loadStartupPermissionState()
+            val currentRoot = uiState.value.permissionState.localEnvironmentStatus.rootGranted
+            refreshLocalEnvironmentState(
+                includeRootCheck = remembered.rootGrantedEver || currentRoot != false
+            )
+            val status = uiState.value.permissionState.localEnvironmentStatus
+            updatePermissionState {
+                it.copy(
+                    permissionActionStatus = "已从系统设置返回，权限状态已同步：${buildPermissionSummary(status)}"
+                )
+            }
         }
     }
 
@@ -221,6 +248,64 @@ internal class OverviewController(
 
     fun markOpeningAllFilesAccess() {
         updatePermissionState { it.copy(permissionActionStatus = "正在打开全部文件访问授权页...") }
+    }
+
+    fun markOpeningNotificationSettings() {
+        updatePermissionState { it.copy(permissionActionStatus = "正在打开通知权限设置...") }
+    }
+
+    fun markOpeningNotificationListenerSettings() {
+        updatePermissionState { it.copy(permissionActionStatus = "正在打开通知监听设置...") }
+    }
+
+    fun requestShizukuPermission(openManager: () -> Unit) {
+        safeLaunch("overview:shizuku", onError = onOverviewError("overview:shizuku") { msg ->
+            updatePermissionState { it.copy(permissionActionStatus = msg) }
+        }) {
+            ShizukuSupport.ensureInitialized()
+            when {
+                !ShizukuSupport.isManagerInstalled(appContext) -> {
+                    updatePermissionState {
+                        it.copy(permissionActionStatus = "未安装 Shizuku，正在打开下载/管理页...")
+                    }
+                    openManager()
+                }
+                !ShizukuSupport.isBinderAlive() -> {
+                    updatePermissionState {
+                        it.copy(permissionActionStatus = "Shizuku 服务未运行，请先在 Shizuku 中启动服务")
+                    }
+                    openManager()
+                }
+                ShizukuSupport.permissionGranted() -> {
+                    refreshLocalEnvironmentState(includeRootCheck = true)
+                    updatePermissionState {
+                        it.copy(permissionActionStatus = "Shizuku 已授权")
+                    }
+                }
+                else -> {
+                    updatePermissionState {
+                        it.copy(permissionActionStatus = "正在请求 Shizuku 授权...")
+                    }
+                    val result = ShizukuSupport.requestPermission()
+                    updatePermissionState {
+                        it.copy(
+                            permissionActionStatus = result.fold(
+                                onSuccess = { value ->
+                                    when (value) {
+                                        "already_granted" -> "Shizuku 已授权"
+                                        else -> "已弹出 Shizuku 授权请求，请在弹窗中允许"
+                                    }
+                                },
+                                onFailure = { error ->
+                                    "Shizuku 授权失败: ${error.message ?: "unknown"}"
+                                }
+                            )
+                        )
+                    }
+                    refreshLocalEnvironmentState(includeRootCheck = true)
+                }
+            }
+        }
     }
 
     fun updatePermissionTargetPath(value: String) {
@@ -321,7 +406,12 @@ internal class OverviewController(
     }
 
     private suspend fun performStartupChecks() {
-        updatePermissionState { it.copy(permissionActionStatus = "启动自检中...") }
+        updatePermissionState {
+            it.copy(
+                permissionActionStatus = "启动自检中...",
+                environmentOpsFeedback = "启动自检中..."
+            )
+        }
         val remembered = environmentGateway.loadStartupPermissionState()
         val shouldRequestRoot = shouldAutoRequestRootOnStartup(remembered)
         val rootResult = if (shouldRequestRoot) {
@@ -336,9 +426,14 @@ internal class OverviewController(
             environmentGateway.markRootPromptResult(granted = rootResult.success)
         }
 
-        val includeRootCheck = rootResult.success || remembered.rootGrantedEver
+        // Startup always probes Root + Magisk module path once after the Root prompt attempt,
+        // so Root / LSPosed / Runtime chips are not stuck on "未检测".
+        val includeRootCheck = true
         val initialStatus = environmentGateway.probeLocalEnvironment(includeRootCheck = includeRootCheck)
         environmentGateway.rememberGrantedPermissions(initialStatus)
+        if (initialStatus.rootGranted == true) {
+            environmentGateway.markRootPromptResult(granted = true)
+        }
 
         val autoGrantMessages = mutableListOf<String>()
         if (rootResult.success) {
@@ -353,14 +448,17 @@ internal class OverviewController(
 
         refreshLocalEnvironmentState(includeRootCheck = includeRootCheck)
         val finalStatus = uiState.value.permissionState.localEnvironmentStatus
+        val startupSummary = buildStartupCheckSummary(
+            rootRequested = shouldRequestRoot,
+            rootResult = rootResult,
+            finalStatus = finalStatus,
+            autoGrantMessages = autoGrantMessages
+        )
         updatePermissionState {
             it.copy(
-                permissionActionStatus = buildStartupCheckSummary(
-                    rootRequested = shouldRequestRoot,
-                    rootResult = rootResult,
-                    finalStatus = finalStatus,
-                    autoGrantMessages = autoGrantMessages
-                )
+                permissionActionStatus = autoGrantMessages.joinToString("；")
+                    .ifBlank { "权限状态已同步" },
+                environmentOpsFeedback = startupSummary
             )
         }
         connectRuntimeAfterEnvironmentCheck(reason = "启动自检")
@@ -378,6 +476,11 @@ internal class OverviewController(
         }
         lastHostStartedRefreshAtMs = now
         safeLaunch("overview:host-started", onError = onOverviewError("overview:host-started")) {
+            // Re-probe Root when previously granted or still unknown; skip only after explicit deny.
+            val remembered = environmentGateway.loadStartupPermissionState()
+            val currentRoot = uiState.value.permissionState.localEnvironmentStatus.rootGranted
+            val includeRootCheck = remembered.rootGrantedEver || currentRoot != false
+            refreshLocalEnvironmentState(includeRootCheck = includeRootCheck)
             refreshConnectionIfStale()
         }
     }
@@ -407,12 +510,27 @@ internal class OverviewController(
     private suspend fun applyStartupAutoGrantPlan(plan: StartupAutoGrantPlan): List<String> {
         val messages = mutableListOf<String>()
         if (plan.useAutomationGrant) {
-            val result = environmentGateway.grantAutomationPermissionsViaRoot()
-            if (result.success) {
-                environmentGateway.rememberAutomationGrant()
-                messages += "自动恢复一键权限"
+            // Startup must NOT auto-enable accessibility. Restore other grants only.
+            val notification = environmentGateway.grantNotificationViaRoot()
+            messages += if (notification.success) {
+                environmentGateway.rememberNotificationGrant()
+                "自动恢复通知权限"
             } else {
-                messages += "自动恢复一键权限失败: ${result.output}"
+                "自动恢复通知权限失败: ${notification.output}"
+            }
+            val writeSettings = environmentGateway.grantWriteSettingsViaRoot()
+            messages += if (writeSettings.success) {
+                environmentGateway.rememberWriteSettingsGrant()
+                "自动恢复系统设置权限"
+            } else {
+                "自动恢复系统设置权限失败: ${writeSettings.output}"
+            }
+            val allFiles = environmentGateway.grantAllFilesAccessViaRoot()
+            messages += if (allFiles.success) {
+                environmentGateway.rememberAllFilesGrant()
+                "自动恢复全部文件访问"
+            } else {
+                "自动恢复全部文件访问失败: ${allFiles.output}"
             }
             return messages
         }
@@ -444,15 +562,7 @@ internal class OverviewController(
                 "自动恢复全部文件访问失败: ${result.output}"
             }
         }
-        if (plan.grantAccessibility) {
-            val result = environmentGateway.enableAccessibilityViaRoot()
-            messages += if (result.success) {
-                environmentGateway.rememberAccessibilityGrant()
-                "自动恢复无障碍"
-            } else {
-                "自动恢复无障碍失败: ${result.output}"
-            }
-        }
+        // plan.grantAccessibility is intentionally ignored at startup.
         return messages
     }
 
@@ -577,12 +687,21 @@ internal class OverviewController(
         applyToolSideEffects(result)
         when (tool) {
             ClawTool.RUNTIME_PING -> updateRuntimeState { it.copy(pingStatus = result.output) }
-            ClawTool.GET_VERSION -> updateRuntimeState { it.copy(versionStatus = result.output) }
-            ClawTool.GET_HEALTH -> updateRuntimeState { it.copy(healthStatus = result.output) }
+            ClawTool.GET_VERSION -> {
+                updateRuntimeState { it.copy(versionStatus = result.output) }
+                refreshCompatBanner()
+            }
+            ClawTool.GET_HEALTH -> {
+                updateRuntimeState { it.copy(healthStatus = result.output) }
+                refreshCompatBanner()
+            }
             ClawTool.GET_RUNTIME_STATUS -> applyRuntimeStatusSideEffects(result)
             ClawTool.GET_LAST_ERROR -> updateRuntimeState { it.copy(lastErrorStatus = result.output) }
-            ClawTool.PROBE_SESSION -> updateRuntimeState {
-                it.copy(session = it.session.copy(summary = result.output))
+            ClawTool.PROBE_SESSION -> {
+                updateRuntimeState {
+                    it.copy(session = it.session.copy(summary = result.output))
+                }
+                refreshCompatBanner()
             }
             ClawTool.GET_CAPABILITIES -> updateRuntimeState { it.copy(capabilityStatus = result.output) }
             ClawTool.CAPTURE_SCREEN -> updateRuntimeState { it.copy(captureStatus = result.output) }
@@ -603,6 +722,8 @@ internal class OverviewController(
     }
 
     private fun applyRuntimeStatusSideEffects(result: ClawToolCallResult) {
+        val compat = com.clawdroid.app.runtime.LiveRuntimeCompatStore.snapshot()
+        val banner = compat.bannerText(com.clawdroid.app.BuildConfig.VERSION_NAME)
         updateRuntimeState { current ->
             val syncedCommands = mergeShellCommandOptions(
                 current = current.shell.commandOptions,
@@ -611,6 +732,7 @@ internal class OverviewController(
             current.copy(
                 runtimeStatus = result.output,
                 runtimeConfigSummary = result.runtimeConfigSummary ?: current.runtimeConfigSummary,
+                compatBanner = banner,
                 shell = current.shell.copy(
                     commandOptions = syncedCommands,
                     selectedCommand = when {
@@ -621,6 +743,12 @@ internal class OverviewController(
                 )
             )
         }
+    }
+
+    private fun refreshCompatBanner() {
+        val banner = com.clawdroid.app.runtime.LiveRuntimeCompatStore.snapshot()
+            .bannerText(com.clawdroid.app.BuildConfig.VERSION_NAME)
+        updateRuntimeState { it.copy(compatBanner = banner) }
     }
 
     suspend fun readLatestCaptureForChat(): String {
@@ -829,11 +957,14 @@ internal class OverviewController(
     fun ping() {
         safeLaunch("overview:ping", onError = onOverviewError("overview:ping") { msg ->
             updateRuntimeState { it.copy(pingStatus = msg) }
+            updatePermissionState { it.copy(environmentOpsFeedback = msg) }
         }) {
             updateRuntimeState { it.copy(pingStatus = "请求中...") }
+            updatePermissionState { it.copy(environmentOpsFeedback = "Ping 请求中...") }
             val result = toolExecutor.ping()
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(pingStatus = result.output) }
+            updatePermissionState { it.copy(environmentOpsFeedback = result.output) }
         }
     }
 
@@ -845,6 +976,7 @@ internal class OverviewController(
             val result = toolExecutor.getVersion()
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(versionStatus = result.output) }
+            refreshCompatBanner()
         }
     }
 
@@ -856,6 +988,7 @@ internal class OverviewController(
             val result = toolExecutor.getHealth()
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(healthStatus = result.output) }
+            refreshCompatBanner()
         }
     }
 
@@ -904,6 +1037,7 @@ internal class OverviewController(
             val result = toolExecutor.probeSession()
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(session = it.session.copy(summary = result.output)) }
+            refreshCompatBanner()
         }
     }
 
@@ -1019,22 +1153,28 @@ internal class OverviewController(
     fun getCapabilities() {
         safeLaunch("overview:capabilities", onError = onOverviewError("overview:capabilities") { msg ->
             updateRuntimeState { it.copy(capabilityStatus = msg) }
+            updatePermissionState { it.copy(environmentOpsFeedback = msg) }
         }) {
             updateRuntimeState { it.copy(capabilityStatus = "请求中...") }
+            updatePermissionState { it.copy(environmentOpsFeedback = "Capabilities 请求中...") }
             val result = toolExecutor.getCapabilities()
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(capabilityStatus = result.output) }
+            updatePermissionState { it.copy(environmentOpsFeedback = result.output) }
         }
     }
 
     fun captureScreen() {
         safeLaunch("overview:capture", onError = onOverviewError("overview:capture") { msg ->
             updateRuntimeState { it.copy(captureStatus = msg) }
+            updatePermissionState { it.copy(environmentOpsFeedback = msg) }
         }) {
             updateRuntimeState { it.copy(captureStatus = "请求中...") }
+            updatePermissionState { it.copy(environmentOpsFeedback = "截图请求中...") }
             val result = toolExecutor.captureScreen(includeShaPreview = true)
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(captureStatus = result.output) }
+            updatePermissionState { it.copy(environmentOpsFeedback = result.output) }
         }
     }
 
@@ -1099,6 +1239,7 @@ internal class OverviewController(
             updateRuntimeState {
                 it.copy(shell = it.shell.copy(status = msg, output = msg))
             }
+            updatePermissionState { it.copy(environmentOpsFeedback = msg) }
         }) {
             updateRuntimeState {
                 it.copy(
@@ -1108,12 +1249,14 @@ internal class OverviewController(
                     )
                 )
             }
+            updatePermissionState { it.copy(environmentOpsFeedback = "Shell 请求中...") }
             val result = toolExecutor.execShellLimited(
                 command = uiState.value.runtimeState.shell.selectedCommand,
                 timeoutMs = 3000
             )
             applyToolSideEffects(result)
             updateRuntimeState { it.copy(shell = it.shell.copy(status = result.output)) }
+            updatePermissionState { it.copy(environmentOpsFeedback = result.output) }
         }
     }
 
@@ -1147,7 +1290,7 @@ internal class OverviewController(
                     appendLine("最近限流: none")
                     appendLine("限流时间: unknown")
                     appendLine("限流次数: 0")
-                    append("只读白名单: /data/local/tmp/clawdroid, /data/local/tmp/clawdroid/captures, /data/local/tmp/clawdroid/audit, /data/local/tmp/clawdroid/xposed, /data/adb/modules/clawruntime, /sdcard/Pictures, /sdcard/Download")
+                    append("只读白名单: /data/local/tmp/clawdroid, /data/local/tmp/clawdroid/captures, /data/local/tmp/clawdroid/audit, /data/local/tmp/clawdroid/xposed, /data/adb/modules/clawruntime, /sdcard, /storage/emulated/0, /sdcard/Pictures, /sdcard/Download")
                 },
                 runtimeStatus = buildString {
                     appendLine("成功: version=0.2.0, uptime=120s")
@@ -1399,7 +1542,8 @@ internal fun createInitialOverviewUiState(
             permissionTargetPath = "/data/adb/modules/clawruntime",
             permissionChmodMode = "0755",
             permissionChownOwner = "0:0",
-            permissionActionStatus = "未执行权限修复"
+            permissionActionStatus = "未执行权限修复",
+            environmentOpsFeedback = ""
         ),
         runtimeState = OverviewRuntimeState(
             latestDaemonMetrics = "等待事件流",

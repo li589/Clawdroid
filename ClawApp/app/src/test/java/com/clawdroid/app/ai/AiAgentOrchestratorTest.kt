@@ -144,4 +144,110 @@ class AiAgentOrchestratorTest {
         )
         assertEquals(AiAgentPlan.AssistantReply("探测与能力均已完成。"), plan)
     }
+
+    @Test
+    fun parseAgentPlanStripsMarkdownFence() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """
+            ```json
+            {"mode":"tool","reply":"截图","tool":"capture_screen","arguments":{"read_after_capture":true},"reason":"ok"}
+            ```
+            """.trimIndent()
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.CAPTURE_SCREEN, plan.tool)
+        assertEquals("true", plan.arguments["read_after_capture"])
+    }
+
+    @Test
+    fun parseAgentPlanExtractsJsonWrappedInProse() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """
+            好的，我来执行：
+            {"mode":"tool","reply":"点击","tool":"inject_tap","arguments":{"x":540,"y":1200,"display_id":0},"reason":"tap"}
+            以上是计划。
+            """.trimIndent()
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.INJECT_TAP, plan.tool)
+        assertEquals("540", plan.arguments["x"])
+        assertEquals("1200", plan.arguments["y"])
+        assertEquals("0", plan.arguments["display_id"])
+    }
+
+    @Test
+    fun parseAgentPlanSupportsNestedArgumentObjects() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """
+            {"mode":"tool","reply":"提交任务","tool":"task_submit","arguments":{"task_id":"t1","steps_json":[{"action":"ping","args":{}}]},"reason":"nested"}
+            """.trimIndent()
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.TASK_SUBMIT, plan.tool)
+        assertEquals("t1", plan.arguments["task_id"])
+        val steps = plan.arguments["steps_json"].orEmpty()
+        assertTrue(steps.contains("\"action\":\"ping\"") || steps.contains("\"action\": \"ping\""))
+    }
+
+    @Test
+    fun parseAgentPlanSupportsAssistCallWithObjectArgumentsJson() {
+        val plan = AiAgentOrchestrator.parseAgentPlan(
+            """
+            {"mode":"tool","reply":"调用电脑工具","tool":"assist_call_tool","arguments":{"name":"demo_tool","arguments_json":{"q":"hello"}},"reason":"assist"}
+            """.trimIndent()
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.ASSIST_CALL_TOOL, plan.tool)
+        assertEquals("demo_tool", plan.arguments["name"])
+        assertTrue(plan.arguments["arguments_json"].orEmpty().contains("hello"))
+    }
+
+    @Test
+    fun jsonValueToArgumentStringNormalizesTypes() {
+        assertEquals("true", AiAgentOrchestrator.jsonValueToArgumentString(true))
+        assertEquals("42", AiAgentOrchestrator.jsonValueToArgumentString(42))
+        assertEquals("42", AiAgentOrchestrator.jsonValueToArgumentString(42.0))
+        assertEquals("""{"a":1}""", AiAgentOrchestrator.jsonValueToArgumentString(org.json.JSONObject("""{"a":1}""")))
+    }
+
+    @Test
+    fun planFromNativeToolCallMapsOpenAiStyleArguments() {
+        val plan = AiAgentOrchestrator.planFromNativeToolCall(
+            call = com.clawdroid.app.model.ModelToolCall(
+                id = "call_1",
+                name = "inject_tap",
+                argumentsJson = """{"x":10,"y":20,"display_id":0}"""
+            ),
+            assistantHint = "我先点击。"
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.INJECT_TAP, plan.tool)
+        assertEquals("10", plan.arguments["x"])
+        assertEquals("20", plan.arguments["y"])
+        assertEquals("我先点击。", plan.assistantMessage)
+        assertEquals("native_tool_call", plan.reasoning)
+    }
+
+    @Test
+    fun planFromGenerationPrefersNativeToolCallsOverTextJson() {
+        val plan = AiAgentOrchestrator.planFromGeneration(
+            com.clawdroid.app.model.ModelGenerationResult(
+                text = """{"mode":"chat","reply":"忽略这段","tool":"","arguments":{},"reason":"x"}""",
+                toolCalls = listOf(
+                    com.clawdroid.app.model.ModelToolCall(
+                        name = "get_capabilities",
+                        argumentsJson = """{"source":"ai"}"""
+                    )
+                )
+            )
+        )
+        assertTrue(plan is AiAgentPlan.ToolExecution)
+        plan as AiAgentPlan.ToolExecution
+        assertEquals(ClawTool.GET_CAPABILITIES, plan.tool)
+    }
 }

@@ -239,6 +239,15 @@ internal fun buildRuntimeSessionDiagnosis(
     val errorCode = extractRuntimeErrorCode(summaryText)
     errorCode?.let { describeRuntimeErrorCode(it) }?.let { return it }
 
+    val compat = runtimeState.compatBanner
+    if (compat.contains("协议不匹配") || compat.contains("模块可能过旧")) {
+        return RuntimeSessionDiagnosis(
+            title = "App 与 Magisk Runtime 未对齐",
+            detail = compat,
+            actionHint = "用同仓库 scripts 构建并重刷 ClawRuntime-magisk.zip，确保与当前 APK 配对；改 Go 后仅重装 APK 不够。"
+        )
+    }
+
     return when {
         localStatus.rootGranted != true ||
             !localStatus.magiskDaemonRunning ||

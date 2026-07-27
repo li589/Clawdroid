@@ -12,7 +12,14 @@ internal data class OverviewPermissionState(
     val permissionTargetPath: String,
     val permissionChmodMode: String,
     val permissionChownOwner: String,
-    val permissionActionStatus: String
+    /** Short feedback for 基础权限 card only (open settings / grant results). */
+    val permissionActionStatus: String,
+    /** Short feedback for 本地环境 card only (detect / ping / capture / shell). */
+    val environmentOpsFeedback: String = "",
+    val rememberedNotification: Boolean = false,
+    val rememberedWriteSettings: Boolean = false,
+    val rememberedAllFiles: Boolean = false,
+    val rememberedAccessibility: Boolean = false
 )
 
 internal data class OverviewPermissionActions(
@@ -24,6 +31,8 @@ internal data class OverviewPermissionActions(
     val onOpenAccessibilitySettings: () -> Unit,
     val onOpenWriteSettings: () -> Unit,
     val onOpenAllFilesAccess: () -> Unit,
+    val onOpenNotificationListenerSettings: () -> Unit = {},
+    val onRequestShizukuPermission: () -> Unit = {},
     val onRootGrantNotificationPermission: () -> Unit,
     val onRootGrantWriteSettings: () -> Unit,
     val onRootGrantAllFilesAccess: () -> Unit,
@@ -80,7 +89,9 @@ internal data class OverviewRuntimeState(
     val swipeStatus: String,
     val keyeventStatus: String,
     val runtimeTasks: List<ClawRuntimeTaskSnapshot> = emptyList(),
-    val runtimeTasksStatus: String = "尚未刷新 Runtime 任务"
+    val runtimeTasksStatus: String = "尚未刷新 Runtime 任务",
+    /** App ↔ Magisk Runtime version/action alignment banner (empty when unknown/ok display optional). */
+    val compatBanner: String = ""
 )
 
 internal data class SessionInfo(
@@ -157,7 +168,9 @@ internal fun OverviewController.buildPermissionActions(
     onRequestNotificationPermission: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onOpenWriteSettings: () -> Unit,
-    onOpenAllFilesAccess: () -> Unit
+    onOpenAllFilesAccess: () -> Unit,
+    onOpenNotificationListenerSettings: () -> Unit,
+    onRequestShizukuPermission: () -> Unit
 ): OverviewPermissionActions {
     return OverviewPermissionActions(
         onRefreshLocalEnvironment = ::refreshLocalEnvironment,
@@ -168,6 +181,8 @@ internal fun OverviewController.buildPermissionActions(
         onOpenAccessibilitySettings = onOpenAccessibilitySettings,
         onOpenWriteSettings = onOpenWriteSettings,
         onOpenAllFilesAccess = onOpenAllFilesAccess,
+        onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
+        onRequestShizukuPermission = onRequestShizukuPermission,
         onRootGrantNotificationPermission = ::grantNotificationPermissionViaRoot,
         onRootGrantWriteSettings = ::grantWriteSettingsViaRoot,
         onRootGrantAllFilesAccess = ::grantAllFilesAccessViaRoot,

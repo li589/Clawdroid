@@ -20,6 +20,9 @@
     "sandbox_shell": {
       "summary": "应用 filesDir/sandbox 白名单短命令（无 Root/Shizuku）"
     },
+    "termux_exec": {
+      "summary": "经 Termux RUN_COMMAND 执行 usr/bin 白名单命令（含 proot-distro、bash -lc）；需 allow-external-apps=true，失败时先唤醒 Termux"
+    },
     "camera_capture": {
       "summary": "Camera2 静帧 JPEG；需 CAMERA 权限；facing=back|front"
     },

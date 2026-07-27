@@ -1,6 +1,8 @@
 package com.clawdroid.app.tools
 
 import android.content.Context
+import com.clawdroid.app.data.AppSettingsStore
+import com.clawdroid.app.ui.AgentOrchestrationSettings
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -28,12 +30,22 @@ object ClawToolCatalog {
     fun definitions(
         context: Context? = null,
         includePlanned: Boolean = false,
-        onlyEnabled: Boolean = true
+        onlyEnabled: Boolean = true,
+        respectAllowlist: Boolean = true
     ): List<ToolDefinition> {
+        val allowlist: AgentOrchestrationSettings? =
+            if (respectAllowlist && context != null) {
+                AppSettingsStore.loadAgentOrchestrationSettings(context)
+            } else {
+                null
+            }
         return ClawTool.entries.mapNotNull { tool ->
             val spec = ClawToolDefinitions.spec(tool)
             if (!includePlanned && spec.status == ToolAvailability.Planned) return@mapNotNull null
             if (onlyEnabled && !ClawAssetPromptStore.isToolEnabled(context, tool.toolId, default = true)) {
+                return@mapNotNull null
+            }
+            if (allowlist != null && !allowlist.isToolAllowed(tool.toolId)) {
                 return@mapNotNull null
             }
             ToolDefinition(
@@ -46,8 +58,13 @@ object ClawToolCatalog {
     }
 
     fun definition(toolId: String, context: Context? = null): ToolDefinition? =
-        definitions(context, includePlanned = true, onlyEnabled = false)
-            .firstOrNull { it.name == toolId }
+        definitions(
+            context,
+            includePlanned = true,
+            onlyEnabled = false,
+            // get_tool 应能描述已实现工具，即使当前未在允许列表中。
+            respectAllowlist = false
+        ).firstOrNull { it.name == toolId }
 
     fun availabilityFor(
         spec: ClawToolSpec,
@@ -171,6 +188,59 @@ object ClawToolCatalog {
     }
 
     /**
+     * OpenAI Chat Completions `tools` 数组（type=function）。
+     */
+    fun toOpenAiToolsJson(
+        context: Context? = null,
+        maxDescriptionChars: Int = 240
+    ): JSONArray {
+        val tools = JSONArray()
+        definitions(context).forEach { def ->
+            tools.put(
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject()
+                            .put("name", def.name)
+                            .put("description", toolDescriptionForAi(def, context, maxDescriptionChars))
+                            .put("parameters", JSONObject(def.inputSchema.toString()))
+                    )
+            )
+        }
+        return tools
+    }
+
+    /**
+     * Anthropic Messages `tools` 数组（input_schema）。
+     */
+    fun toAnthropicToolsJson(
+        context: Context? = null,
+        maxDescriptionChars: Int = 240
+    ): JSONArray {
+        val tools = JSONArray()
+        definitions(context).forEach { def ->
+            tools.put(
+                JSONObject()
+                    .put("name", def.name)
+                    .put("description", toolDescriptionForAi(def, context, maxDescriptionChars))
+                    .put("input_schema", JSONObject(def.inputSchema.toString()))
+            )
+        }
+        return tools
+    }
+
+    private fun toolDescriptionForAi(
+        def: ToolDefinition,
+        context: Context?,
+        maxDescriptionChars: Int
+    ): String {
+        val overlay = ClawAssetPromptStore.overlayForTool(context, def.name)
+        val raw = overlay?.optString("summary")?.takeIf { it.isNotBlank() } ?: def.description
+        return raw.take(maxDescriptionChars)
+    }
+
+    /**
      * Argument keys allowed for AI / loose callers, derived from [inputSchemaFor].
      * Returns `null` when the tool has an empty input schema (passthrough / no key filter).
      * Includes aliases accepted by [ClawToolDispatcher] (e.g. `agent` for `agent_id`).
@@ -192,6 +262,7 @@ object ClawToolCatalog {
         ClawTool.RUN_AGENT to setOf("agent", "id", "name"),
         ClawTool.TASK_GET to setOf("id"),
         ClawTool.TASK_CANCEL to setOf("id"),
+        ClawTool.TASK_WAIT to setOf("id"),
         ClawTool.TASK_SUBMIT to setOf("steps"),
         ClawTool.GET_TOOL to setOf("id", "name"),
         ClawTool.APP_STOP to setOf("package_name"),
@@ -287,6 +358,12 @@ object ClawToolCatalog {
                 optionalInt("display_id", "Display id", default = 0),
                 required = listOf("agent_id")
             )
+            ClawTool.RUN_AGENTS_PARALLEL -> objSchema(
+                requiredString("agent_ids", "Comma-separated agent ids to run in parallel"),
+                optionalString("expected_package", "Optional shared arg for agents"),
+                optionalString("expected_text", "Optional shared arg for agents"),
+                required = listOf("agent_ids")
+            )
             ClawTool.CAPTURE_SCREEN -> objSchema(
                 optionalBool("read_after_capture", "Also read/preview the capture after taking it", default = false),
                 optionalInt("display_id", "Display id", default = 0)
@@ -338,6 +415,11 @@ object ClawToolCatalog {
                 requiredString("task_id", "Runtime task id to cancel"),
                 required = listOf("task_id")
             )
+            ClawTool.TASK_WAIT -> objSchema(
+                requiredString("task_id", "Runtime task id to await"),
+                optionalString("timeout_ms", "Max wait in milliseconds (default ~180s poll budget)"),
+                required = listOf("task_id")
+            )
             ClawTool.LIST_TOOLS -> objSchema(
                 optionalString("tag", "Filter by tag, e.g. file/app/assist"),
                 optionalString("tier", "Filter by tier: None/Basic/Accessibility/AdbShizuku/Root"),
@@ -383,6 +465,12 @@ object ClawToolCatalog {
             ClawTool.FILE_STAT -> objSchema(
                 requiredString("path", "Target path"),
                 optionalBool("compute_hash", "Compute sha256", default = true),
+                required = listOf("path")
+            )
+            ClawTool.FILE_LIST -> objSchema(
+                requiredString("path", "Directory path"),
+                optionalInt("offset", "Pagination offset", default = 0),
+                optionalInt("limit", "Max entries (1-500)", default = 100),
                 required = listOf("path")
             )
             ClawTool.APP_LIST -> objSchema(
@@ -441,6 +529,12 @@ object ClawToolCatalog {
             ClawTool.SANDBOX_SHELL -> objSchema(
                 requiredString("command", "Allowlisted sandbox command"),
                 optionalInt("timeout_ms", "Timeout milliseconds", default = 8000),
+                required = listOf("command")
+            )
+            ClawTool.TERMUX_EXEC -> objSchema(
+                requiredString("command", "Allowlisted Termux usr/bin command"),
+                optionalString("workdir", "Termux working directory"),
+                optionalInt("timeout_ms", "Timeout ms; pkg/proot-distro install auto-bumps up to 8min (max 10min)", default = 30000),
                 required = listOf("command")
             )
             ClawTool.CAMERA_CAPTURE -> objSchema(

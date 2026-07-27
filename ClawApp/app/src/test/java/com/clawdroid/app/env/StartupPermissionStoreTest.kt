@@ -87,8 +87,18 @@ class StartupPermissionStoreTest {
 
         assertTrue(plan.grantNotification)
         assertFalse(plan.grantWriteSettings)
-        assertTrue(plan.grantAccessibility)
+        assertFalse(plan.grantAccessibility)
         assertFalse(plan.grantAllFiles)
+    }
+
+    @Test
+    fun buildStartupAutoGrantPlanNeverAutoGrantsAccessibility() {
+        val plan = buildStartupAutoGrantPlan(
+            state = StartupPermissionState(accessibilityGrantRemembered = true),
+            status = emptyEnvironmentStatus().copy(accessibilityEnabled = false)
+        )
+        assertFalse(plan.grantAccessibility)
+        assertFalse(plan.hasWork)
     }
 
     @Test

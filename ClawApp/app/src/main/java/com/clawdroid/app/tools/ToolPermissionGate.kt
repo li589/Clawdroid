@@ -5,6 +5,7 @@ import android.content.Context
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import com.clawdroid.app.env.ShizukuSupport
+import com.clawdroid.app.termux.TermuxBridge
 import com.clawdroid.app.service.ClawAccessibilityService
 import java.io.File
 
@@ -14,7 +15,9 @@ import java.io.File
 class ToolPermissionGate(
     private val context: Context?,
     private val assistEnabled: () -> Boolean = { false },
-    private val knownCapabilities: () -> Set<String> = { emptySet() }
+    private val knownCapabilities: () -> Set<String> = { emptySet() },
+    private val isToolAllowed: (String) -> Boolean = { true },
+    private val agentCallsEnabled: () -> Boolean = { true }
 ) {
     fun evaluate(spec: ClawToolSpec): ToolGateDecision {
         if (spec.status == ToolAvailability.Planned) {
@@ -29,6 +32,22 @@ class ToolPermissionGate(
                 allowed = false,
                 errorCode = "tool_disabled",
                 message = "工具 ${spec.id} 已在 catalog overlay 中禁用"
+            )
+        }
+        if (!isToolAllowed(spec.id)) {
+            return ToolGateDecision(
+                allowed = false,
+                errorCode = "tool_not_allowed",
+                message = "工具 ${spec.id} 不在当前允许列表中；可在设置 → Agent 与工具中调整"
+            )
+        }
+        if ((spec.tool == ClawTool.RUN_AGENT || spec.tool == ClawTool.RUN_AGENTS_PARALLEL) &&
+            !agentCallsEnabled()
+        ) {
+            return ToolGateDecision(
+                allowed = false,
+                errorCode = "agent_calls_disabled",
+                message = "Agent 调用已关闭；请在设置 → Agent 与工具中开启「允许 Agent 调用」"
             )
         }
 
@@ -92,6 +111,26 @@ class ToolPermissionGate(
                     ) {
                         // Do not hard-fail: magisk path may be invisible without root.
                     }
+                }
+            }
+        }
+
+        if (ToolPermissionGrant.TERMUX in spec.grants) {
+            val ctx = context
+            if (ctx != null) {
+                if (!TermuxBridge.isTermuxInstalled(ctx)) {
+                    return ToolGateDecision(
+                        allowed = false,
+                        errorCode = "termux_not_installed",
+                        message = "未安装 Termux (com.termux)；无法调用 ${spec.id}"
+                    )
+                }
+                if (!TermuxBridge.hasRunCommandPermission(ctx)) {
+                    return ToolGateDecision(
+                        allowed = false,
+                        errorCode = "termux_permission_denied",
+                        message = TermuxBridge.permissionDeniedMessage()
+                    )
                 }
             }
         }

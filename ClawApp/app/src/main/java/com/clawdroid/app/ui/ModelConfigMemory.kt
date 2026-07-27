@@ -146,7 +146,8 @@ internal object ModelConfigMemoryLogic {
         } else {
             current.copy(
                 provider = newProvider,
-                baseUrl = newProvider.defaultBaseUrl
+                baseUrl = newProvider.defaultBaseUrl,
+                modelName = newProvider.defaultModelName.ifBlank { current.modelName }
             )
         }
     }

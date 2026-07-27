@@ -344,9 +344,25 @@ class ToolDownloadService(
 
     private fun resolveDest(destPath: String?, url: String): File {
         if (!destPath.isNullOrBlank()) {
+            InputGuards.validatePath(destPath)?.let { err ->
+                error(err.message)
+            }
             val raw = destPath.trim()
-            val candidate = File(raw)
-            return if (candidate.isAbsolute) candidate else File(context.cacheDir, raw)
+            val candidate = if (raw.startsWith("/")) File(raw) else File(context.cacheDir, raw)
+            val target = runCatching { candidate.canonicalFile }.getOrElse { candidate.absoluteFile }
+            val roots = listOfNotNull(
+                context.filesDir,
+                context.cacheDir,
+                context.getExternalFilesDir(null),
+                context.externalCacheDir
+            ).map { root ->
+                runCatching { root.canonicalFile }.getOrElse { root.absoluteFile }
+            }
+            val allowed = roots.any { root ->
+                target == root || target.path.startsWith(root.path + File.separator)
+            }
+            require(allowed) { "dest_path 必须位于应用沙箱目录内" }
+            return target
         }
         val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "download.bin" }
         val dir = File(context.cacheDir, "downloads").apply { mkdirs() }

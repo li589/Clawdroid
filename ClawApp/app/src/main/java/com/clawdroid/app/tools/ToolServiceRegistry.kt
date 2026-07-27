@@ -3,6 +3,7 @@ package com.clawdroid.app.tools
 import android.content.Context
 import com.clawdroid.app.mcp.assist.AssistMcpController
 import com.clawdroid.app.runtime.ClawRuntimeClient
+import com.clawdroid.app.termux.TermuxBridge
 
 /**
  * Bag of optional domain services for [ClawToolDispatcher].
@@ -16,7 +17,8 @@ data class ToolServiceRegistry(
     val notifications: NotificationToolService? = null,
     val webPreview: WebPreviewService? = null,
     val webSearch: WebSearchService? = null,
-    val sandboxShell: SandboxShellService? = null,
+    val sandboxShell: SandboxShellClient? = null,
+    val termux: TermuxBridge? = null,
     val camera: CameraCaptureService? = null,
     val sensors: SensorReadService? = null,
     val cameraRecord: CameraRecordService? = null,
@@ -40,7 +42,8 @@ data class ToolServiceRegistry(
                 notifications = NotificationToolService(appContext),
                 webPreview = WebPreviewService(),
                 webSearch = WebSearchService(),
-                sandboxShell = SandboxShellService(appContext),
+                sandboxShell = SandboxShellClient(appContext),
+                termux = TermuxBridge(appContext),
                 camera = CameraCaptureService(appContext),
                 sensors = SensorReadService(appContext),
                 cameraRecord = CameraRecordService(appContext),

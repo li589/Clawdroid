@@ -19,7 +19,9 @@ enum class ToolSerializeLane {
 internal object ToolExecutionPolicy {
     fun serializeLane(tool: ClawTool): ToolSerializeLane {
         when (tool) {
-            ClawTool.RUN_AGENT -> return ToolSerializeLane.Agent
+            ClawTool.RUN_AGENT,
+            ClawTool.RUN_AGENTS_PARALLEL,
+            ClawTool.TASK_WAIT -> return ToolSerializeLane.Agent
             ClawTool.CAPTURE_SCREEN,
             ClawTool.READ_LATEST_CAPTURE,
             ClawTool.CAMERA_CAPTURE,
@@ -36,6 +38,7 @@ internal object ToolExecutionPolicy {
                 tool == ClawTool.TASK_SUBMIT ||
                 tool == ClawTool.TASK_CANCEL ||
                 tool == ClawTool.SANDBOX_SHELL ||
+                tool == ClawTool.TERMUX_EXEC ||
                 tool == ClawTool.FTP_TRANSFER ||
                 tool == ClawTool.SHIZUKU_EXEC ||
                 tool == ClawTool.SHIZUKU_REQUEST ||

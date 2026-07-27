@@ -109,8 +109,12 @@ class OverviewControllerStartupTest {
         advanceUntilIdle()
 
         assertTrue(environmentGateway.calls.indexOf("requestRootAccess") >= 0)
-        assertTrue(environmentGateway.calls.indexOf("grantAutomationPermissionsViaRoot") > environmentGateway.calls.indexOf("requestRootAccess"))
-        assertTrue(controller.uiState.value.permissionState.permissionActionStatus.contains("自动恢复一键权限"))
+        assertTrue(environmentGateway.calls.contains("grantNotificationViaRoot"))
+        assertTrue(environmentGateway.calls.contains("grantWriteSettingsViaRoot"))
+        assertTrue(environmentGateway.calls.contains("grantAllFilesAccessViaRoot"))
+        assertFalse(environmentGateway.calls.contains("grantAutomationPermissionsViaRoot"))
+        assertFalse(environmentGateway.calls.contains("enableAccessibilityViaRoot"))
+        assertTrue(controller.uiState.value.permissionState.permissionActionStatus.contains("自动恢复通知权限"))
         assertTrue(controller.uiState.value.runtimeState.session.summary.contains("Runtime Probe 成功"))
         assertTrue(controller.uiState.value.runtimeState.session.summary.contains("Root/Magisk 检查通过"))
         assertEquals(ClawRuntimeConnectionState.Ready, controller.uiState.value.runtimeState.session.state)
@@ -189,7 +193,7 @@ class OverviewControllerStartupTest {
         advanceUntilIdle()
 
         assertFalse(environmentGateway.startupState.rootPromptRequestedOnce)
-        assertTrue(controller.uiState.value.permissionState.permissionActionStatus.contains("超时"))
+        assertTrue(controller.uiState.value.permissionState.environmentOpsFeedback.contains("超时"))
         assertFalse(environmentGateway.calls.contains("grantAutomationPermissionsViaRoot"))
         coVerify(exactly = 1) { toolExecutor.probeSession() }
     }
@@ -224,7 +228,7 @@ class OverviewControllerStartupTest {
 
         assertTrue(environmentGateway.startupState.rootPromptRequestedOnce)
         assertFalse(environmentGateway.calls.contains("grantAutomationPermissionsViaRoot"))
-        assertTrue(controller.uiState.value.permissionState.permissionActionStatus.contains("Root 会话失败(permission denied)"))
+        assertTrue(controller.uiState.value.permissionState.environmentOpsFeedback.contains("Root 会话失败(permission denied)"))
         coVerify(exactly = 1) { toolExecutor.probeSession() }
     }
 

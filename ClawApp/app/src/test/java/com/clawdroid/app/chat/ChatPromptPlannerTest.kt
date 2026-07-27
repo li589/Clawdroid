@@ -2,6 +2,7 @@ package com.clawdroid.app.chat
 
 import com.clawdroid.app.ai.AiAgentPlan
 import com.clawdroid.app.ai.AiRuntimeSnapshot
+import com.clawdroid.app.model.ModelUserImage
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.ui.ModelSettings
 import kotlinx.coroutines.runBlocking
@@ -14,8 +15,8 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsDirectToolExecutionForRuleMatchedPrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("获取能力")
-        ) { _, _, _ ->
+            context = plannerContext("\u83b7\u53d6\u80fd\u529b")
+        ) { _, _, _, _ ->
             error("rule-matched prompt should not call AI planner")
         }
 
@@ -28,16 +29,16 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsLocalActionForScreenSizePrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("帮我看看屏幕尺寸")
-        ) { _, _, _ ->
+            context = plannerContext("\u5e2e\u6211\u770b\u770b\u5c4f\u5e55\u5c3a\u5bf8")
+        ) { _, _, _, _ ->
             error("local action should not call AI planner")
         }
 
         assertEquals(
             ChatPromptPlan.LocalActionExecution(
                 action = ChatLocalAction.ReadScreenSize,
-                assistantMessage = "正在读取屏幕尺寸...",
-                aiStatus = "规则动作: 屏幕尺寸"
+                assistantMessage = "\u6b63\u5728\u8bfb\u53d6\u5c4f\u5e55\u5c3a\u5bf8...",
+                aiStatus = "\u89c4\u5219\u52a8\u4f5c: \u5c4f\u5e55\u5c3a\u5bf8"
             ),
             plan
         )
@@ -46,16 +47,16 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsTaskExecutionForConfirmThenSafeTapPrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("请先确认页面再安全点击")
-        ) { _, _, _ ->
+            context = plannerContext("\u8bf7\u5148\u786e\u8ba4\u9875\u9762\u518d\u5b89\u5168\u70b9\u51fb")
+        ) { _, _, _, _ ->
             error("task execution should not call AI planner")
         }
 
         assertEquals(
             ChatPromptPlan.TaskExecution(
                 action = ChatTaskAction.ConfirmThenSafeTap,
-                assistantMessage = "正在按“页面确认 -> 点击前检查 -> 安全点击”执行任务...",
-                aiStatus = "规则任务: 页面确认后安全点击"
+                assistantMessage = "\u6b63\u5728\u6309\u201c\u9875\u9762\u786e\u8ba4 -> \u70b9\u51fb\u524d\u68c0\u67e5 -> \u5b89\u5168\u70b9\u51fb\u201d\u6267\u884c\u4efb\u52a1...",
+                aiStatus = "\u89c4\u5219\u4efb\u52a1: \u9875\u9762\u786e\u8ba4\u540e\u5b89\u5168\u70b9\u51fb"
             ),
             plan
         )
@@ -64,16 +65,16 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsTaskExecutionForProbeThenCapabilitiesPrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("帮我先探测再获取能力")
-        ) { _, _, _ ->
+            context = plannerContext("\u5e2e\u6211\u5148\u63a2\u6d4b\u518d\u83b7\u53d6\u80fd\u529b")
+        ) { _, _, _, _ ->
             error("task execution should not call AI planner")
         }
 
         assertEquals(
             ChatPromptPlan.TaskExecution(
                 action = ChatTaskAction.ProbeThenCapabilities,
-                assistantMessage = "正在按“Runtime Probe -> 获取能力”执行任务...",
-                aiStatus = "规则任务: 运行时状态检查"
+                assistantMessage = "\u6b63\u5728\u6309\u201cRuntime Probe -> \u83b7\u53d6\u80fd\u529b\u201d\u6267\u884c\u4efb\u52a1...",
+                aiStatus = "\u89c4\u5219\u4efb\u52a1: \u8fd0\u884c\u65f6\u72b6\u6001\u68c0\u67e5"
             ),
             plan
         )
@@ -82,16 +83,16 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsTaskExecutionForCaptureThenPreviewPrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("帮我截图并预览")
-        ) { _, _, _ ->
+            context = plannerContext("\u5e2e\u6211\u622a\u56fe\u5e76\u9884\u89c8")
+        ) { _, _, _, _ ->
             error("task execution should not call AI planner")
         }
 
         assertEquals(
             ChatPromptPlan.TaskExecution(
                 action = ChatTaskAction.CaptureThenPreview,
-                assistantMessage = "正在按“截图 -> 预览”执行任务...",
-                aiStatus = "规则任务: 截图并预览"
+                assistantMessage = "\u6b63\u5728\u6309\u201c\u622a\u56fe -> \u9884\u89c8\u201d\u6267\u884c\u4efb\u52a1...",
+                aiStatus = "\u89c4\u5219\u4efb\u52a1: \u622a\u56fe\u5e76\u9884\u89c8"
             ),
             plan
         )
@@ -100,16 +101,16 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsTaskExecutionForRuntimeHealthSweepPrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("请做一次运行时体检")
-        ) { _, _, _ ->
+            context = plannerContext("\u5e2e\u6211\u505a\u4e00\u6b21\u8fd0\u884c\u65f6\u4f53\u68c0")
+        ) { _, _, _, _ ->
             error("task execution should not call AI planner")
         }
 
         assertEquals(
             ChatPromptPlan.TaskExecution(
                 action = ChatTaskAction.RuntimeHealthSweep,
-                assistantMessage = "正在按“Ping -> Runtime Status -> 获取能力”执行任务...",
-                aiStatus = "规则任务: 运行时体检"
+                assistantMessage = "\u6b63\u5728\u6309\u201cPing -> Runtime Status -> \u83b7\u53d6\u80fd\u529b\u201d\u6267\u884c\u4efb\u52a1...",
+                aiStatus = "\u89c4\u5219\u4efb\u52a1: \u8fd0\u884c\u65f6\u4f53\u68c0"
             ),
             plan
         )
@@ -118,16 +119,16 @@ class ChatPromptPlannerTest {
     @Test
     fun planReturnsTaskExecutionForSwipeThenCapturePrompt() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("滑动后截图")
-        ) { _, _, _ ->
+            context = plannerContext("\u6ed1\u52a8\u540e\u622a\u56fe")
+        ) { _, _, _, _ ->
             error("task execution should not call AI planner")
         }
 
         assertEquals(
             ChatPromptPlan.TaskExecution(
                 action = ChatTaskAction.SwipeThenCapture,
-                assistantMessage = "正在按“滑动 -> 截图 -> 预览”执行任务...",
-                aiStatus = "规则任务: 滑动后截图"
+                assistantMessage = "\u6b63\u5728\u6309\u201c\u6ed1\u52a8 -> \u622a\u56fe -> \u9884\u89c8\u201d\u6267\u884c\u4efb\u52a1...",
+                aiStatus = "\u89c4\u5219\u4efb\u52a1: \u6ed1\u52a8\u540e\u622a\u56fe"
             ),
             plan
         )
@@ -135,17 +136,19 @@ class ChatPromptPlannerTest {
 
     @Test
     fun planReturnsAiToolExecutionAndEnablesReflection() = runBlocking {
+        val userPrompt =
+            "\u5e2e\u6211\u5224\u65ad\u4e00\u4e0b\u5f53\u524d\u8fd0\u884c\u65f6\u90fd\u652f\u6301\u54ea\u4e9b\u7279\u6027"
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("帮我判断一下当前运行时都支持哪些特性")
-        ) { _: ModelSettings, prompt: String, snapshot: AiRuntimeSnapshot ->
-            assertEquals("帮我判断一下当前运行时都支持哪些特性", prompt)
+            context = plannerContext(userPrompt)
+        ) { _: ModelSettings, prompt: String, snapshot: AiRuntimeSnapshot, _: ModelUserImage? ->
+            assertEquals(userPrompt, prompt)
             assertEquals("session-ready", snapshot.sessionSummary)
             Result.success(
                 AiAgentPlan.ToolExecution(
                     tool = ClawTool.GET_CAPABILITIES,
                     arguments = mapOf("source" to "ai"),
-                    assistantMessage = "我先读取能力列表。",
-                    reasoning = "用户在询问当前能力"
+                    assistantMessage = "\u6211\u5148\u8bfb\u53d6\u80fd\u529b\u5217\u8868\u3002",
+                    reasoning = "\u7528\u6237\u5728\u8be2\u95ee\u5f53\u524d\u80fd\u529b"
                 )
             )
         }
@@ -155,44 +158,59 @@ class ChatPromptPlannerTest {
         assertEquals(ClawTool.GET_CAPABILITIES, plan.tool)
         assertEquals("ai", plan.arguments["source"])
         assertTrue(plan.reflectResultWithModel)
-        assertEquals("AI 决策工具: 读取能力列表", plan.aiStatus)
+        assertEquals(
+            "AI \u51b3\u7b56\u5de5\u5177: \u8bfb\u53d6\u80fd\u529b\u5217\u8868",
+            plan.aiStatus
+        )
+    }
+
+    @Test
+    fun planRoutesConversationalCapabilityPromptToAi() = runBlocking {
+        var aiCalled = false
+        val plan = ChatPromptPlanner.plan(
+            context = plannerContext("\u5e2e\u6211\u770b\u770b\u73b0\u5728\u6709\u54ea\u4e9b\u80fd\u529b")
+        ) { _, _, _, _ ->
+            aiCalled = true
+            Result.success(AiAgentPlan.AssistantReply("ok"))
+        }
+        assertTrue(aiCalled)
+        assertTrue(plan is ChatPromptPlan.AssistantReply)
     }
 
     @Test
     fun planFallsBackToAssistantReplyWhenAiPlannerFails() = runBlocking {
         val plan = ChatPromptPlanner.plan(
-            context = plannerContext("解释一下当前状态")
-        ) { _, _, _ ->
+            context = plannerContext("\u89e3\u91ca\u4e00\u4e0b\u5f53\u524d\u72b6\u6001")
+        ) { _, _, _, _ ->
             Result.failure(IllegalStateException("network unavailable"))
         }
 
         assertTrue(plan is ChatPromptPlan.AssistantReply)
         plan as ChatPromptPlan.AssistantReply
-        assertTrue(plan.message.contains("模型请求失败"))
-        assertEquals("AI 请求失败", plan.aiStatus)
+        assertTrue(plan.message.contains("\u6a21\u578b\u8bf7\u6c42\u5931\u8d25"))
+        assertEquals("AI \u8bf7\u6c42\u5931\u8d25", plan.aiStatus)
     }
 
     @Test
     fun buildAiPromptWithHistoryIncludesRecentTurns() {
         val prompt = ChatPromptPlanner.buildAiPromptWithHistory(
-            currentPrompt = "再 ping 一次",
+            currentPrompt = "ping again",
             recentChat = listOf(
-                ChatHistoryTurn(role = "user", content = "先探测会话"),
-                ChatHistoryTurn(role = "assistant", content = "探测完成")
+                ChatHistoryTurn(role = "user", content = "probe first"),
+                ChatHistoryTurn(role = "assistant", content = "probe done")
             )
         )
-        assertTrue(prompt.contains("先探测会话"))
-        assertTrue(prompt.contains("探测完成"))
-        assertTrue(prompt.contains("再 ping 一次"))
-        assertTrue(prompt.contains("最近对话"))
+        assertTrue(prompt.contains("probe first"))
+        assertTrue(prompt.contains("probe done"))
+        assertTrue(prompt.contains("ping again"))
     }
 
     @Test
     fun buildAiPromptWithHistoryReturnsRawPromptWhenEmpty() {
         assertEquals(
-            "单独请求",
+            "alone",
             ChatPromptPlanner.buildAiPromptWithHistory(
-                currentPrompt = "单独请求",
+                currentPrompt = "alone",
                 recentChat = emptyList()
             )
         )
@@ -203,21 +221,21 @@ class ChatPromptPlannerTest {
         var capturedPrompt = ""
         val plan = ChatPromptPlanner.plan(
             context = plannerContext(
-                prompt = "取消刚才那个",
+                prompt = "cancel previous",
                 recentChat = listOf(
-                    ChatHistoryTurn(role = "user", content = "提交 runtime 任务"),
-                    ChatHistoryTurn(role = "assistant", content = "已提交 task-9")
+                    ChatHistoryTurn(role = "user", content = "submit runtime task"),
+                    ChatHistoryTurn(role = "assistant", content = "submitted task-9")
                 )
             )
-        ) { _, prompt, _ ->
+        ) { _, prompt, _, _ ->
             capturedPrompt = prompt
-            Result.success(AiAgentPlan.AssistantReply("收到"))
+            Result.success(AiAgentPlan.AssistantReply("ok"))
         }
 
         assertTrue(plan is ChatPromptPlan.AssistantReply)
-        assertTrue(capturedPrompt.contains("提交 runtime 任务"))
+        assertTrue(capturedPrompt.contains("submit runtime task"))
         assertTrue(capturedPrompt.contains("task-9"))
-        assertTrue(capturedPrompt.contains("取消刚才那个"))
+        assertTrue(capturedPrompt.contains("cancel previous"))
     }
 
     private fun plannerContext(

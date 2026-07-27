@@ -19,7 +19,7 @@ internal fun buildLocalEnvironmentSummary(status: LocalEnvironmentStatus): Strin
     val writeSettings = permissionGrantedLabel(status.writeSettingsGranted)
     val allFiles = permissionGrantedLabel(status.allFilesAccessGranted)
     val shizuku = shizukuEnvLabel(status)
-    return "Root=$root, Magisk守护=$magisk, 模块=$module, Runtime=$runtime, LSPosed=$lsposed, Accessibility=$accessibility, 通知=$notification, Shizuku=$shizuku, 系统设置=$writeSettings, 全部文件=$allFiles"
+    return "Root=$root, Root环境=$magisk, 模块=$module, Runtime=$runtime, LSPosed=$lsposed, Accessibility=$accessibility, 通知=$notification, Shizuku=$shizuku, 系统设置=$writeSettings, 全部文件=$allFiles"
 }
 
 internal fun rootStatusLabel(rootGranted: Boolean?): String {
@@ -30,12 +30,63 @@ internal fun rootStatusLabel(rootGranted: Boolean?): String {
     }
 }
 
+internal fun rootHeroLabel(rootGranted: Boolean?): String {
+    return when (rootGranted) {
+        true -> "正常"
+        false -> "失败"
+        null -> "失败"
+    }
+}
+
+internal fun accessibilityHeroLabel(enabled: Boolean): String {
+    return if (enabled) "启用" else "禁用"
+}
+
+internal fun runtimeHeroLabel(
+    sessionState: com.clawdroid.app.runtime.ClawRuntimeConnectionState,
+    status: LocalEnvironmentStatus
+): String {
+    return when {
+        !status.runtimeDaemonRunning -> "丢失"
+        sessionState == com.clawdroid.app.runtime.ClawRuntimeConnectionState.Ready -> "正常"
+        sessionState == com.clawdroid.app.runtime.ClawRuntimeConnectionState.Degraded -> "故障"
+        else -> "故障"
+    }
+}
+
 internal fun lsposedStatusLabel(status: LocalEnvironmentStatus): String {
     return when {
         status.xposedInjected -> "已注入"
-        status.lsposedManagerInstalled -> "Manager 已安装(待注入)"
-        else -> "未确认"
+        status.lsposedManagerInstalled -> "未注入"
+        else -> "未安装"
     }
+}
+
+internal fun shizukuEnvLabel(status: LocalEnvironmentStatus): String {
+    return if (status.shizukuPermissionGranted) "已授权" else "未授权"
+}
+
+internal fun selinuxStatusLabel(status: LocalEnvironmentStatus): String {
+    return when (status.selinuxEnforcing) {
+        true -> "启用"
+        false -> "禁用"
+        null -> "未知"
+    }
+}
+
+internal fun networkStatusLabel(status: LocalEnvironmentStatus): String {
+    return if (status.networkConnected) "已连接" else "已断开"
+}
+
+internal fun eventSubscriptionLabel(streaming: Boolean): String {
+    return if (streaming) "已订阅" else "未订阅"
+}
+
+internal fun corePermissionsGranted(status: LocalEnvironmentStatus): Boolean {
+    return status.notificationPermissionGranted &&
+        status.accessibilityEnabled &&
+        status.writeSettingsGranted &&
+        status.allFilesAccessGranted
 }
 
 internal fun magiskStatusLabel(status: LocalEnvironmentStatus): String {
@@ -49,7 +100,11 @@ internal fun magiskStatusLabel(status: LocalEnvironmentStatus): String {
 }
 
 internal fun magiskDaemonStatusLabel(status: LocalEnvironmentStatus): String {
-    return if (status.magiskDaemonRunning) "运行中" else "未检测到"
+    return when {
+        status.magiskDaemonRunning -> "就绪"
+        status.magiskModuleInstalled || status.runtimeDaemonRunning -> "环境可用"
+        else -> "未检测到"
+    }
 }
 
 internal fun moduleStatusLabel(status: LocalEnvironmentStatus): String {
@@ -66,15 +121,6 @@ internal fun runtimeDaemonStatusLabel(status: LocalEnvironmentStatus): String {
 
 internal fun booleanStatusLabel(value: Boolean): String {
     return if (value) "正常" else "未启用"
-}
-
-internal fun shizukuEnvLabel(status: LocalEnvironmentStatus): String {
-    return when {
-        status.shizukuPermissionGranted -> "已授权"
-        status.shizukuBinderAlive -> "未授权"
-        status.shizukuManagerInstalled -> "未连接"
-        else -> "未安装"
-    }
 }
 
 internal fun permissionGrantedLabel(value: Boolean): String {
@@ -178,8 +224,42 @@ internal fun formatEpochSeconds(value: Long): String {
     if (value <= 0L) {
         return "unknown-time"
     }
-    val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    return formatter.format(Date(value * 1000))
+    return requireNotNull(chatTimeFormatter.get()).format(Date(value * 1000))
+}
+
+/** 气泡时间：当天只显示时分，跨天显示月日+时分。 */
+internal fun formatChatBubbleTime(epochMs: Long): String {
+    if (epochMs <= 0L) return ""
+    val now = System.currentTimeMillis()
+    val sameDay = isSameCalendarDay(epochMs, now)
+    val formatter = if (sameDay) {
+        requireNotNull(chatTimeOfDayFormatter.get())
+    } else {
+        requireNotNull(chatDayTimeFormatter.get())
+    }
+    return formatter.format(Date(epochMs))
+}
+
+private fun isSameCalendarDay(aMs: Long, bMs: Long): Boolean {
+    val calA = java.util.Calendar.getInstance().apply { timeInMillis = aMs }
+    val calB = java.util.Calendar.getInstance().apply { timeInMillis = bMs }
+    return calA.get(java.util.Calendar.YEAR) == calB.get(java.util.Calendar.YEAR) &&
+        calA.get(java.util.Calendar.DAY_OF_YEAR) == calB.get(java.util.Calendar.DAY_OF_YEAR)
+}
+
+private val chatTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat =
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+}
+
+private val chatTimeOfDayFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat =
+        SimpleDateFormat("HH:mm", Locale.getDefault())
+}
+
+private val chatDayTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat =
+        SimpleDateFormat("M/d HH:mm", Locale.getDefault())
 }
 
 internal fun parseFocusedWindowSummary(raw: String?): String {

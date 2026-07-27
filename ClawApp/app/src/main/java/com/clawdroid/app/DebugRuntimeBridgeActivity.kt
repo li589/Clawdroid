@@ -7,7 +7,7 @@ import androidx.lifecycle.lifecycleScope
 import com.clawdroid.app.automation.AutomationRuntimeStore
 import com.clawdroid.app.runtime.ClawRuntimeClient
 import com.clawdroid.app.tools.ClawToolExecutor
-import com.clawdroid.app.ui.ChatHistoryStore
+import com.clawdroid.app.data.ChatHistoryStore
 import com.clawdroid.app.ui.ChatMessageState
 import com.clawdroid.app.ui.ChatRole
 import com.clawdroid.app.ui.ChatViewModel

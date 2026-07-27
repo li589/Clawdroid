@@ -5,7 +5,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
@@ -14,13 +22,26 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -34,14 +55,24 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -129,6 +160,9 @@ internal fun OverviewHeroCard(
     val vSpacing = responsiveFlowVSpacing()
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
+    val rootLabel = rootHeroLabel(localEnvironmentStatus.rootGranted)
+    val a11yLabel = accessibilityHeroLabel(localEnvironmentStatus.accessibilityEnabled)
+    val runtimeLabel = runtimeHeroLabel(sessionState, localEnvironmentStatus)
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = CardDefaults.elevatedShape,
@@ -152,23 +186,15 @@ internal fun OverviewHeroCard(
             Column(verticalArrangement = Arrangement.spacedBy(innerSpacing)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "设备概览",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "环境与状态总览",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        text = "状态",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     HeroBadge(
                         text = if (eventStreaming) "活跃" else "空闲",
                         accent = if (eventStreaming) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
@@ -180,36 +206,36 @@ internal fun OverviewHeroCard(
                     verticalArrangement = Arrangement.spacedBy(vSpacing)
                 ) {
                     StatusChip(
-                        label = "Runtime ${sessionState.name}",
-                        tone = toneForConnectionState(sessionState)
-                    )
-                    StatusChip(
-                        label = "Root ${rootStatusLabel(localEnvironmentStatus.rootGranted)}",
-                        tone = toneForRootState(localEnvironmentStatus.rootGranted)
-                    )
-                    StatusChip(
-                        label = "A11y ${booleanStatusLabel(localEnvironmentStatus.accessibilityEnabled)}",
-                        tone = toneForBoolean(localEnvironmentStatus.accessibilityEnabled)
-                    )
-                    StatusChip(
                         label = "LSPosed ${lsposedStatusLabel(localEnvironmentStatus)}",
                         tone = toneForLsposed(localEnvironmentStatus)
                     )
-                    runtimeLoaded?.let { loaded ->
-                        StatusChip(
-                            label = if (loaded) "运行时注入已加载" else "运行时注入未加载",
-                            tone = if (loaded) StatusTone.Success else StatusTone.Danger
-                        )
-                    }
-                    if (degradedReason.isNotBlank()) {
-                        StatusChip(
-                            label = "Degraded ${degradedReason.take(18)}",
-                            tone = StatusTone.Warning
-                        )
-                    }
                     StatusChip(
-                        label = if (eventStreaming) "事件订阅中" else "事件空闲",
+                        label = "Shizuku ${shizukuEnvLabel(localEnvironmentStatus)}",
+                        tone = if (localEnvironmentStatus.shizukuPermissionGranted) {
+                            StatusTone.Success
+                        } else {
+                            StatusTone.Warning
+                        }
+                    )
+                    StatusChip(
+                        label = "SELinux ${selinuxStatusLabel(localEnvironmentStatus)}",
+                        tone = when (localEnvironmentStatus.selinuxEnforcing) {
+                            true -> StatusTone.Warning
+                            false -> StatusTone.Success
+                            null -> StatusTone.Neutral
+                        }
+                    )
+                    StatusChip(
+                        label = "事件 ${eventSubscriptionLabel(eventStreaming)}",
                         tone = if (eventStreaming) StatusTone.Active else StatusTone.Neutral
+                    )
+                    StatusChip(
+                        label = "网络 ${networkStatusLabel(localEnvironmentStatus)}",
+                        tone = if (localEnvironmentStatus.networkConnected) {
+                            StatusTone.Success
+                        } else {
+                            StatusTone.Warning
+                        }
                     )
                 }
                 Surface(
@@ -220,29 +246,21 @@ internal fun OverviewHeroCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(innerSpacing),
-                        verticalArrangement = Arrangement.spacedBy(innerSpacing)
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         MetricLine(
-                            label = "系统负载",
-                            value = daemonMetrics
+                            label = "负载",
+                            value = daemonMetrics.take(80).ifBlank { "—" }
                         )
                         MetricLine(
-                            label = "Runtime 进程",
-                            value = buildString {
-                                append(runtimeMetrics)
-                                if (runtimeLoaded != null) {
-                                    append("\n注入: ")
-                                    append(if (runtimeLoaded) "已加载" else "未加载")
-                                }
-                                if (runtimeProcess.isNotBlank()) {
-                                    append("\n进程: ")
-                                    append(runtimeProcess)
-                                }
-                            }
+                            label = "窗口",
+                            value = windowSummary.take(80).ifBlank { "—" }
                         )
                         MetricLine(
-                            label = "前台窗口",
-                            value = windowSummary
+                            label = "系统",
+                            value = localEnvironmentStatus.systemVersionLabel
+                                .ifBlank { "—" }
+                                .take(120)
                         )
                     }
                 }
@@ -252,20 +270,20 @@ internal fun OverviewHeroCard(
                 ) {
                     HeroInfoTile(
                         modifier = Modifier.weight(1f),
-                        title = "会话",
-                        value = sessionState.name,
+                        title = "Root",
+                        value = rootLabel,
                         accent = MaterialTheme.colorScheme.primary
                     )
                     HeroInfoTile(
                         modifier = Modifier.weight(1f),
-                        title = "Root",
-                        value = rootStatusLabel(localEnvironmentStatus.rootGranted),
+                        title = "A11y",
+                        value = a11yLabel,
                         accent = MaterialTheme.colorScheme.secondary
                     )
                     HeroInfoTile(
                         modifier = Modifier.weight(1f),
-                        title = "A11y",
-                        value = booleanStatusLabel(localEnvironmentStatus.accessibilityEnabled),
+                        title = "Runtime",
+                        value = runtimeLabel,
                         accent = MaterialTheme.colorScheme.tertiary
                     )
                 }
@@ -289,58 +307,136 @@ internal fun SectionTitle(title: String) {
 }
 
 @Composable
+internal fun BrandPageHeader(
+    modifier: Modifier = Modifier,
+    title: String = "Clawdroid",
+    subtitle: String? = null,
+    onBackClick: (() -> Unit)? = null,
+    compactTitle: Boolean = false
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Start
+        ) {
+            if (onBackClick != null) {
+                IconButton(
+                    onClick = onBackClick,
+                    modifier = Modifier
+                        .offset(x = (-10).dp)
+                        .size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "返回",
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+            Text(
+                text = title,
+                style = if (compactTitle) {
+                    MaterialTheme.typography.titleMedium
+                } else {
+                    MaterialTheme.typography.headlineMedium
+                },
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = if (onBackClick != null) {
+                    Modifier.offset(x = (-10).dp)
+                } else {
+                    Modifier
+                }
+            )
+        }
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = if (onBackClick != null) {
+                    Modifier.padding(start = 30.dp)
+                } else {
+                    Modifier
+                }
+            )
+        }
+    }
+}
+
+@Composable
 internal fun FloatingBottomNavBar(
     modifier: Modifier = Modifier,
     currentPage: ConsolePage,
     onPageSelected: (ConsolePage) -> Unit
 ) {
     val config = rememberAdaptableLayoutConfig()
+    val glassShape = RoundedCornerShape(28.dp)
+    val glassFill = MaterialTheme.colorScheme.surface.copy(alpha = 0.38f)
+    val glassHighlight = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = config.navBarPaddingH, vertical = config.navBarPaddingV)
+            .padding(horizontal = config.navBarPaddingH, vertical = 2.dp)
             .navigationBarsPadding()
     ) {
-        Card(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .shadow(
+                    elevation = 10.dp,
+                    shape = glassShape,
+                    ambientColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.18f),
+                    spotColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.22f)
+                )
+                .clip(glassShape)
+                .background(glassFill)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            glassHighlight,
+                            Color.Transparent
+                        )
+                    )
+                )
                 .border(
                     BorderStroke(
                         width = 1.dp,
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
                     ),
-                    shape = RoundedCornerShape(24.dp)
-                ),
-            shape = RoundedCornerShape(24.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f)
-            )
+                    shape = glassShape
+                )
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = 6.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(config.navBarSpacing)
             ) {
                 FloatingNavButton(
                     modifier = Modifier.weight(1f),
                     selected = currentPage == ConsolePage.Overview,
-                    icon = "概",
+                    icon = Icons.Outlined.Home,
                     label = "概览",
                     onClick = { onPageSelected(ConsolePage.Overview) }
                 )
                 FloatingNavButton(
                     modifier = Modifier.weight(1f),
                     selected = currentPage == ConsolePage.Chat,
-                    icon = "聊",
+                    icon = Icons.Outlined.ChatBubbleOutline,
                     label = "聊天",
                     onClick = { onPageSelected(ConsolePage.Chat) }
                 )
                 FloatingNavButton(
                     modifier = Modifier.weight(1f),
                     selected = currentPage == ConsolePage.Settings,
-                    icon = "设",
+                    icon = Icons.Outlined.Settings,
                     label = "设置",
                     onClick = { onPageSelected(ConsolePage.Settings) }
                 )
@@ -451,11 +547,21 @@ internal fun ChatWorkspaceCard(
                         horizontalArrangement = Arrangement.spacedBy(hSpacing)
                     ) {
                         CircleIconButton(
-                            icon = { Text("图") },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Image,
+                                    contentDescription = "添加图片"
+                                )
+                            },
                             onClick = onImageClick
                         )
                         CircleIconButton(
-                            icon = { Text("语") },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Mic,
+                                    contentDescription = "语音输入"
+                                )
+                            },
                             onClick = onVoiceClick
                         )
                         FilledTonalButton(
@@ -1204,9 +1310,13 @@ internal fun MetricsOverviewCard(
                 fallback = runtimeMetrics
             )
             ProcessMetricPanel(
-                title = "Magisk 守护进程",
+                title = "Root 环境进程",
                 metric = dashboardMetrics.magiskProcess,
-                fallback = if (dashboardMetrics.rootBacked) "未发现 magiskd" else "Root 未就绪，暂无法读取"
+                fallback = if (dashboardMetrics.rootBacked) {
+                    "未发现 magiskd（KernelSU/APatch 等可能无此进程，属正常；状态区「Root环境」看目录/模块即可）"
+                } else {
+                    "Root 未就绪，暂无法读取"
+                }
             )
             ResultPanel(text = "系统负载与内存: $daemonMetrics")
             ResultPanel(text = "前台窗口: $windowSummary")
@@ -1269,9 +1379,9 @@ private fun buildDashboardAnomalies(
             if (!dashboardMetrics.magiskProcess.present) {
                 add(
                     DashboardAnomalyInfo(
-                        label = "未发现 Magisk 守护",
-                        detail = "Root 已可用，但暂未匹配到 magiskd 进程。",
-                        tone = StatusTone.Warning
+                        label = "未发现 magiskd 进程",
+                        detail = "属常见情况：KernelSU/APatch 通常没有 magiskd；请以状态区「Root环境 / 模块 / Runtime」为准。",
+                        tone = StatusTone.Neutral
                     )
                 )
             }
@@ -1370,6 +1480,218 @@ internal fun ActionCard(
                 onClick = onClick,
                 modifier = Modifier.fillMaxWidth()
             )
+            ResultPanel(text = result)
+        }
+    }
+}
+
+@Composable
+internal fun BasicPermissionsCard(
+    status: LocalEnvironmentStatus,
+    actionStatus: String,
+    rememberedNotification: Boolean = false,
+    rememberedWriteSettings: Boolean = false,
+    rememberedAllFiles: Boolean = false,
+    rememberedAccessibility: Boolean = false,
+    onToggleNotification: () -> Unit,
+    onToggleAccessibility: () -> Unit,
+    onToggleWriteSettings: () -> Unit,
+    onToggleAllFiles: () -> Unit,
+    onToggleNotificationListener: () -> Unit,
+    onToggleShizuku: () -> Unit,
+    onRootGrantAll: () -> Unit
+) {
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    val allCoreOk = corePermissionsGranted(status)
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "基础权限", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "开关以系统实时状态为准；曾授权过的项会标注记忆。点击开关跳转系统页，返回后自动复核。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            PermissionSwitchRow(
+                title = "通知权限",
+                checked = status.notificationPermissionGranted,
+                subtitle = permissionMemoryHint(
+                    live = status.notificationPermissionGranted,
+                    remembered = rememberedNotification
+                ),
+                onCheckedChange = { wanted ->
+                    if (wanted != status.notificationPermissionGranted) onToggleNotification()
+                }
+            )
+            PermissionSwitchRow(
+                title = "无障碍服务",
+                checked = status.accessibilityEnabled,
+                subtitle = permissionMemoryHint(
+                    live = status.accessibilityEnabled,
+                    remembered = rememberedAccessibility
+                ) ?: "仅手动或 Root 一键开启，启动不会自动授权",
+                onCheckedChange = { wanted ->
+                    if (wanted != status.accessibilityEnabled) onToggleAccessibility()
+                }
+            )
+            PermissionSwitchRow(
+                title = "修改系统设置",
+                checked = status.writeSettingsGranted,
+                subtitle = permissionMemoryHint(
+                    live = status.writeSettingsGranted,
+                    remembered = rememberedWriteSettings
+                ),
+                onCheckedChange = { wanted ->
+                    if (wanted != status.writeSettingsGranted) onToggleWriteSettings()
+                }
+            )
+            PermissionSwitchRow(
+                title = "全部文件访问",
+                checked = status.allFilesAccessGranted,
+                subtitle = permissionMemoryHint(
+                    live = status.allFilesAccessGranted,
+                    remembered = rememberedAllFiles
+                ),
+                onCheckedChange = { wanted ->
+                    if (wanted != status.allFilesAccessGranted) onToggleAllFiles()
+                }
+            )
+            PermissionSwitchRow(
+                title = "通知监听",
+                checked = status.notificationListenerEnabled,
+                onCheckedChange = { wanted ->
+                    if (wanted != status.notificationListenerEnabled) onToggleNotificationListener()
+                }
+            )
+            PermissionSwitchRow(
+                title = "Shizuku",
+                checked = status.shizukuPermissionGranted,
+                subtitle = when {
+                    status.shizukuPermissionGranted -> null
+                    status.shizukuBinderAlive -> "服务已连接，点击请求授权"
+                    status.shizukuManagerInstalled -> "已安装但服务未连接"
+                    else -> "未安装 Shizuku"
+                },
+                onCheckedChange = { wanted ->
+                    if (wanted != status.shizukuPermissionGranted) onToggleShizuku()
+                }
+            )
+            PermissionSwitchRow(
+                title = "Root 一键授权",
+                subtitle = if (allCoreOk) {
+                    "通知 / 无障碍 / 系统设置 / 全部文件均已就绪"
+                } else {
+                    "用 Root 一次性授予上述核心权限（含无障碍）"
+                },
+                checked = allCoreOk,
+                enabled = !allCoreOk,
+                onCheckedChange = { enable ->
+                    if (enable) onRootGrantAll()
+                }
+            )
+            val feedback = actionStatus.trim()
+            if (feedback.isNotBlank() &&
+                feedback != "未执行权限修复" &&
+                !feedback.startsWith("Root=")
+            ) {
+                ResultPanel(text = feedback)
+            }
+        }
+    }
+}
+
+private fun permissionMemoryHint(live: Boolean, remembered: Boolean): String? {
+    return when {
+        live && remembered -> "系统已开启（已记忆）"
+        live -> "系统已开启"
+        remembered -> "曾授权，当前系统未开启 — 点击重新授权"
+        else -> null
+    }
+}
+
+@Composable
+private fun PermissionSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    subtitle: String? = null,
+    enabled: Boolean = true
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+        ) {
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun LocalEnvironmentOpsCard(
+    result: String,
+    eventStreaming: Boolean,
+    onDetectEnvironment: () -> Unit,
+    onPing: () -> Unit,
+    onCapabilities: () -> Unit,
+    onCapture: () -> Unit,
+    onShell: () -> Unit,
+    onEvents: () -> Unit
+) {
+    val pad = responsiveCardPadding()
+    val innerSpacing = responsiveCardInnerSpacing()
+    val hSpacing = responsiveFlowHSpacing()
+    val vSpacing = responsiveFlowVSpacing()
+    ModernCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
+        ) {
+            Text(text = "本地环境", style = MaterialTheme.typography.titleMedium)
+            PrimaryActionButton(
+                text = "环境检测",
+                onClick = onDetectEnvironment,
+                modifier = Modifier.fillMaxWidth()
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(hSpacing),
+                verticalArrangement = Arrangement.spacedBy(vSpacing)
+            ) {
+                AssistChip(onClick = onPing, label = { Text("Ping") })
+                AssistChip(onClick = onCapabilities, label = { Text("Capabilities") })
+                AssistChip(onClick = onCapture, label = { Text("截图并预览") })
+                AssistChip(onClick = onShell, label = { Text("wm size") })
+                AssistChip(
+                    onClick = onEvents,
+                    label = { Text(if (eventStreaming) "停止事件流" else "开始事件流") }
+                )
+            }
             ResultPanel(text = result)
         }
     }
@@ -1587,6 +1909,7 @@ internal fun EventSubscriptionCard(
     title: String,
     result: String,
     streaming: Boolean,
+    recentEvents: List<String> = emptyList(),
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -1600,6 +1923,11 @@ internal fun EventSubscriptionCard(
             verticalArrangement = Arrangement.spacedBy(innerSpacing)
         ) {
             Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "事件流会持续接收 Runtime 推送的窗口、任务与健康变化。需要实时跟踪界面与守护状态时再开启订阅；平时可保持关闭以节省电量。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             PrimaryActionButton(
                 text = "开始订阅",
                 onClick = onStart,
@@ -1613,6 +1941,14 @@ internal fun EventSubscriptionCard(
                 modifier = Modifier.fillMaxWidth()
             )
             ResultPanel(text = result)
+            if (recentEvents.isNotEmpty()) {
+                Text(
+                    text = "最近事件",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                ResultPanel(text = recentEvents.takeLast(12).joinToString("\n"))
+            }
         }
     }
 }
@@ -1678,7 +2014,8 @@ internal fun ShellCard(
 }
 
 @Composable
-internal fun PreviewCard(imageBitmap: androidx.compose.ui.graphics.ImageBitmap) {
+internal fun PreviewCard(imageBitmap: androidx.compose.ui.graphics.ImageBitmap?) {
+    if (imageBitmap == null) return
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     ModernCard {
@@ -1762,68 +2099,204 @@ internal fun OutputPanel(text: String) {
 }
 
 @Composable
-internal fun ChatBubble(message: ChatMessage) {
+internal fun ChatBubble(
+    message: ChatMessage,
+    showSenderLabel: Boolean = true
+) {
     val isUser = message.role == ChatRole.User
+    val context = LocalContext.current
+    val timeText = remember(message.createdAtEpochMs) {
+        formatChatBubbleTime(message.createdAtEpochMs)
+    }
+    val contentColor = if (isUser) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val selectionColors = remember(isUser) {
+        if (isUser) {
+            TextSelectionColors(
+                handleColor = Color.White,
+                backgroundColor = Color.White.copy(alpha = 0.35f)
+            )
+        } else {
+            TextSelectionColors(
+                handleColor = Color(0xFF1565C0),
+                backgroundColor = Color(0xFF1565C0).copy(alpha = 0.28f)
+            )
+        }
+    }
+    val useRich = !isUser && (
+        message.state == ChatMessageState.Final ||
+            message.state == ChatMessageState.Terminated ||
+            message.content.length > 80 ||
+            message.content.contains("```") ||
+            message.content.contains('|')
+        )
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         Surface(
             shape = RoundedCornerShape(
-                topStart = 22.dp,
-                topEnd = 22.dp,
-                bottomStart = if (isUser) 22.dp else 10.dp,
-                bottomEnd = if (isUser) 10.dp else 22.dp
+                topStart = 18.dp,
+                topEnd = 18.dp,
+                bottomStart = if (isUser) 18.dp else 6.dp,
+                bottomEnd = if (isUser) 6.dp else 18.dp
             ),
             color = if (isUser) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.88f)
+                MaterialTheme.colorScheme.primary
             } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.88f)
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
             },
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
-            modifier = Modifier.fillMaxWidth(0.88f)
+            tonalElevation = if (isUser) 0.dp else 1.dp,
+            modifier = if (isUser) {
+                Modifier.widthIn(max = 320.dp)
+            } else {
+                Modifier.fillMaxWidth(0.92f)
+            }
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text(
-                    text = if (isUser) "你" else "Clawdroid",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (showSenderLabel) {
                     Text(
-                        text = formatEpochSeconds((message.createdAtEpochMs / 1000).coerceAtLeast(0)),
+                        text = if (isUser) "你" else "Clawdroid",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isUser) {
+                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
-                    if (message.state == ChatMessageState.Streaming) {
+                }
+                message.attachmentLabel?.let { label ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.AttachFile,
+                            contentDescription = null,
+                            tint = if (isUser) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
+                            } else {
+                                MaterialTheme.colorScheme.secondary
+                            },
+                            modifier = Modifier.size(14.dp)
+                        )
                         Text(
-                            text = "执行中",
+                            text = label,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                            color = if (isUser) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
+                            } else {
+                                MaterialTheme.colorScheme.secondary
+                            }
                         )
                     }
                 }
-                message.attachmentLabel?.let {
-                    Text(
-                        text = "附件: $it",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
+                // Selection only — no long-press menu competing with drag handles.
+                CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
+                    SelectionContainer {
+                        if (useRich) {
+                            com.clawdroid.app.ui.rich.RichMessageContent(
+                                content = message.content,
+                                contentColor = contentColor,
+                                streaming = message.state == ChatMessageState.Streaming
+                            )
+                        } else {
+                            Text(
+                                text = message.content,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = contentColor
+                            )
+                        }
+                    }
                 }
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 220.dp)
-                        .verticalScroll(rememberScrollState())
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = timeText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isUser) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        if (message.state == ChatMessageState.Streaming) {
+                            ChatStreamingDots(
+                                color = if (isUser) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                        } else if (message.state == ChatMessageState.Terminated) {
+                            Text(
+                                text = "已终止",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isUser) {
+                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                }
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = { copyChatText(context, message.content) },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.ContentCopy,
+                            contentDescription = "复制全文",
+                            tint = if (isUser) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+private fun copyChatText(context: Context, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    cm.setPrimaryClip(ClipData.newPlainText("clawdroid-chat", text))
+    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+}
+
+@Composable
+private fun ChatStreamingDots(color: Color) {
+    val transition = rememberInfiniteTransition(label = "stream-dots")
+    val alpha by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "stream-alpha"
+    )
+    Text(
+        text = "输入中",
+        style = MaterialTheme.typography.labelSmall,
+        color = color.copy(alpha = alpha)
+    )
 }
 
 @Composable
@@ -2039,7 +2512,7 @@ private fun HeroInfoTile(
 private fun FloatingNavButton(
     modifier: Modifier = Modifier,
     selected: Boolean,
-    icon: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     onClick: () -> Unit
 ) {
@@ -2053,6 +2526,11 @@ private fun FloatingNavButton(
     } else {
         MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)
     }
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Surface(
         modifier = modifier
             .clickable(onClick = onClick),
@@ -2064,19 +2542,19 @@ private fun FloatingNavButton(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            Text(
-                text = icon,
-                style = MaterialTheme.typography.labelLarge,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = contentColor,
+                modifier = Modifier.padding(top = 2.dp)
             )
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = contentColor,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

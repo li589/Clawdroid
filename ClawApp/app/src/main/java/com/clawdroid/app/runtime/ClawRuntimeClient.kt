@@ -113,6 +113,12 @@ class ClawRuntimeClient(
         computeHash: Boolean = true
     ) = delegate.statFileLimited(path, computeHash)
 
+    suspend fun listDirLimited(
+        path: String,
+        offset: Int = 0,
+        limit: Int = 100
+    ) = delegate.listDirLimited(path, offset, limit)
+
     suspend fun injectTap(
         x: Int,
         y: Int,

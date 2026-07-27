@@ -1,7 +1,7 @@
 package com.clawdroid.app.mcp.assist
 
 import android.content.Context
-import com.clawdroid.app.ui.AppSecretCipher
+import com.clawdroid.app.data.AppSecretCipher
 
 data class AssistMcpConfig(
     val enabled: Boolean = false,
