@@ -35,7 +35,7 @@ Clawdroid 的目标不是单纯提供提权能力，而是建立一套可治理�
   - 外部参考源码与调研资料
   - 不属于主工程实现目录，不作为主仓构建前提
 
-详细目录说明见 [目录说明.md](Docs/目录说明.md)。
+详细目录说明见 [目录说明.md](Docs/目录说明.md)。当前架构入口见 [architecture.md](Docs/architecture.md)；改码约定见 [AGENTS.md](AGENTS.md)。模块说明：[ClawApp/README.md](ClawApp/README.md)、[ClawRuntime/README.md](ClawRuntime/README.md)。
 
 ## 许可证与边界
 
@@ -57,15 +57,17 @@ Clawdroid 的目标不是单纯提供提权能力，而是建立一套可治理�
 
 **基线后已落地、待验收收口**
 
-- AI Agent 编排与多供应商 Model API
-- 本地工具地基（文件 / App / 下载 / 通知 / Web / 沙箱 Shell / 相机 / 传感器 / FTP 等）
+- AI Agent 编排与多供应商 Model API；可配置工具环 / API 预算 / 上下文压缩；`ToolLoopDetector`
+- 本地工具地基（含 `file_list`、`:sandbox` shell、`termux_exec`、相机 / 传感器 / FTP 等）
+- Runtime `list_dir_limited`（需同步更新 Magisk 模块）
+- 设置分类导航；富文本聊天；edge-to-edge（SDK 35）
 - Assist MCP 双向调试桥（ADB forward / reverse）
 - LSPosed 适配器与 focus/view 推送（Settings / Browser / Launcher；微信默认关闭）
 - Shizuku 中层提权路径
 
 **下一阶段优先级（先验收、再加深）**
 
-1. Assist MCP + 工具冒烟联调，勾选 [Docs/assist-mcp.md](Docs/assist-mcp.md) 验收清单
+1. Assist MCP + 工具冒烟联调（含 `file_list` / Termux），勾选 [Docs/assist-mcp.md](Docs/assist-mcp.md)
 2. 兼容矩阵扩到第二台设备，并加强 CI（App unit test）
 3. 聊天 → Runtime `task_*` 任务化 Agent 闭环
 4. Runtime / Xposed 硬化与适配治理（不做深度业务自动化默开）
@@ -151,6 +153,8 @@ LSPosed 相关说明：
 
 ## 文档导航
 
+- [AGENTS.md](AGENTS.md) — 贡献者 / Agent 改码约定
+- [architecture.md](Docs/architecture.md) — **当前架构入口**
 - [下一步计划.md](Docs/下一步计划.md) — 当前优先级与完成标准
 - [基础方案设计.md](Docs/基础方案设计.md)
 - [protocol.md](Docs/protocol.md)
@@ -162,6 +166,7 @@ LSPosed 相关说明：
 - [发布前清单.md](Docs/发布前清单.md)
 - [compatibility-matrix.md](Docs/compatibility-matrix.md)
 - [release-notes.md](Docs/release-notes.md)
+- [Docs/archive/](Docs/archive/) — 非权威历史记录
 
 ## 参与贡献
 

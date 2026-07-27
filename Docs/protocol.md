@@ -131,7 +131,10 @@
 | `read_file_limited` | `file.read.limited` |
 | `write_file_limited` | `file.write.limited` |
 | `stat_file_limited` | `file.read.limited` |
+| `list_dir_limited` | `file.read.limited` |
 | `exec_shell_limited` | `shell.exec.limited` |
+| `shell_job_list` | `shell.exec.limited` |
+| `shell_job_get` | `shell.exec.limited` |
 | `subscribe_events` | `event.subscribe` |
 | `report_xposed_focus` | `event.report` |
 | `report_xposed_view` | `event.report` |
@@ -140,7 +143,7 @@
 | `task_list` | `task.manage` |
 | `task_cancel` | `task.manage` |
 
-> 动作目录以 `ClawRuntime/runtime/internal/ipc/actions.go` 与 App 侧 `RuntimeActionCatalog` 为准（共 18 个动作）；CI 通过 `scripts/check_runtime_catalog.py` 做 set equality 校验。
+> 动作目录以 `ClawRuntime/runtime/internal/ipc/actions.go` 与 App 侧 `RuntimeActionCatalog` 为准（共 **21** 个动作）；CI 通过 `scripts/check_runtime_catalog.py` 做 set equality 校验。
 
 ## 5. Error Codes
 
@@ -290,7 +293,7 @@ Retrying -> Failed
 
 ## 8. Action Definitions
 
-本节冻结 `v1` 协议中的全部 18 个动作定义（与 `actions.go` 对齐）。
+本节冻结 `v1` 协议中的全部 **21** 个动作定义（与 `actions.go` 对齐）。
 
 ### 8.1 `ping`
 
@@ -373,6 +376,7 @@ Retrying -> Failed
 - **是否幂等**: 否
 - **是否可取消**: 是
 - **默认超时**: `3000 ms`
+- **连接 deadline**: 与 `exec_shell_limited` 相同——处理期间清除套接字 `RequestTimeoutMS` 墙钟；App 侧读超时约 **45s**（见 §9.3）。
 - **审计级别**: 中
 - **成功返回示例**:
 
@@ -525,6 +529,31 @@ Retrying -> Failed
 - **默认超时**: `1500 ms`
 - **审计级别**: 中
 
+### 8.6.3 `list_dir_limited`
+
+- **Capability**: `file.read.limited`
+- **用途**: 在白名单路径内列举目录条目（名称、是否目录、大小、mtime），支持分页
+- **参数结构**:
+
+```json
+{
+  "path": "/sdcard",
+  "offset": 0,
+  "limit": 100
+}
+```
+
+- **参数范围**:
+  - `path`: 必须属于可读白名单（含 `/sdcard`、`/storage/emulated/0` 等，以 Runtime 配置为准）
+  - `offset`: `>= 0`
+  - `limit`: `1 - 500`（默认实现可裁剪）
+- **是否幂等**: 是
+- **是否可取消**: 否
+- **默认超时**: `3000 ms`
+- **审计级别**: 中
+- **成功返回要点**: `path`、`offset`、`limit`、`total`、`truncated`、`entries[]`（`name` / `is_dir` / `size` / `mtime_ms`）
+- **失败码**: 越界 `3004`，读失败 `3005`，非目录时 `invalid_request`
+
 ### 8.7 `exec_shell_limited`
 
 - **Capability**: `shell.exec.limited`
@@ -545,15 +574,33 @@ Retrying -> Failed
 - **是否可取消**: 是
 - **默认超时**: `3000 ms`
 - **审计级别**: 高
+- **连接 deadline**: App 与 Runtime 对 `exec_shell_limited` / `capture_screen` 会延长或清除套接字 `RequestTimeoutMS` 墙钟，避免短于命令 `timeout_ms` 时被掐断；App 侧读超时约为 `timeout_ms + 2s`。
 - **成功返回示例**:
 
 ```json
 {
   "exit_code": 0,
   "stdout": "...",
-  "stderr": ""
+  "stderr": "",
+  "job_id": "shell-..."
 }
 ```
+
+- **命令监视**: 每次执行会记入有界 `shell_job` 环形缓冲（最多 16 条，输出尾部 ≤4KiB），可通过 `shell_job_list` / `shell_job_get` 查询；`get_runtime_status` 与 `task_state_changed` 事件也会附带 `recent_shell_jobs`。
+
+### 8.7.1 `shell_job_list`
+
+- **Capability**: `shell.exec.limited`
+- **用途**: 列出近期受限 shell 执行快照（有界）
+- **参数**: `{ "limit": 16 }`（可选）
+- **是否幂等**: 是
+
+### 8.7.2 `shell_job_get`
+
+- **Capability**: `shell.exec.limited`
+- **用途**: 按 `job_id` 查询单次 shell 执行快照
+- **参数**: `{ "job_id": "shell-..." }`
+- **是否幂等**: 是
 
 ### 8.8 `subscribe_events`
 
@@ -699,6 +746,7 @@ Retrying -> Failed
 - **默认超时**: `3000 ms`
 - **审计级别**: 高
 - **失败码**: `7003` 提交失败，`7005` 队列满
+- **并发**: Runtime 调度器默认最多 **8** 个任务并行执行步骤，最多 **32** 个 in-flight（排队+运行）；超出返回 `7005`。可在 `runtime.yaml` 配置 `max_concurrent_tasks` / `max_inflight_tasks`。事件快照含 `active_tasks[]` 便于多 Agent 并行监视。
 
 ### 8.12 `task_get`
 
@@ -730,18 +778,30 @@ Retrying -> Failed
 
 ### 9.1 Idempotency
 
-- 幂等：`ping`、`get_capabilities`、`get_runtime_status`、`read_file_limited`、`stat_file_limited`、`subscribe_events`、`task_get`、`task_list`
+- 幂等：`ping`、`get_capabilities`、`get_runtime_status`、`read_file_limited`、`stat_file_limited`、`list_dir_limited`、`subscribe_events`、`task_get`、`task_list`
 - 非幂等：`capture_screen`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`write_file_limited`、`exec_shell_limited`、`report_xposed_focus`、`report_xposed_view`、`task_submit`、`task_cancel`
 
 ### 9.2 Cancellation
 
-- 不可取消动作：`ping`、`get_capabilities`、`get_runtime_status`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`write_file_limited`、`stat_file_limited`、`task_get`、`task_list`、`task_submit`、`task_cancel`
+- 不可取消动作：`ping`、`get_capabilities`、`get_runtime_status`、`inject_tap`、`inject_swipe`、`inject_keyevent`、`write_file_limited`、`stat_file_limited`、`list_dir_limited`、`task_get`、`task_list`、`task_submit`、`task_cancel`
 - 可取消动作：`capture_screen`、`read_file_limited`、`exec_shell_limited`、`subscribe_events`
 
 ### 9.3 Timeout
 
 - 如请求未显式声明超时，按动作默认超时执行
 - 超时后返回 `ERR_TIMEOUT`
+- **App 读超时（`LocalSocket.soTimeout`）**与动作默认超时配合，避免 `send()` 无限阻塞：
+
+| 动作类别 | App 读超时（约） |
+|----------|------------------|
+| 默认 / health 对齐 | `request_timeout_ms`（缺省 10s） |
+| `exec_shell_limited` | 参数 `timeout_ms + 2s` |
+| `capture_screen` | 45s |
+| inspect / `task_*` / inject / file | 10–15s |
+| `subscribe_events` 握手后 | `soTimeout=0`（流式） |
+
+- Runtime 对 `exec_shell_limited` / `capture_screen` 会临时清除连接 deadline（见 §8.3 / §8.7），避免 8s 墙钟提前掐断长动作
+- App 工具 `task_wait` **不是** IPC action：在客户端轮询 `task_get` 直至终态或本地 detach；取消协程时补发 `task_cancel`
 
 ### 9.4 Audit
 

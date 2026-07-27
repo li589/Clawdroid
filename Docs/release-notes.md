@@ -6,27 +6,40 @@
 
 ### 新增与增强
 
-- **AI Agent**：`AiAgentOrchestrator` 计划 → 工具环 → 总结；聊天侧 Model API 多供应商（OpenAI 兼容 / Anthropic / Gemini / DeepSeek / Kimi / Qwen 等）
-- **工具地基**：`ClawToolCatalog` / `ClawToolDispatcher` / `ToolServiceRegistry`；权限层级 `None` → `Root`；live capabilities 与事件解耦
-- **域工具**：`file_*`、`app_*`、`download_*`、`notification_list`、`web_preview` / `web_search`、`sandbox_shell`、`camera_capture` / `camera_record`、`sensor_read`、`gpu_npu_probe`、`ftp_transfer`
+- **可靠性六项（2026-07-27）**：
+  - App↔Runtime **能力对齐 banner**（`RuntimeCompatSnapshot`：协议/缺失动作 → 概览 + 运行诊断）
+  - **IPC 分动作读超时**（shell=`timeout_ms+2s`、截图≈45s 等）；Runtime 对 `exec_shell_limited`/`capture_screen` **清除连接 deadline**
+  - Agent **SoftWarn 跳过工具执行**（无进展指纹不再 `dispatcher.execute`）
+  - Termux **坏容器清理**（设置页一键 `proot-distro remove` + 白名单 lock）
+  - 聊天 **当前轮附图多模态**（OpenAI `image_url` / Anthropic `image`；Custom 明确拒绝）
+  - App 工具 **`task_wait`** + 取消补 `task_cancel` + detach 软状态（非 IPC action）
+- **AI Agent**：`AiAgentOrchestrator` 计划 → 工具环 → 总结；`ToolLoopDetector`（连续失败 / 无进展跳过 / 成功同参复用）；可配置循环步数与会话 API 预算（「继续」重置）；上下文压缩；`AgentRunEvent` 时间线；`run_agents_parallel`
+- **工具地基**：`ClawToolCatalog` / `ClawToolDispatcher` / `ToolServiceRegistry`；权限层级 `None` → `Root`；live capabilities 与事件解耦；工具允许列表
+- **域工具**：`file_*`（含 **`file_list`**）、`app_*`、`download_*`、`notification_list`、`web_preview` / `web_search`、`sandbox_shell`（`:sandbox` 进程）、`termux_exec`、`camera_*`、`sensor_read`、`gpu_npu_probe`、`ftp_transfer`、**`task_wait`**
+- **UI**：设置 Hub → 分类详情；富文本聊天（Markdown / 代码 / KaTeX / Mermaid）；edge-to-edge；`compileSdk`/`targetSdk` 35
+- **Termux**：`RUN_COMMAND` 桥 + 应用内 `TermuxConsoleScreen` + 坏容器清理
 - **Assist MCP**：手机 MCP Server（`clawdroid-assist`）+ 电脑协助端点客户端；见 [assist-mcp.md](assist-mcp.md)
 - **Shizuku**：状态 / 授权请求 / 白名单短命令执行
 - **Xposed 适配器**：Settings / Browser / Launcher / 自进程 marker；微信 `wechat_detail` 默认关闭；focus schema v2 + 浅层 view dump + ContentProvider 推送；见 [xposed-adapters.md](xposed-adapters.md)
-- **Runtime**：审查修复；`write_file_limited` / `stat_file_limited`；`report_xposed_*` 与 `task_*` 动作目录对齐
-- **工程**：`ClawdroidShell` 抽取；Overview 事件解耦；故障隔离与若干安全缺陷修复
+- **Runtime**：审查修复；`write_file_limited` / `stat_file_limited` / **`list_dir_limited`**；`report_xposed_*` 与 `task_*` 动作目录对齐；**有界多任务并行**（`max_concurrent_tasks`/`max_inflight_tasks`，满则 `7005`）；**shell 监视**（`job_id` + `shell_job_list`/`shell_job_get`）；审计 JSONL 体积轮转 + 服务日志 5MB 轮转；`log_level` 生效；长动作连接 deadline 与 App 读超时配合（见 [protocol.md](protocol.md) §9.3）
+- **输入安全**：App `InputGuards`（聊天粘贴截断、Shell 元字符、路径 `..`/`\0`、写文件 1MiB、下载 dest 沙箱）
+- **工程**：`ClawdroidShell` / CompositionRoot；`data` 持久化包；文档 `architecture.md` + `AGENTS.md`
 
 ### 已知限制（Unreleased）
 
 - Assist MCP / 域工具联调清单尚未系统性勾选
 - 兼容矩阵仍仅一台完整真机证据
-- Agent 仍为短工具环，未完成与 Runtime `task_*` 的任务台闭环
+- 可靠性六项需真机烟测勾选（见 [真机安装验收清单.md](真机安装验收清单.md) §8）；改 Go 后必须重装同轮 Magisk ZIP
+- Agent ↔ Runtime 任务台仍可加深（WaitingSignal / 人工放行 IPC **未做**）
 - CI App 任务当前以 `compileDebugKotlin` 为主，unit test 未强制进流水线
+- Termux 需用户开启 `allow-external-apps` 并授予 `RUN_COMMAND`
+- 附图仅当前轮；历史为文本摘要；需供应商支持视觉模型
 
 ### 建议验收入口
 
 - [下一步计划.md](下一步计划.md) P0
+- [真机安装验收清单.md](真机安装验收清单.md) §8 可靠性六项烟测
 - [assist-mcp.md](assist-mcp.md) 联调验收清单
-- [真机安装验收清单.md](真机安装验收清单.md)
 
 ---
 
