@@ -36,7 +36,12 @@
 
 ## 检举
 
-如果您遇到或目睹了违反行为准则的行为，或对此有所担忧，请通过电子邮件联系维护团队：clawdroid@example.com。所有投诉都将得到及时、公平的审查和调查。
+如果您遇到或目睹了违反行为准则的行为，或对此有所担忧，请通过以下任一方式联系维护团队：
+
+- 电子邮件：clawdroid@example.com（占位地址，正式邮箱请在仓库配置后替换）
+- GitHub Security Advisory：通过本仓库的 “Security → Report a Vulnerability” 提交
+
+所有投诉都将得到及时、公平的审查和调查。
 
 ## 准则执行指引
 

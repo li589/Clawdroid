@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# 已知无害告警（不影响结论，无需处理）：
+#   - "Node.js 20 is deprecated"：action 内部运行时被 GitHub 强制跑在 Node 24，平台行为。
+#   - "git failed with exit code 128"：checkout 默认 git clean 遇到嵌套的 GitSource/ 子仓库，
+#     已用 clean: false 关闭清理以消除该告警；checkout 本身始终成功。
+
 jobs:
   runtime-test:
     runs-on: ubuntu-latest
@@ -12,9 +17,12 @@ jobs:
         working-directory: ClawRuntime/runtime
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: ClawRuntime/runtime/go.mod
+          cache: false   # 仓库未提交 go.sum，关闭依赖缓存避免 Restore cache 警告
       - name: Run Go tests
         run: go test ./...
 
@@ -27,6 +35,8 @@ jobs:
         working-directory: ClawApp
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -40,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
       - name: Verify required project files
         shell: bash
         run: |
