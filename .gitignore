@@ -50,9 +50,8 @@ ClawRuntime/runtime/cmd/runtime/*.exe
 debug-device-ui-review.md
 find_class.ps1
 
-# Local reference clones of upstream projects (nested git repos, kept locally)
-GitSource/LSPosed1.9.2_archived/LSPosed/
-GitSource/Zygisk/NeoZygisk/
+# Local reference clones of upstream projects (nested git repos, kept locally — never tracked)
+GitSource/
 
 # Python cache
 __pycache__/
