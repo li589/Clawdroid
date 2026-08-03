@@ -252,6 +252,10 @@ object InputGuards {
                 !rest.contains('{') &&
                 !rest.contains('}') &&
                 !rest.contains('\\')
+        },
+        // Bounded sleep for IPC deadline / timeout smoke (§8.4); max 60s.
+        ParameterizedShellSpec("sleep ") { rest ->
+            rest.toIntOrNull()?.let { it in 1..60 } == true
         }
     )
 }

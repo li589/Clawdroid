@@ -113,7 +113,9 @@ fun deviceToolHandlers(
         InputGuards.validateShellCommand(command)?.let { err ->
             return@ToolHandler InputGuards.toToolResult(err)
         }
-        executor.execShellLimited(command = command)
+        // Align with Runtime shell.go: min 100 / default 3000 / max 10000.
+        val timeoutMs = arguments.int("timeout_ms", default = 3000).coerceIn(100, 10_000)
+        executor.execShellLimited(command = command, timeoutMs = timeoutMs)
     },
     ClawTool.SUBSCRIBE_EVENTS to ToolHandler { _, arguments ->
         val operation = arguments.string("operation").ifBlank { "start" }.lowercase()

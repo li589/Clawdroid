@@ -396,6 +396,7 @@ object ClawToolCatalog {
             )
             ClawTool.EXECUTE_SHELL_LIMITED -> objSchema(
                 requiredString("command", "Allowlisted shell command"),
+                optionalInt("timeout_ms", "Shell wall timeout ms (100-10000, default 3000)", default = 3000),
                 required = listOf("command")
             )
             ClawTool.SUBSCRIBE_EVENTS -> objSchema(

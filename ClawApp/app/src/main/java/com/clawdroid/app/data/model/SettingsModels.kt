@@ -405,6 +405,8 @@ internal data class AgentOrchestrationSettings(
             "get_capabilities",
             "capture_screen",
             "read_latest_capture",
+            "read_file_limited",
+            "subscribe_events",
             "run_agent",
             "run_agents_parallel",
             "list_agents",
@@ -427,13 +429,22 @@ internal data class AgentOrchestrationSettings(
             "app_list",
             "app_info",
             "app_launch",
+            "app_stop",
             "web_preview",
             "web_search",
             "notification_list",
             "download_start",
             "download_status",
             "download_cancel",
-            "download_verify"
+            "download_verify",
+            "camera_capture",
+            "camera_record",
+            "sensor_read",
+            "gpu_npu_probe",
+            "ftp_transfer",
+            "shizuku_status",
+            "shizuku_request",
+            "shizuku_exec"
         )
     }
 }

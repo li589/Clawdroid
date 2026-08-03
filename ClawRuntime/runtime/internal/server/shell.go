@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -428,6 +429,18 @@ func resolveParameterizedShell(command string) (shellCommandTemplate, bool) {
 		args   func(rest string) ([]string, bool)
 	}
 	specs := []prefixSpec{
+		{
+			// Bounded sleep for App↔Runtime deadline smoke (§8.4); reject unbounded waits.
+			prefix: "sleep ",
+			name:   "sleep",
+			args: func(rest string) ([]string, bool) {
+				sec, err := strconv.Atoi(strings.TrimSpace(rest))
+				if err != nil || sec < 1 || sec > 60 {
+					return nil, false
+				}
+				return []string{"sleep", strconv.Itoa(sec)}, true
+			},
+		},
 		{
 			prefix: "am force-stop ",
 			name:   "am force-stop",
