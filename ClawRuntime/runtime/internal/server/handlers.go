@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -12,6 +13,27 @@ import (
 )
 
 func (s *Server) handleRequest(sess *session, req ipc.Request) ipc.Response {
+	// Layer-4 capability gate. Every action maps to a capability token; the
+	// session must hold that token or the request is rejected. Capabilities are
+	// synced during the get_capabilities handshake; finalize lazily if a client
+	// skips it so the gate never reads a nil capability set.
+	if cap, ok := ipc.ExpectedCapability(req.Action); ok {
+		if sess.capabilities == nil {
+			s.finalizeCapabilityState(sess)
+		}
+		if !slices.Contains(sess.capabilities, cap) {
+			return ipc.Response{
+				RequestID: req.RequestID,
+				OK:        false,
+				Code:      ipc.CodeErrCapabilityNotGranted,
+				Message:   ipc.ErrorMessage(ipc.CodeErrCapabilityNotGranted),
+				Data: map[string]interface{}{
+					"action":     req.Action,
+					"capability": cap,
+				},
+			}
+		}
+	}
 	switch req.Action {
 	case ipc.ActionPing:
 		return ipc.Response{

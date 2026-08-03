@@ -41,6 +41,9 @@ import com.clawdroid.app.chat.ChatLocalAction
 import com.clawdroid.app.chat.ChatPlannerContext
 import com.clawdroid.app.chat.ChatPromptPlan
 import com.clawdroid.app.chat.ChatPromptPlanner
+import com.clawdroid.app.agent.AgentPlan
+import com.clawdroid.app.agent.AgentPlanStep
+import com.clawdroid.app.agent.AgentTurn
 import com.clawdroid.app.chat.ChatTaskAction
 import com.clawdroid.app.chat.ChatTextLimits
 import com.clawdroid.app.chat.toAgentDefinition
@@ -532,9 +535,11 @@ internal class ChatViewModel(
             val sessionId = uiState.value.activeSessionId
             val isContinuePrompt =
                 normalized == "继续" || normalized.equals("continue", ignoreCase = true)
+            var restoredRunId: String? = null
             if (isContinuePrompt) {
                 AgentRunStore.loadIncomplete(appContext, sessionId)?.let { saved ->
                     agentKernel.restoreRun(saved)
+                    restoredRunId = saved.id
                     activeKernelRunId = saved.id
                     appendAgentEvent(
                         AgentRunEvent(
@@ -570,7 +575,10 @@ internal class ChatViewModel(
             val memoryBundle = MemoryFacade.retrieve(appContext, normalized)
             val retrievedContext = memoryBundle.asRetrievedContext()
             val world = worldSnapshotFromOverview(overviewUiState)
-            val agentTurn = agentKernel.beginTurn(
+            // "继续"时复用已恢复的 Run，避免 restoreRun 被 beginTurn 覆盖成全新 Run（原 restore 分支是死代码）。
+            val agentTurn = restoredRunId?.let { rid ->
+                agentKernel.getRun(rid)?.let { AgentTurn(run = it, policy = PolicyDecision.Allow) }
+            } ?: agentKernel.beginTurn(
                 sessionId = sessionId,
                 intent = normalized,
                 world = world,
@@ -637,6 +645,44 @@ internal class ChatViewModel(
                     userImage = userImage
                 )
             )
+            // 将规划结果持久化到 Run.plan（AgentPlan），避免 AgentRun.plan 始终为空
+            // 而与文档定义的 Run 字段不一致。
+            val persistedPlan = when (plan) {
+                is ChatPromptPlan.ToolExecution -> AgentPlan(
+                    steps = listOf(
+                        AgentPlanStep(
+                            id = "1",
+                            title = plan.tool.displayName.ifBlank { plan.tool.toolId },
+                            kind = AgentPlanStep.Kind.Tool,
+                            payload = plan.tool.toolId
+                        )
+                    )
+                )
+                is ChatPromptPlan.TaskExecution -> AgentPlan(
+                    steps = listOf(
+                        AgentPlanStep(
+                            id = "1",
+                            title = plan.action.name,
+                            kind = AgentPlanStep.Kind.AwaitRuntimeTask,
+                            payload = plan.action.name
+                        )
+                    )
+                )
+                is ChatPromptPlan.LocalActionExecution -> AgentPlan(
+                    steps = listOf(
+                        AgentPlanStep(
+                            id = "1",
+                            title = plan.action.name,
+                            kind = AgentPlanStep.Kind.LocalAction,
+                            payload = plan.action.name
+                        )
+                    )
+                )
+                is ChatPromptPlan.AssistantReply -> AgentPlan(
+                    steps = listOf(AgentPlanStep(id = "1", title = "assistant-reply"))
+                )
+            }
+            agentKernel.markPlanned(agentTurn.run.id, plan = persistedPlan)
             updateState {
                 it.copy(
                     latestAiStatus = when (plan) {
@@ -1565,7 +1611,7 @@ internal class ChatViewModel(
                 if (shouldPersist) {
                     AgentRunStore.saveIncomplete(appContext, run)
                 } else {
-                    agentKernel.complete(runId, success = run.success != false)
+                    agentKernel.complete(runId, success = run.success == true)
                     AgentRunStore.clear(appContext, sessionId)
                 }
             } else if (run?.phase == AgentRunPhase.Done) {

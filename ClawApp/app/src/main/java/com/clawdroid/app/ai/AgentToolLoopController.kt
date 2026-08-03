@@ -273,7 +273,8 @@ internal class AgentToolLoopController(
                         originalPrompt = reusePrompt,
                         steps = steps,
                         runtimeSnapshot = host.currentAiRuntimeSnapshot(),
-                        remainingTurns = remainingAfterReuse
+                        remainingTurns = remainingAfterReuse,
+                        workingSummary = host.uiState.value.compressedMemory
                     ).getOrElse { error ->
                         host.finishAiLoopTaskExecution(success = false, summary = "AI 续步失败，已停止工具循环。")
                         host.updateChatMessage(
@@ -368,7 +369,8 @@ internal class AgentToolLoopController(
                         originalPrompt = softPrompt,
                         steps = steps,
                         runtimeSnapshot = host.currentAiRuntimeSnapshot(),
-                        remainingTurns = remainingAfterSoft
+                        remainingTurns = remainingAfterSoft,
+                        workingSummary = host.uiState.value.compressedMemory
                     ).getOrElse { error ->
                         host.finishAiLoopTaskExecution(success = false, summary = "AI 续步失败，已停止工具循环。")
                         host.updateChatMessage(
@@ -580,7 +582,8 @@ internal class AgentToolLoopController(
                 originalPrompt = continueUserPrompt,
                 steps = steps,
                 runtimeSnapshot = host.currentAiRuntimeSnapshot(),
-                remainingTurns = remainingTurns
+                remainingTurns = remainingTurns,
+                workingSummary = host.uiState.value.compressedMemory
             ).fold(
                 onSuccess = { it },
                 onFailure = { error ->

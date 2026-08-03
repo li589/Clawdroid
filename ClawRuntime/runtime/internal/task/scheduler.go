@@ -186,7 +186,12 @@ func (s *Scheduler) Close() {
 // State/EndedAt write is serialized under r.mu (no cross-lock race). Caller
 // must hold taskMu (protects s.running/inflight and the cancel-func bookkeeping).
 func (s *Scheduler) transitionLocked(t *Task, newState TaskState) {
-	oldState := t.State
+	// Read previous state from the registry (under r.mu) so we never race with
+	// the single writer in Registry.SetState.
+	oldState := newState
+	if cur, ok := s.registry.SnapshotByID(t.ID); ok {
+		oldState = cur.State
+	}
 	// Apply the state change under the registry lock and read back the result.
 	if !s.registry.SetState(t.ID, newState) {
 		// Transition invalid or task gone; read current state for logging.
@@ -197,7 +202,7 @@ func (s *Scheduler) transitionLocked(t *Task, newState TaskState) {
 		slog.Error("task state transition failed", "task_id", t.ID, "from", cur.State, "to", newState)
 		return
 	}
-	t.State = newState
+	// t.State is owned exclusively by the registry; do not write it here.
 	if newState.IsTerminal() {
 		if cancel, ok := s.running[t.ID]; ok {
 			cancel()
@@ -221,13 +226,14 @@ func (s *Scheduler) transition(t *Task, newState TaskState) {
 	s.transitionLocked(t, newState)
 }
 
-// GetTaskState reads the current task state without holding locks during execution.
+// GetTaskState reads the current task state. It reads through the registry lock
+// (SnapshotByID returns a value copy) so it never races with Registry.SetState.
 func (s *Scheduler) GetTaskState(taskID, sessionID string) (TaskState, bool) {
-	t, ok := s.registry.Get(sessionID, taskID)
+	cur, ok := s.registry.SnapshotByID(taskID)
 	if !ok {
 		return "", false
 	}
-	return t.State, true
+	return cur.State, true
 }
 
 func (s *Scheduler) runTask(t *Task) {

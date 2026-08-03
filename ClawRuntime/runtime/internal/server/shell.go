@@ -184,7 +184,7 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		rawCommand = v
 	}
 
-	args, err := parseExecShellArgs(req.Args, s.cfg.RequestTimeoutMS)
+	args, err := parseExecShellArgs(req.Args, defaultShellTimeoutMS)
 	if err != nil {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -625,7 +625,7 @@ func truncateShellOutput(content string) (string, bool) {
 	if len(trimmed) <= maxShellOutputBytes {
 		return trimmed, false
 	}
-	return trimmed[:maxShellOutputBytes], true
+	return truncateUTF8(trimmed, maxShellOutputBytes), true
 }
 
 func normalizeShellCommand(command string) string {

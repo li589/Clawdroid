@@ -86,7 +86,8 @@ internal object AiAgentOrchestrator {
         originalPrompt: String,
         steps: List<AiToolStepRecord>,
         runtimeSnapshot: AiRuntimeSnapshot,
-        remainingTurns: Int
+        remainingTurns: Int,
+        workingSummary: String = ""
     ): Result<AiAgentPlan> {
         if (steps.isEmpty()) {
             return Result.success(AiAgentPlan.AssistantReply("没有可继续的工具步骤。"))
@@ -98,7 +99,7 @@ internal object AiAgentOrchestrator {
         }
         return ModelApiClient.generateAgentTurn(
             settings = settings,
-            prompt = buildContinueUserPrompt(originalPrompt, steps, remainingTurns),
+            prompt = buildContinueUserPrompt(originalPrompt, steps, remainingTurns, workingSummary),
             systemPrompt = buildContinueSystemPrompt(runtimeSnapshot, remainingTurns),
             enableNativeTools = true
         ).map { generation ->
@@ -304,7 +305,8 @@ internal object AiAgentOrchestrator {
     internal fun buildContinueUserPrompt(
         originalPrompt: String,
         steps: List<AiToolStepRecord>,
-        remainingTurns: Int
+        remainingTurns: Int,
+        workingSummary: String = ""
     ): String {
         return buildString {
             appendLine("用户原始请求:")
@@ -320,6 +322,11 @@ internal object AiAgentOrchestrator {
                 appendLine()
             }
             appendLine("剩余可继续工具轮次: $remainingTurns")
+            if (workingSummary.isNotBlank()) {
+                appendLine()
+                appendLine("压缩记忆（旧轮摘要）：")
+                appendLine(ChatTextLimits.truncateForContext(workingSummary, 1200))
+            }
             appendLine("请决定下一步：继续 mode=tool，或结束 mode=chat。")
         }
     }
