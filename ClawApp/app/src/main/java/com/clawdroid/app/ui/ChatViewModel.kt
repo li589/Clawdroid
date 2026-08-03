@@ -7,6 +7,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.clawdroid.app.agent.AgentKernel
+import com.clawdroid.app.agent.AgentRunPhase
+import com.clawdroid.app.agent.PolicyDecision
+import com.clawdroid.app.agent.WorldSnapshot
 import com.clawdroid.app.ai.AgentRunEvent
 import com.clawdroid.app.ai.AgentRunEventKind
 import com.clawdroid.app.ai.AgentToolLoopController
@@ -14,10 +18,9 @@ import com.clawdroid.app.ai.AgentToolLoopHost
 import com.clawdroid.app.ai.ContextCompressor
 import com.clawdroid.app.chat.ChatSessionCoordinator
 import com.clawdroid.app.chat.ChatTaskExecutionController
-import com.clawdroid.app.data.ChatContextIndexStore
-import com.clawdroid.app.data.FileIndexStore
-import com.clawdroid.app.data.MemoryGraphStore
 import com.clawdroid.app.data.AppSettingsStore
+import com.clawdroid.app.data.AgentRunStore
+import com.clawdroid.app.data.MemoryFacade
 import com.clawdroid.app.data.ChatSessionSummary
 import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.data.model.ChatMedia
@@ -87,8 +90,12 @@ internal data class ChatUiState(
 internal data class PendingCommandReview(
     val toolId: String,
     val toolDisplayName: String,
-    val argumentsPreview: String
+    val argumentsPreview: String,
+    /** Goal-level App HITL (Stage B); not Runtime WaitingSignal IPC. */
+    val isGoalConfirm: Boolean = false
 )
+
+private const val GOAL_REVIEW_TOOL_ID = "__goal_confirm__"
 
 internal enum class ChatTaskHistoryFilter {
     All,
@@ -110,6 +117,8 @@ internal class ChatViewModel(
     private var turnApiCallsUsed: Int = 0
     private var activeChatJob: Job? = null
     private var commandReviewDeferred: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+    private val agentKernel: AgentKernel = AgentKernel.shared
+    private var activeKernelRunId: String? = null
 
     private val taskController = ChatTaskExecutionController(
         appContext = appContext,
@@ -321,7 +330,8 @@ internal class ChatViewModel(
                 pendingCommandReview = PendingCommandReview(
                     toolId = tool.toolId,
                     toolDisplayName = tool.displayName,
-                    argumentsPreview = preview
+                    argumentsPreview = preview,
+                    isGoalConfirm = false
                 )
             )
         }
@@ -333,6 +343,36 @@ internal class ChatViewModel(
             }
             updateState { state ->
                 if (state.pendingCommandReview?.toolId == tool.toolId) {
+                    state.copy(pendingCommandReview = null)
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
+    private suspend fun awaitGoalConfirm(reason: String, intent: String): Boolean {
+        commandReviewDeferred?.complete(false)
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        commandReviewDeferred = deferred
+        updateState {
+            it.copy(
+                pendingCommandReview = PendingCommandReview(
+                    toolId = GOAL_REVIEW_TOOL_ID,
+                    toolDisplayName = "目标确认",
+                    argumentsPreview = "$reason\n意图：$intent".take(400),
+                    isGoalConfirm = true
+                )
+            )
+        }
+        return try {
+            deferred.await()
+        } finally {
+            if (commandReviewDeferred === deferred) {
+                commandReviewDeferred = null
+            }
+            updateState { state ->
+                if (state.pendingCommandReview?.toolId == GOAL_REVIEW_TOOL_ID) {
                     state.copy(pendingCommandReview = null)
                 } else {
                     state
@@ -489,12 +529,23 @@ internal class ChatViewModel(
                         content = message.content
                     )
                 }
-            ChatContextIndexStore.indexTurn(
-                appContext,
-                sessionId = uiState.value.activeSessionId,
-                role = "user",
-                content = normalized
-            )
+            val sessionId = uiState.value.activeSessionId
+            val isContinuePrompt =
+                normalized == "继续" || normalized.equals("continue", ignoreCase = true)
+            if (isContinuePrompt) {
+                AgentRunStore.loadIncomplete(appContext, sessionId)?.let { saved ->
+                    agentKernel.restoreRun(saved)
+                    activeKernelRunId = saved.id
+                    appendAgentEvent(
+                        AgentRunEvent(
+                            kind = AgentRunEventKind.Thinking,
+                            title = "恢复未完成 Run",
+                            detail = "run=${saved.id} phase=${saved.phase} intent=${saved.goal.intent.take(80)}"
+                        )
+                    )
+                }
+            }
+            MemoryFacade.indexUserTurn(appContext, sessionId = sessionId, content = normalized)
             val agentSettings = AppSettingsStore.loadAgentOrchestrationSettings(appContext)
             val modelName = modelSettings.modelName.ifBlank { modelSettings.localModelName }
             val contextWindow = modelSettings.contextSettings.effectiveContextWindow(modelName)
@@ -516,7 +567,63 @@ internal class ChatViewModel(
                     updateState { it.copy(compressedMemory = compressedMemory) }
                 }
             }
-            val retrievedContext = buildRetrievedContext(normalized)
+            val memoryBundle = MemoryFacade.retrieve(appContext, normalized)
+            val retrievedContext = memoryBundle.asRetrievedContext()
+            val world = worldSnapshotFromOverview(overviewUiState)
+            val agentTurn = agentKernel.beginTurn(
+                sessionId = sessionId,
+                intent = normalized,
+                world = world,
+                memory = memoryBundle.copy(workingSummary = compressedMemory)
+            )
+            activeKernelRunId = agentTurn.run.id.takeIf { agentTurn.policy !is PolicyDecision.Reject }
+            when (val policy = agentTurn.policy) {
+                is PolicyDecision.Reject -> {
+                    appendAgentEvent(
+                        AgentRunEvent(
+                            kind = AgentRunEventKind.SoftWarn,
+                            title = "策略拒绝",
+                            detail = policy.reason,
+                            success = false
+                        )
+                    )
+                    patchChatMessage(replyMessageId, policy.reason, ChatMessageState.Final)
+                    finishChat()
+                    return@launch
+                }
+                is PolicyDecision.RequireConfirm -> {
+                    appendAgentEvent(
+                        AgentRunEvent(
+                            kind = AgentRunEventKind.SoftWarn,
+                            title = "需确认",
+                            detail = policy.reason
+                        )
+                    )
+                    agentKernel.markAwaitUser(agentTurn.run.id)
+                    val approved = awaitGoalConfirm(
+                        reason = policy.reason,
+                        intent = agentTurn.run.goal.intent
+                    )
+                    if (!approved) {
+                        agentKernel.complete(
+                            agentTurn.run.id,
+                            success = false,
+                            error = "用户拒绝目标确认"
+                        )
+                        AgentRunStore.clear(appContext, sessionId)
+                        activeKernelRunId = null
+                        patchChatMessage(
+                            replyMessageId,
+                            "已取消：用户拒绝了高风险目标确认。\n${policy.reason}",
+                            ChatMessageState.Final
+                        )
+                        finishChat()
+                        return@launch
+                    }
+                }
+                PolicyDecision.Allow -> Unit
+            }
+            agentKernel.markPlanned(agentTurn.run.id)
             val plan = ChatPromptPlanner.plan(
                 ChatPlannerContext(
                     prompt = normalized,
@@ -1118,7 +1225,7 @@ internal class ChatViewModel(
         onModelCallSuccess: () -> Unit
     ) {
         val reflectionMessage = if (reflectResultWithModel) {
-            AiAgentOrchestrator.reflectToolResult(
+            AiAgentOrchestrator.reflectToolCritique(
                 settings = modelSettings,
                 input = AiToolReflectionInput(
                     originalPrompt = normalizedPrompt,
@@ -1134,10 +1241,18 @@ internal class ChatViewModel(
                     }
                 )
             ).fold(
-                onSuccess = {
+                onSuccess = { critique ->
                     onModelCallSuccess()
                     updateState { state -> state.copy(latestAiStatus = "AI 已总结工具结果") }
-                    it
+                    appendAgentEvent(
+                        AgentRunEvent(
+                            kind = AgentRunEventKind.Thinking,
+                            title = "结构化反思",
+                            detail = critique.asSystemHint(),
+                            success = critique.ok
+                        )
+                    )
+                    critique.summary.ifBlank { null }
                 },
                 onFailure = {
                     updateState { state -> state.copy(latestAiStatus = "AI 总结回退为原始结果") }
@@ -1413,29 +1528,17 @@ internal class ChatViewModel(
         }
     }
 
-    private fun buildRetrievedContext(prompt: String): String {
-        val chatHits = ChatContextIndexStore.search(appContext, prompt, limit = 4)
-        val memoryHits = MemoryGraphStore.search(appContext, prompt, limit = 4)
-        val fileHits = FileIndexStore.search(appContext, prompt, limit = 4)
-        if (chatHits.isEmpty() && memoryHits.isEmpty() && fileHits.isEmpty()) return ""
-        return buildString {
-            if (chatHits.isNotEmpty()) {
-                appendLine("聊天索引：")
-                chatHits.forEach { hit ->
-                    appendLine("- [${hit.role}] ${hit.snippet.take(160)}")
-                }
-            }
-            if (memoryHits.isNotEmpty()) {
-                appendLine("记忆图谱：")
-                memoryHits.forEach { node ->
-                    appendLine("- ${node.label}: ${node.content.take(160)}")
-                }
-            }
-            if (fileHits.isNotEmpty()) {
-                appendLine("文件索引：")
-                fileHits.forEach { path -> appendLine("- $path") }
-            }
-        }.trim()
+    private fun worldSnapshotFromOverview(overviewUiState: OverviewUiState): WorldSnapshot {
+        val caps = overviewUiState.runtimeState.capabilityStatus
+        val rootGranted =
+            overviewUiState.permissionState.localEnvironmentStatus.rootGranted == true
+        return WorldSnapshot(
+            sessionSummary = overviewUiState.runtimeState.session.summary,
+            capabilityStatus = caps,
+            eventStreaming = overviewUiState.eventState.eventStreaming,
+            rootAvailable = rootGranted || caps.contains("root=true", ignoreCase = true),
+            accessibilityAvailable = caps.contains("accessibility=true", ignoreCase = true)
+        )
     }
 
     private fun isRebootOrientedTaskForViewModel(arguments: Map<String, String>): Boolean {
@@ -1451,6 +1554,25 @@ internal class ChatViewModel(
     }
 
     override fun finishChat() {
+        activeKernelRunId?.let { runId ->
+            val run = agentKernel.getRun(runId)
+            val sessionId = run?.sessionId ?: uiState.value.activeSessionId
+            if (run != null && run.phase != AgentRunPhase.Done) {
+                val shouldPersist =
+                    uiState.value.awaitingBudgetContinue ||
+                        run.phase == AgentRunPhase.AwaitRuntime ||
+                        run.phase == AgentRunPhase.AwaitUser
+                if (shouldPersist) {
+                    AgentRunStore.saveIncomplete(appContext, run)
+                } else {
+                    agentKernel.complete(runId, success = run.success != false)
+                    AgentRunStore.clear(appContext, sessionId)
+                }
+            } else if (run?.phase == AgentRunPhase.Done) {
+                AgentRunStore.clear(appContext, sessionId)
+            }
+            activeKernelRunId = null
+        }
         updateState { it.copy(chatBusy = false) }
     }
 

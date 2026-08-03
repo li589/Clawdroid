@@ -488,7 +488,7 @@ Retrying -> Failed
 }
 ```
 
-### 8.6.1 `write_file_limited`
+### 8.7 `write_file_limited`
 
 - **Capability**: `file.write.limited`
 - **用途**: 在可写白名单路径内写入有限大小内容（覆盖或追加由实现约定）
@@ -512,7 +512,7 @@ Retrying -> Failed
 - **审计级别**: 高
 - **失败码**: 越界 `3004`，写入失败 `3006`
 
-### 8.6.2 `stat_file_limited`
+### 8.8 `stat_file_limited`
 
 - **Capability**: `file.read.limited`
 - **用途**: 在白名单路径内查询文件元数据（存在性、大小、mtime 等）
@@ -529,7 +529,7 @@ Retrying -> Failed
 - **默认超时**: `1500 ms`
 - **审计级别**: 中
 
-### 8.6.3 `list_dir_limited`
+### 8.9 `list_dir_limited`
 
 - **Capability**: `file.read.limited`
 - **用途**: 在白名单路径内列举目录条目（名称、是否目录、大小、mtime），支持分页
@@ -554,7 +554,7 @@ Retrying -> Failed
 - **成功返回要点**: `path`、`offset`、`limit`、`total`、`truncated`、`entries[]`（`name` / `is_dir` / `size` / `mtime_ms`）
 - **失败码**: 越界 `3004`，读失败 `3005`，非目录时 `invalid_request`
 
-### 8.7 `exec_shell_limited`
+### 8.10 `exec_shell_limited`
 
 - **Capability**: `shell.exec.limited`
 - **用途**: 执行受限命令模板，而非任意 Shell
@@ -588,21 +588,21 @@ Retrying -> Failed
 
 - **命令监视**: 每次执行会记入有界 `shell_job` 环形缓冲（最多 16 条，输出尾部 ≤4KiB），可通过 `shell_job_list` / `shell_job_get` 查询；`get_runtime_status` 与 `task_state_changed` 事件也会附带 `recent_shell_jobs`。
 
-### 8.7.1 `shell_job_list`
+### 8.11 `shell_job_list`
 
 - **Capability**: `shell.exec.limited`
 - **用途**: 列出近期受限 shell 执行快照（有界）
 - **参数**: `{ "limit": 16 }`（可选）
 - **是否幂等**: 是
 
-### 8.7.2 `shell_job_get`
+### 8.12 `shell_job_get`
 
 - **Capability**: `shell.exec.limited`
 - **用途**: 按 `job_id` 查询单次 shell 执行快照
 - **参数**: `{ "job_id": "shell-..." }`
 - **是否幂等**: 是
 
-### 8.8 `subscribe_events`
+### 8.13 `subscribe_events`
 
 - **Capability**: `event.subscribe`
 - **用途**: 建立服务端主动推送事件的订阅关系
@@ -639,7 +639,7 @@ Retrying -> Failed
 }
 ```
 
-### 8.8.1 `report_xposed_focus`
+### 8.14 `report_xposed_focus`
 
 - **Capability**: `event.report`
 - **用途**: App 上报 LSPosed schema v2 焦点快照；守护进程缓存后通过 `xposed_focus_changed` 差分推送给订阅方
@@ -659,7 +659,7 @@ Retrying -> Failed
 - **审计级别**: 低
 - **成功返回关键字段**: `accepted`、`package_name`、`activity_class`、`updated_at_epoch_ms`
 
-### 8.8.2 `report_xposed_view`
+### 8.15 `report_xposed_view`
 
 - **Capability**: `event.report`
 - **用途**: App 上报 Settings 浅层 View 层次（schema v1）；推送 `xposed_view_changed`
@@ -679,7 +679,7 @@ Retrying -> Failed
 - **审计级别**: 低
 - **成功返回关键字段**: `accepted`、`package_name`、`activity_class`、`node_count`、`compose_surface`、`updated_at_epoch_ms`
 
-### 8.9 `get_runtime_status`
+### 8.16 `get_runtime_status`
 
 - **Capability**: `system.inspect`
 - **用途**: 统一返回守护健康、Magisk 模块状态、动作目录、Shell/按键白名单
@@ -695,7 +695,7 @@ Retrying -> Failed
   - `allowed_keyevents`: 按键白名单
   - 以及 `get_capabilities` / 健康诊断同类字段
 
-### 8.10 `inject_keyevent`
+### 8.17 `inject_keyevent`
 
 - **Capability**: `input.inject`
 - **用途**: 注入白名单内系统按键（导航/编辑类）
@@ -725,7 +725,7 @@ Retrying -> Failed
 - **默认超时**: `1000 ms`
 - **审计级别**: 高
 
-### 8.11 `task_submit`
+### 8.18 `task_submit`
 
 - **Capability**: `task.manage`
 - **用途**: 提交多步 Runtime 任务（步骤为已知 IPC action 序列）
@@ -748,7 +748,7 @@ Retrying -> Failed
 - **失败码**: `7003` 提交失败，`7005` 队列满
 - **并发**: Runtime 调度器默认最多 **8** 个任务并行执行步骤，最多 **32** 个 in-flight（排队+运行）；超出返回 `7005`。可在 `runtime.yaml` 配置 `max_concurrent_tasks` / `max_inflight_tasks`。事件快照含 `active_tasks[]` 便于多 Agent 并行监视。
 
-### 8.12 `task_get`
+### 8.19 `task_get`
 
 - **Capability**: `task.manage`
 - **用途**: 查询单个任务快照
@@ -757,7 +757,7 @@ Retrying -> Failed
 - **默认超时**: `1500 ms`
 - **失败码**: `7001` 未找到
 
-### 8.13 `task_list`
+### 8.20 `task_list`
 
 - **Capability**: `task.manage`
 - **用途**: 列出近期任务摘要
@@ -765,7 +765,7 @@ Retrying -> Failed
 - **是否幂等**: 是
 - **默认超时**: `2000 ms`
 
-### 8.14 `task_cancel`
+### 8.21 `task_cancel`
 
 - **Capability**: `task.manage`
 - **用途**: 取消尚未结束的任务
@@ -800,7 +800,7 @@ Retrying -> Failed
 | inspect / `task_*` / inject / file | 10–15s |
 | `subscribe_events` 握手后 | `soTimeout=0`（流式） |
 
-- Runtime 对 `exec_shell_limited` / `capture_screen` 会临时清除连接 deadline（见 §8.3 / §8.7），避免 8s 墙钟提前掐断长动作
+- Runtime 对 `exec_shell_limited` / `capture_screen` 会临时清除连接 deadline（见 §8.3 / §8.10），避免 8s 墙钟提前掐断长动作
 - App 工具 `task_wait` **不是** IPC action：在客户端轮询 `task_get` 直至终态或本地 detach；取消协程时补发 `task_cancel`
 
 ### 9.4 Audit

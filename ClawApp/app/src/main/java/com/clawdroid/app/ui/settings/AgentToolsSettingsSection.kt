@@ -28,9 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.clawdroid.app.data.ChatContextIndexStore
 import com.clawdroid.app.data.FileIndexStore
-import com.clawdroid.app.data.MemoryGraphStore
+import com.clawdroid.app.data.MemoryFacade
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.ui.FieldSupportingText
@@ -83,20 +82,10 @@ private fun ContextMemoryIndexCard() {
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     var summary by remember {
-        mutableStateOf(
-            listOf(
-                ChatContextIndexStore.statsSummary(context),
-                FileIndexStore.summary(context),
-                MemoryGraphStore.summary(context)
-            ).joinToString("\n")
-        )
+        mutableStateOf(MemoryFacade.summary(context))
     }
     fun refresh() {
-        summary = listOf(
-            ChatContextIndexStore.statsSummary(context),
-            FileIndexStore.summary(context),
-            MemoryGraphStore.summary(context)
-        ).joinToString("\n")
+        summary = MemoryFacade.summary(context)
     }
     ModernCard {
         Column(
@@ -107,7 +96,7 @@ private fun ContextMemoryIndexCard() {
         ) {
             Text(text = "上下文索引与记忆图谱", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "聊天索引 / 文件索引 / 记忆图谱会参与自动检索；长对话开启压缩后写入图谱摘要。",
+                text = "经 MemoryFacade 检索聊天索引 / 文件索引 / 记忆图谱；长对话开启压缩后写入图谱摘要。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -125,9 +114,7 @@ private fun ContextMemoryIndexCard() {
                 ) { Text("扫描沙箱文件") }
                 TextButton(
                     onClick = {
-                        ChatContextIndexStore.clear(context)
-                        FileIndexStore.clear(context)
-                        MemoryGraphStore.clear(context)
+                        MemoryFacade.clearAll(context)
                         refresh()
                     }
                 ) { Text("清空索引") }

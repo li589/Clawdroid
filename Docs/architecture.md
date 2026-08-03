@@ -52,18 +52,22 @@ flowchart TB
 
 ## 4. Agent 与聊天循环
 
-1. `ChatViewModel.submitPrompt`（可选当前轮附图 Uri → JPEG ≤~1.5MB → 多模态）
-2. 可选 `ContextCompressor`（设置开关）
+概念模型、三类 Agent、状态机与阶段路线见 **[agent-architecture.md](agent-architecture.md)**（权威）。
+
+运行时路径（阶段 A 薄接线）：
+
+1. `ChatViewModel.submitPrompt` → `MemoryFacade` 索引/检索 → `AgentKernel.beginTurn`（Goal / Policy / Run）
+2. 可选 `ContextCompressor`（设置开关；压缩摘要写入 `MemoryGraphStore`）
 3. `ChatPromptPlanner`：有附图时走 AI 多模态路径；否则 规则任务 → `DirectCommandOrchestrator` → `AiAgentOrchestrator`
 4. 工具环：`AgentToolLoopController` + `ToolLoopDetector`
    - 连续失败 → 硬停
    - 无进展指纹 SoftWarn → **跳过执行**（合成「【系统】无进展」步骤，不调 `dispatcher.execute`）
    - 成功同参 → ReusePriorResult（注入摘要，不重跑）
 5. 会话级 `maxModelApiCalls`；耗尽后状态「等待发送继续」，用户发「继续」重置预算
-6. UI：`AgentRunEvent` 时间线（可折叠）；最终回复走 rich chat
+6. UI：`AgentRunEvent` 时间线（可折叠）；最终回复走 rich chat；`finishChat` 时 `AgentKernel.complete`
 7. `TASK_SUBMIT` 后仍可自动 await；模型亦可主动 `task_wait`；UI 停止/取消与 Runtime `task_cancel` 协同
 
-**附图（多模态）**：当前用户轮 OpenAI 兼容 `image_url` data URL / Anthropic `image` base64；历史仍文本摘要；Custom 路径明确拒绝视觉。Uri 仅 pending，不持久进 session store。
+**附图（多模态）**：当前用户轮 OpenAI 兼容 `image_url` data URL / Anthropic `image` base64（编码器仍为 JPEG）；气泡可展示图/GIF/视频，`ChatHistoryStore` 可持久 `media` 元数据；送入模型的视觉载荷不进历史原文。Custom 路径明确拒绝视觉。
 
 资产文案：`ClawApp/app/src/main/assets/claw/`（见 `INDEX.md`）。
 
@@ -96,6 +100,7 @@ Termux 与 Shell：`RUN_COMMAND` / Root 授权 / **坏容器清理**（`proot-di
 
 ## 8. 相关文档
 
+- [agent-architecture.md](agent-architecture.md) — Agent 概念 / 内核 / 阶段 A–C
 - [基础方案设计.md](基础方案设计.md) — 原则与长期路线
 - [threat-model.md](threat-model.md)
 - [assist-mcp.md](assist-mcp.md) / [xposed-adapters.md](xposed-adapters.md)

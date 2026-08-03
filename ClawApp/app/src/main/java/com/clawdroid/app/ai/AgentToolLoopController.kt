@@ -494,6 +494,37 @@ internal class AgentToolLoopController(
                 output = stepOutput
             )
 
+            if (!stepSuccess) {
+                val critique = ToolReflectionCritiqueParser.failureHeuristic(tool.toolId, stepOutput)
+                host.appendAgentEvent(
+                    AgentRunEvent(
+                        kind = AgentRunEventKind.SoftWarn,
+                        title = "反思钩子",
+                        detail = critique.asSystemHint(),
+                        success = false
+                    )
+                )
+                softWarnHint = critique.asSystemHint()
+                if (critique.action == CritiqueAction.Stop) {
+                    host.finishAiLoopTaskExecution(
+                        success = false,
+                        summary = "反思建议停止：${critique.summary}"
+                    )
+                    host.finalizeToolReply(
+                        replyMessageId = replyMessageId,
+                        normalizedPrompt = normalizedPrompt,
+                        tool = tool,
+                        arguments = enrichedArgs,
+                        assistantMessage = assistantMessage,
+                        result = ChatAiLoop.buildTranscript(steps),
+                        reflectResultWithModel = true,
+                        modelSettings = modelSettings,
+                        onModelCallSuccess = onModelCallSuccess
+                    )
+                    return
+                }
+            }
+
             val remainingTurns = maxTurns - turn
             if (remainingTurns <= 0) {
                 val allOk = steps.all { it.success }

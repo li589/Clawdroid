@@ -732,7 +732,11 @@ private fun CommandReviewCard(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "命令审查：${review.toolDisplayName}",
+                text = if (review.isGoalConfirm) {
+                    "目标确认：${review.toolDisplayName}"
+                } else {
+                    "命令审查：${review.toolDisplayName}"
+                },
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onErrorContainer
             )

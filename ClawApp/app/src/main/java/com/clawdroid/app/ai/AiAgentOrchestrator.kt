@@ -332,14 +332,29 @@ internal object AiAgentOrchestrator {
         settings: ModelSettings,
         input: AiToolReflectionInput
     ): Result<String> {
+        return reflectToolCritique(settings, input).map { critique ->
+            critique.summary.ifBlank { input.toolResult }
+        }
+    }
+
+    suspend fun reflectToolCritique(
+        settings: ModelSettings,
+        input: AiToolReflectionInput
+    ): Result<ToolReflectionCritique> {
         if (!isConfigured(settings)) {
-            return Result.success(input.toolResult)
+            return Result.success(
+                ToolReflectionCritique(
+                    ok = null,
+                    action = CritiqueAction.Continue,
+                    summary = input.toolResult
+                )
+            )
         }
         return ModelApiClient.generateReply(
             settings = settings,
             prompt = buildToolReflectionPrompt(input),
             systemPrompt = buildToolReflectionSystemPrompt(input.runtimeSnapshot)
-        ).map { it.trim() }
+        ).map { raw -> ToolReflectionCritiqueParser.parse(raw.trim()) }
     }
 
     private fun toolCatalog(): String {
@@ -391,7 +406,8 @@ internal object AiAgentOrchestrator {
                 appendLine(reflection.take(800))
             } else {
                 appendLine("你是 Clawdroid 的工具执行总结助手。")
-                appendLine("只基于真实工具输出总结，失败时说明原因并给下一步建议。2–3 句中文。")
+                appendLine("优先输出 JSON：{\"ok\":bool,\"action\":\"continue|retry|replan|stop\",\"summary\":\"...\",\"hint\":\"...\"}")
+                appendLine("否则 2–3 句中文；只基于真实工具输出。")
             }
             appendLine("当前运行时上下文：")
             appendLine("session_summary=${runtimeSnapshot.sessionSummary}")
@@ -415,7 +431,7 @@ internal object AiAgentOrchestrator {
             appendLine("工具真实输出:")
             appendLine(ChatTextLimits.truncateForContext(input.toolResult))
             appendLine()
-            appendLine("请给用户一个简短总结，并在必要时说明下一步建议。")
+            appendLine("请输出结构化 JSON（ok/action/summary/hint）；无法 JSON 时再写短中文总结。")
         }
     }
 

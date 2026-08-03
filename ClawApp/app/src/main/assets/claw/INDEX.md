@@ -14,7 +14,7 @@
 | `prompts/chat-suggestions.txt` | 聊天建议 chip（一行一条） |
 | `helpers/routing-hints.md` | 自然语言路由 / 意图辅助 |
 | `helpers/agent-phrases.md` | 工具执行前短句 |
-| `agents/catalog.md` | Agent 能力说明与选用建议 |
+| `agents/catalog.md` | Catalog Agent 能力说明与选用建议（概念模型见 `Docs/agent-architecture.md`） |
 | `skills/*.md` | Skill 正文（与 list_skills 对齐） |
 | `tools/catalog.overlay.json` | 工具摘要覆盖 / 蓝图 |
 

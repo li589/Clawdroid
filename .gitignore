@@ -60,3 +60,7 @@ __pycache__/
 
 # Trae local planning artifacts
 .trae/
+
+# AI documentation (unified, local-only — not committed)
+ai-docs/
+.workbuddy/
