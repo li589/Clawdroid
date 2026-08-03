@@ -457,6 +457,7 @@ object AutomationRuntimeStore {
             try {
                 traverseNodeTree(child, sink)
             } finally {
+                @Suppress("DEPRECATION")
                 child.recycle()
             }
             if (sink.size >= maxSemanticNodes) {
@@ -488,6 +489,7 @@ object AutomationRuntimeStore {
                     return nested
                 }
             } finally {
+                @Suppress("DEPRECATION")
                 child.recycle()
             }
         }

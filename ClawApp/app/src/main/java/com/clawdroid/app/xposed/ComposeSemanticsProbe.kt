@@ -76,6 +76,7 @@ internal object ComposeSemanticsProbe {
                 if (info.childCount > 0) out["a11y_children"] = info.childCount.toString()
                 out
             } finally {
+                @Suppress("DEPRECATION")
                 info.recycle()
             }
         }.getOrDefault(emptyMap())

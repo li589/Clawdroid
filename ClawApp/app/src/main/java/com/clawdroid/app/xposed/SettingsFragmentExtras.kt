@@ -70,6 +70,7 @@ internal object SettingsFragmentExtras {
         for (key in bundle.keySet().take(6)) {
             if (key.isNullOrBlank()) continue
             val value = runCatching {
+                @Suppress("DEPRECATION")
                 bundle.get(key)?.toString().orEmpty()
             }.getOrDefault("")
             if (value.isBlank()) continue

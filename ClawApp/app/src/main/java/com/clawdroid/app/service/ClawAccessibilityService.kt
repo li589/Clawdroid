@@ -33,6 +33,7 @@ class ClawAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             android.util.Log.e("ClawAccessibility", "Unexpected error in onAccessibilityEvent", e)
         } finally {
+            @Suppress("DEPRECATION")
             rootNode?.recycle()
         }
     }

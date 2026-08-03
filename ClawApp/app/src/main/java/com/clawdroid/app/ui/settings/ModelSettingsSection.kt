@@ -21,7 +21,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
@@ -443,7 +443,7 @@ private fun UnifiedModelApiSettingsCard(
                         ) && modelSettings.resolvedEndpoint().isNotBlank()
                 ) {
                     Icon(
-                        imageVector = if (modelListLoading) Icons.Default.Refresh else Icons.Default.List,
+                        imageVector = if (modelListLoading) Icons.Default.Refresh else Icons.AutoMirrored.Filled.List,
                         contentDescription = "拉取模型列表"
                     )
                 }
