@@ -4,10 +4,12 @@ on:
   push:
   pull_request:
 
-# 已知无害告警（不影响结论，无需处理）：
-#   - "Node.js 20 is deprecated"：action 内部运行时被 GitHub 强制跑在 Node 24，平台行为。
-#   - "git failed with exit code 128"：checkout 默认 git clean 遇到嵌套的 GitSource/ 子仓库，
-#     已用 clean: false 关闭清理以消除该告警；checkout 本身始终成功。
+# 所有 action 已升级到 Node 24 运行时版本，无弃用告警。
+# 历史告警均已根治：
+#   - "git failed with exit code 128"：曾因 GitSource/ 被误当 submodule 跟踪（无 .gitmodules），
+#     已从 index 移除 gitlink 并整目录忽略 GitSource/。
+#   - "Restore cache failed: go.sum"：仓库未提交 go.sum，setup-go 用 cache:false 关闭。
+#   - "Node.js 20 is deprecated"：官方/第三方 action 已升级到 node24 运行时。
 
 jobs:
   runtime-test:
@@ -16,10 +18,10 @@ jobs:
       run:
         working-directory: ClawRuntime/runtime
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           clean: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ClawRuntime/runtime/go.mod
           cache: false   # 仓库未提交 go.sum，关闭依赖缓存避免 Restore cache 警告
@@ -34,14 +36,14 @@ jobs:
       run:
         working-directory: ClawApp
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           clean: false
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
       - name: Compile debug Kotlin
         shell: bash
         run: ./gradlew :app:compileDebugKotlin
@@ -49,7 +51,7 @@ jobs:
   repo-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           clean: false
       - name: Verify required project files
