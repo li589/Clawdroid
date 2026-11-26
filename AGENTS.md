@@ -71,6 +71,13 @@ Agent 概念与状态机见 [Docs/agent-architecture.md](Docs/agent-architecture
 
 真机可靠性烟测清单：[Docs/真机安装验收清单.md](Docs/真机安装验收清单.md) §8。
 
+## AI 工作区资料
+
+- 本地 AI 约定、计划、报告、日志、任务与记忆统一放在 `ai-docs/`，整个目录 gitignored。
+- 正式架构、协议、路线和审查报告仍以 `Docs/` 为准；`Docs/archive/` 与 `ai-docs/plans/` 均为非权威历史资料。
+- `.workbuddy/` 与 Qoder 项目记忆是工具运行时状态，保留原路径；`ai-docs/memory/` 仅保存归档快照。
+- 根目录只保留 `AGENTS.md` 与 `CLAUDE.md` 两个自动识别入口；改约定以 `AGENTS.md` 为单一事实源。
+
 ## 验证最低线
 
 ```powershell

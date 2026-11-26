@@ -24,6 +24,7 @@
 - 仓库脚本：catalog 21 动作/35 错误码/capability/handler/protocol 对齐通过；根目录 2 个与 Runtime 50 个 Python 测试通过；15 个 Python、11 个 PowerShell 脚本语法通过。
 - Gradle 8.13 + JDK 17：Wrapper 实际完成下载、SHA-256 校验和启动；严格复验 `compileDebugKotlin`、`testDebugUnitTest`、`lintDebug`，38 个任务全部执行，355 个单测零失败，Lint 0 errors。
 - 供应链：依赖校验元数据覆盖 434 个组件、782 个制品，并补齐 Windows/Linux/macOS 三平台 `aapt2` 摘要。
+- 资料治理：Trae 的 11 份计划与 3 份日志、根目录调试报告已归入本地 `ai-docs/`；WorkBuddy/Qoder/Trae 项目记忆已归档快照；`AGENTS.md`、`CLAUDE.md`、`ai-docs/AI.md` 已同步。
 - `git diff --check` 通过；代码修复已提交并推送至 `db15fab`，治理改动已完成本地验证。
 
 ## 1. 执行摘要

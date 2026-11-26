@@ -48,7 +48,6 @@ ClawRuntime/runtime/cmd/runtime/*.exe
 *.bak
 
 # Local debug / scratch files (not part of the source tree)
-debug-device-ui-review.md
 find_class.ps1
 ClawApp/_decompile/
 
