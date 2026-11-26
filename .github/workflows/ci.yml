@@ -25,6 +25,8 @@ jobs:
         with:
           go-version-file: ClawRuntime/runtime/go.mod
           cache: false   # 仓库未提交 go.sum，关闭依赖缓存避免 Restore cache 警告
+      - name: Verify Go modules
+        run: go mod verify
       - name: Run Go tests
         run: go test ./...
       - name: Run Go race tests
@@ -82,5 +84,8 @@ jobs:
         shell: bash
         run: python3 scripts/check_runtime_catalog.py
       - name: Run repository script tests
+        shell: bash
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Run Runtime packaging script tests
         shell: bash
         run: python3 -m unittest discover -s ClawRuntime/scripts -p 'test_*.py'

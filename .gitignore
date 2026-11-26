@@ -50,6 +50,7 @@ ClawRuntime/runtime/cmd/runtime/*.exe
 # Local debug / scratch files (not part of the source tree)
 debug-device-ui-review.md
 find_class.ps1
+ClawApp/_decompile/
 
 # Local reference clones of upstream projects (nested git repos, kept locally — never tracked)
 GitSource/

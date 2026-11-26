@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Verify App RuntimeActionCatalog / RuntimeErrorCodes stay aligned with Go ipc SSOT.

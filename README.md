@@ -114,6 +114,8 @@ cd ClawApp
 .\gradlew.bat :app:assembleDebug
 ```
 
+Gradle Wrapper 固定官方发行包 SHA-256，依赖校验和集中在 `ClawApp/gradle/verification-metadata.xml`；不要通过关闭校验来解决依赖解析失败。
+
 ### `ClawRuntime`
 
 - 不依赖 Gradle

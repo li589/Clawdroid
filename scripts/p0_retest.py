@@ -4,8 +4,8 @@ import re
 import time
 import urllib.request
 
-BASE = "http://127.0.0.1:8765/mcp"
-TOKEN = "p0-test-token-clawdroid-8765"
+from p0_config import MCP_TOKEN as TOKEN
+from p0_config import MCP_URL as BASE
 _id = 0
 
 

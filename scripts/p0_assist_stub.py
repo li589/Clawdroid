@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HOST, PORT = "127.0.0.1", 8766
+from p0_config import ASSIST_PORT
+
+HOST, PORT = "127.0.0.1", ASSIST_PORT
 
 
 class Handler(BaseHTTPRequestHandler):

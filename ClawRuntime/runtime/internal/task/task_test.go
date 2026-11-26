@@ -719,9 +719,14 @@ func waitForTaskStateWithin(t *testing.T, sched *Scheduler, changes *stateChange
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	// Registry state becomes visible before the state-change callback records it.
 	for {
 		if current, ok := sched.Registry().SnapshotByID(taskID); ok && current.State == want {
-			return current
+			for _, entry := range changes.snapshot() {
+				if entry.TaskID == taskID && entry.NewState == want {
+					return current
+				}
+			}
 		}
 		select {
 		case <-changes.notify:

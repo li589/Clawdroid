@@ -1,10 +1,16 @@
 param(
     [string]$BaseUrl = "http://127.0.0.1:8765",
-    [string]$Token = "p0-test-token-clawdroid-8765",
-    [string]$OutDir = "d:\temp_desktop\Proj\Clawdroid\debug-artifacts\p0"
+    [string]$Token = "",
+    [string]$OutDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Token)) {
+    $Token = if ($env:CLAWDROID_MCP_TOKEN) { $env:CLAWDROID_MCP_TOKEN } else { "p0-test-token-clawdroid-8765" }
+}
+if ([string]::IsNullOrWhiteSpace($OutDir)) {
+    $OutDir = Join-Path (Split-Path -Parent $PSScriptRoot) "debug-artifacts\p0"
+}
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $results = [System.Collections.Generic.List[object]]::new()
 $id = 1

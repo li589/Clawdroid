@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$AdbPath = "D:\myPrograms\AndroidDevelop\Android-SDK\platform-tools\adb.exe",
     [string]$DeviceId = "",
     [string]$PackageName = "com.clawdroid.app.debug",

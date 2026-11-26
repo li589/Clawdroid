@@ -7,11 +7,10 @@ import re
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
 
-BASE = "http://127.0.0.1:8765/mcp"
-TOKEN = "p0-test-token-clawdroid-8765"
-OUT = Path(r"d:\temp_desktop\Proj\Clawdroid\debug-artifacts\p0")
+from p0_config import MCP_TOKEN as TOKEN
+from p0_config import MCP_URL as BASE
+from p0_config import P0_OUT as OUT
 OUT.mkdir(parents=True, exist_ok=True)
 
 _id = 0

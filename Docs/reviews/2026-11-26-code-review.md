@@ -18,12 +18,13 @@
 
 仍需真机或专项验证的残余风险：Android 进程组与 Root 行为、Windows 子进程树清理、DNS rebinding、SFTP 首次连接 TOFU、真实 release 签名与 Magisk 安装、长期稳定性。
 
-### 最终本地验证
+### 最终本地验证（含治理）
 
-- Go 1.26.4：`go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...` 全部通过。
-- 仓库脚本：catalog 21 动作/35 错误码/capability/handler/protocol 对齐通过；50 个 Python 测试通过；PowerShell、Shell、Python 语法通过。
-- Gradle 8.13 + JDK 17：独立源码副本中 `compileDebugKotlin`、`lintDebug` 全部通过，Lint 0 errors；最终工作树全量单测 355 个全部通过。
-- `git diff --check` 通过；未提交、未推送。
+- Go 1.26.4：`go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...`、`go mod verify`、`go mod tidy -diff` 全部通过；任务包另完成 race 100 轮与最终 20 轮回归。
+- 仓库脚本：catalog 21 动作/35 错误码/capability/handler/protocol 对齐通过；根目录 2 个与 Runtime 50 个 Python 测试通过；15 个 Python、11 个 PowerShell 脚本语法通过。
+- Gradle 8.13 + JDK 17：Wrapper 实际完成下载、SHA-256 校验和启动；严格复验 `compileDebugKotlin`、`testDebugUnitTest`、`lintDebug`，38 个任务全部执行，355 个单测零失败，Lint 0 errors。
+- 供应链：依赖校验元数据覆盖 434 个组件、782 个制品，并补齐 Windows/Linux/macOS 三平台 `aapt2` 摘要。
+- `git diff --check` 通过；代码修复已提交并推送至 `db15fab`，治理改动已完成本地验证。
 
 ## 1. 执行摘要
 

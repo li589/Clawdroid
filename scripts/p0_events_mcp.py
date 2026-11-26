@@ -1,5 +1,6 @@
 ﻿import json, urllib.request
-B="http://127.0.0.1:8765/mcp"; T="p0-test-token-clawdroid-8765"; i=0
+from p0_config import MCP_TOKEN as T, MCP_URL as B
+i=0
 def rpc(m,p=None):
     global i; i+=1
     req=urllib.request.Request(B,data=json.dumps({"jsonrpc":"2.0","id":i,"method":m,"params":p or {}}).encode(),headers={"Authorization":"Bearer "+T,"Content-Type":"application/json"},method="POST")
