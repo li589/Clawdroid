@@ -21,47 +21,45 @@ class WebPreviewService {
             return ClawToolCallResult(false, "失败: 仅支持 http/https", error = "invalid_url")
         }
         return try {
-            val connection = (URL(trimmed).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 12_000
-                readTimeout = 20_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "ClawdroidWebPreview/0.3")
-                setRequestProperty("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8")
-            }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                return ClawToolCallResult(false, "失败: HTTP $code", error = "http_$code")
-            }
-            val contentType = connection.contentType.orEmpty()
-            val charset = charsetFrom(contentType)
-            val raw = connection.inputStream.use { input ->
-                val buf = ByteArray(maxBytes.coerceIn(8_192, 2_000_000))
-                var total = 0
-                while (total < buf.size) {
-                    val n = input.read(buf, total, buf.size - total)
-                    if (n <= 0) break
-                    total += n
+            val connection = HttpUrlSecurity.open(trimmed, connectTimeoutMs = 12_000, readTimeoutMs = 20_000)
+            try {
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    return ClawToolCallResult(false, "失败: HTTP $code", error = "http_$code")
                 }
-                String(buf, 0, total, charset)
+                val contentType = connection.contentType.orEmpty()
+                val charset = charsetFrom(contentType)
+                val raw = connection.inputStream.use { input ->
+                    val buf = ByteArray(maxBytes.coerceIn(8_192, 2_000_000))
+                    var total = 0
+                    while (total < buf.size) {
+                        val n = input.read(buf, total, buf.size - total)
+                        if (n <= 0) break
+                        total += n
+                    }
+                    String(buf, 0, total, charset)
+                }
+                val title = Regex(
+                    """<title[^>]*>(.*?)</title>""",
+                    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+                ).find(raw)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                    .replace(Regex("""\s+"""), " ")
+                val text = stripHtml(raw).take(4_000)
+                val images = if (includeImages) extractImages(raw, trimmed) else emptyList()
+                val json = JSONObject()
+                    .put("url", trimmed)
+                    .put("final_url", connection.url?.toString() ?: trimmed)
+                    .put("http_status", code)
+                    .put("content_type", contentType)
+                    .put("title", title)
+                    .put("text", text)
+                    .put("text_chars", text.length)
+                    .put("images", JSONArray(images))
+                    .put("image_count", images.size)
+                ClawToolCallResult(success = true, output = json.toString(2))
+            } finally {
+                connection.disconnect()
             }
-            val title = Regex(
-                """<title[^>]*>(.*?)</title>""",
-                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-            ).find(raw)?.groupValues?.getOrNull(1)?.trim().orEmpty()
-                .replace(Regex("\\s+"), " ")
-            val text = stripHtml(raw).take(4_000)
-            val images = if (includeImages) extractImages(raw, trimmed) else emptyList()
-            val json = JSONObject()
-                .put("url", trimmed)
-                .put("final_url", connection.url?.toString() ?: trimmed)
-                .put("http_status", code)
-                .put("content_type", contentType)
-                .put("title", title)
-                .put("text", text)
-                .put("text_chars", text.length)
-                .put("images", JSONArray(images))
-                .put("image_count", images.size)
-            ClawToolCallResult(success = true, output = json.toString(2))
         } catch (error: Exception) {
             ClawToolCallResult(false, "失败: ${error.message}", error = error.message)
         }

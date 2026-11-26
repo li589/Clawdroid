@@ -27,6 +27,8 @@ jobs:
           cache: false   # 仓库未提交 go.sum，关闭依赖缓存避免 Restore cache 警告
       - name: Run Go tests
         run: go test ./...
+      - name: Run Go race tests
+        run: go test -race ./...
 
   app-compile:
     runs-on: ubuntu-latest
@@ -47,6 +49,12 @@ jobs:
       - name: Compile debug Kotlin
         shell: bash
         run: ./gradlew :app:compileDebugKotlin
+      - name: Run Kotlin unit tests
+        shell: bash
+        run: ./gradlew :app:testDebugUnitTest
+      - name: Run Android Lint
+        shell: bash
+        run: ./gradlew :app:lintDebug
 
   repo-check:
     runs-on: ubuntu-latest
@@ -73,3 +81,6 @@ jobs:
       - name: Check Runtime action/error catalog alignment
         shell: bash
         run: python3 scripts/check_runtime_catalog.py
+      - name: Run repository script tests
+        shell: bash
+        run: python3 -m unittest discover -s ClawRuntime/scripts -p 'test_*.py'

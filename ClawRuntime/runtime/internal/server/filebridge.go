@@ -8,11 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"clawdroid/runtime/internal/ipc"
-	"clawdroid/runtime/internal/paths"
 )
 
 type readFileArgs struct {
@@ -43,26 +41,14 @@ func (s *Server) handleReadFileLimited(sess *session, req ipc.Request) ipc.Respo
 		}
 	}
 
-	resolvedPath, err := s.resolveAllowedReadPath(args.Path)
+	file, resolvedPath, err := s.openAllowedReadFile(args.Path)
 	if err != nil {
-		s.reportServerError("read_file_limited denied: %v", err)
+		s.reportServerError("read_file_limited open denied: %v", err)
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
 			Code:      ipc.CodeErrFileOutOfScope,
 			Message:   err.Error(),
-			Data:      s.sessionData(sess),
-		}
-	}
-
-	file, err := os.Open(resolvedPath)
-	if err != nil {
-		s.reportServerError("read_file_limited open failed: %v", err)
-		return ipc.Response{
-			RequestID: req.RequestID,
-			OK:        false,
-			Code:      ipc.CodeErrFileReadFailed,
-			Message:   fmt.Sprintf("open file failed: %v", err),
 			Data:      s.sessionData(sess),
 		}
 	}
@@ -157,18 +143,6 @@ func (s *Server) handleWriteFileLimited(sess *session, req ipc.Request) ipc.Resp
 		}
 	}
 
-	resolvedPath, err := s.resolveAllowedWritePath(args.Path)
-	if err != nil {
-		s.reportServerError("write_file_limited denied: %v", err)
-		return ipc.Response{
-			RequestID: req.RequestID,
-			OK:        false,
-			Code:      ipc.CodeErrFileOutOfScope,
-			Message:   err.Error(),
-			Data:      s.sessionData(sess),
-		}
-	}
-
 	content := []byte(args.Content)
 	if len(content) > 1048576 {
 		return ipc.Response{
@@ -180,13 +154,7 @@ func (s *Server) handleWriteFileLimited(sess *session, req ipc.Request) ipc.Resp
 		}
 	}
 
-	flag := os.O_CREATE | os.O_WRONLY
-	if args.Append {
-		flag |= os.O_APPEND
-	} else {
-		flag |= os.O_TRUNC
-	}
-	file, err := os.OpenFile(resolvedPath, flag, 0o600)
+	file, resolvedPath, err := s.openAllowedWriteFile(args.Path, args.Append)
 	if err != nil {
 		s.reportServerError("write_file_limited open failed: %v", err)
 		return ipc.Response{
@@ -246,7 +214,7 @@ func (s *Server) handleStatFileLimited(sess *session, req ipc.Request) ipc.Respo
 		}
 	}
 
-	resolvedPath, err := s.resolveAllowedReadPath(args.Path)
+	file, resolvedPath, err := s.openAllowedReadFile(args.Path)
 	if err != nil {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -256,8 +224,9 @@ func (s *Server) handleStatFileLimited(sess *session, req ipc.Request) ipc.Respo
 			Data:      s.sessionData(sess),
 		}
 	}
+	defer file.Close()
 
-	info, err := os.Stat(resolvedPath)
+	info, err := file.Stat()
 	if err != nil {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -280,7 +249,7 @@ func (s *Server) handleStatFileLimited(sess *session, req ipc.Request) ipc.Respo
 				Data:      s.sessionData(sess),
 			}
 		}
-		raw, readErr := os.ReadFile(resolvedPath)
+		raw, readErr := io.ReadAll(file)
 		if readErr != nil {
 			return ipc.Response{
 				RequestID: req.RequestID,
@@ -337,7 +306,7 @@ func (s *Server) handleListDirLimited(sess *session, req ipc.Request) ipc.Respon
 		}
 	}
 
-	resolvedPath, err := s.resolveAllowedReadPath(args.Path)
+	dirFile, resolvedPath, err := s.openAllowedDir(args.Path)
 	if err != nil {
 		s.reportServerError("list_dir_limited denied: %v", err)
 		return ipc.Response{
@@ -348,8 +317,9 @@ func (s *Server) handleListDirLimited(sess *session, req ipc.Request) ipc.Respon
 			Data:      s.sessionData(sess),
 		}
 	}
+	defer dirFile.Close()
 
-	info, err := os.Stat(resolvedPath)
+	info, err := dirFile.Stat()
 	if err != nil {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -369,7 +339,7 @@ func (s *Server) handleListDirLimited(sess *session, req ipc.Request) ipc.Respon
 		}
 	}
 
-	entries, err := os.ReadDir(resolvedPath)
+	entries, err := dirFile.ReadDir(-1)
 	if err != nil {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -415,12 +385,12 @@ func (s *Server) handleListDirLimited(sess *session, req ipc.Request) ipc.Respon
 		Code:      ipc.CodeOK,
 		Message:   ipc.ErrorMessage(ipc.CodeOK),
 		Data: mergeData(s.sessionData(sess), map[string]interface{}{
-			"path":       resolvedPath,
-			"offset":     start,
-			"limit":      args.Limit,
-			"total":      total,
+			"path":      resolvedPath,
+			"offset":    start,
+			"limit":     args.Limit,
+			"total":     total,
 			"truncated": start+len(items) < total,
-			"entries":    items,
+			"entries":   items,
 		}),
 	}
 }
@@ -524,7 +494,14 @@ func parseReadFileArgs(args map[string]interface{}) (readFileArgs, error) {
 }
 
 func (s *Server) resolveAllowedReadPath(requestPath string) (string, error) {
-	return s.resolveAllowedPath(requestPath, s.allowedReadRoots())
+	resolved, err := s.resolveAllowedPath(requestPath, s.allowedReadRoots())
+	if err != nil {
+		return "", err
+	}
+	if s.isSensitiveReadPath(resolved) {
+		return "", fmt.Errorf("path is protected runtime data")
+	}
+	return resolved, nil
 }
 
 // resolveAllowedWritePath resolves a path against the write root set. This is
@@ -594,29 +571,7 @@ func (s *Server) resolveAllowedPath(requestPath string, allowedRoots []string) (
 }
 
 func (s *Server) allowedReadRoots() []string {
-	baseDir := filepath.Dir(s.cfg.AuditDir)
-	roots := []string{
-		baseDir,
-		filepath.Join(baseDir, "captures"),
-		filepath.Join(baseDir, "xposed"),
-		s.cfg.AuditDir,
-		paths.MagiskModulePath,
-		paths.WebrootPath,
-	}
-	roots = append(roots, s.cfg.ReadonlyWhitelist...)
-
-	if runtime.GOOS == "android" || runtime.GOOS == "linux" {
-		// Shared storage roots. /sdcard is usually a symlink to /storage/emulated/0;
-		// both are listed so resolved paths stay in-scope after EvalSymlinks.
-		roots = append(roots,
-			"/sdcard",
-			"/storage/emulated/0",
-			"/sdcard/Download",
-			"/sdcard/Pictures",
-		)
-	}
-
-	return uniqueNonEmptyPaths(roots)
+	return uniqueNonEmptyPaths(s.cfg.ReadonlyWhitelist)
 }
 
 // allowedWriteRoots returns the restrictive set of roots that write_file_limited

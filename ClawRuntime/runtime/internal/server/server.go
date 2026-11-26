@@ -24,11 +24,51 @@ import (
 
 var errPayloadTooLarge = errors.New("payload too large")
 
+const (
+	taskSchedulerShutdownTimeout = 10 * time.Second
+	maxConcurrentConnections     = 64
+)
+
+type connectionQuota struct {
+	slots chan struct{}
+}
+
+func newConnectionQuota(limit int) *connectionQuota {
+	if limit <= 0 {
+		return &connectionQuota{}
+	}
+	return &connectionQuota{slots: make(chan struct{}, limit)}
+}
+
+func (q *connectionQuota) acquire() bool {
+	if q == nil || q.slots == nil {
+		return false
+	}
+	select {
+	case q.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (q *connectionQuota) release() {
+	if q == nil || q.slots == nil {
+		return
+	}
+	select {
+	case <-q.slots:
+	default:
+	}
+}
+
 type Server struct {
 	cfg    config.Config
 	logger *audit.Logger
 
 	signaturePrefixMap map[string]struct{}
+	connectionQuota    *connectionQuota
+	rateLimiter        *principalRateLimiter
 	idempotencyCache   *idempotencyCache
 	taskScheduler      *task.Scheduler
 	shellJobs          *shellJobTracker
@@ -69,6 +109,8 @@ func New(cfg config.Config, logger *audit.Logger) *Server {
 		cfg:                cfg,
 		logger:             logger,
 		signaturePrefixMap: sigMap,
+		connectionQuota:    newConnectionQuota(maxConcurrentConnections),
+		rateLimiter:        newPrincipalRateLimiter(cfg.RateLimitPerMinute, maxTrackedRateLimitPrincipals),
 		idempotencyCache:   newIdempotencyCache(),
 		shellJobs:          newShellJobTracker(),
 		startedAt:          time.Now(),
@@ -81,17 +123,21 @@ func New(cfg config.Config, logger *audit.Logger) *Server {
 	return s
 }
 
-// registerEventSub adds a subscriber's wake channel to the broadcast set.
-func (s *Server) registerEventSub(ch chan struct{}) {
-	if s == nil {
-		return
+// registerEventSub atomically claims a bounded global subscription slot.
+func (s *Server) registerEventSub(ch chan struct{}) bool {
+	if s == nil || ch == nil {
+		return false
 	}
 	s.eventSubsMu.Lock()
+	defer s.eventSubsMu.Unlock()
+	if len(s.eventSubs) >= maxConcurrentEventSubscriptions {
+		return false
+	}
 	if s.eventSubs == nil {
 		s.eventSubs = make(map[chan struct{}]struct{})
 	}
 	s.eventSubs[ch] = struct{}{}
-	s.eventSubsMu.Unlock()
+	return true
 }
 
 // unregisterEventSub removes a subscriber's wake channel.
@@ -122,6 +168,8 @@ func (s *Server) notifyEventWake() {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	defer s.shutdownTaskScheduler(taskSchedulerShutdownTimeout)
+
 	socketAddr, cleanup, err := s.resolveSocketAddress()
 	if err != nil {
 		return err
@@ -157,9 +205,16 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("accept runtime connection: %w", acceptErr)
 		}
 
+		if !s.connectionQuota.acquire() {
+			s.recordRateLimit(fmt.Sprintf("connection limit exceeded: max=%d", maxConcurrentConnections))
+			_ = conn.Close()
+			continue
+		}
+
 		// Concurrent connections: subscribe_events holds a long-lived socket.
 		// Handling Accept synchronously would HOL-block ping/version/health.
 		go func(c net.Conn) {
+			defer s.connectionQuota.release()
 			if err := s.handleConnection(ctx, c); err != nil {
 				// Short-lived App RPC sockets often close before the daemon finishes
 				// writing; treat EPIPE/reset as expected noise, not a session outage.
@@ -171,6 +226,19 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}(conn)
 	}
+}
+
+func (s *Server) shutdownTaskScheduler(timeout time.Duration) {
+	s.taskScheduler.Close()
+	if s.taskScheduler.WaitForIdle(timeout) {
+		return
+	}
+	s.logger.Warn(fmt.Sprintf(
+		"task scheduler shutdown timed out after %s: inflight=%d running=%d",
+		timeout,
+		s.taskScheduler.InflightCount(),
+		s.taskScheduler.RunningCount(),
+	))
 }
 
 func isBenignClientDisconnect(err error) bool {
@@ -204,7 +272,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 			Message:   ipc.ErrorMessage(ipc.CodeErrPeerVerifyFailed),
 			Data: map[string]interface{}{
 				"session_id":    sess.id,
-				"session_state": string(sess.state),
+				"session_state": string(sess.currentState()),
 				"state_trace":   sess.traceSnapshot(),
 			},
 		})
@@ -216,14 +284,17 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 	writer := bufio.NewWriter(conn)
 
 	_ = conn.SetDeadline(deadlineFromMS(s.cfg.RequestTimeoutMS))
-	if err := s.performHandshake(sess, reader, writer); err != nil {
+	if err := s.performHandshake(ctx, sess, reader, writer); err != nil {
 		return err
 	}
 
 	// Register session after successful handshake so task steps can use it.
 	s.registerSession(sess)
 	defer s.unregisterSession(sess.id)
+	return s.handleRequestLoop(ctx, sess, conn, reader, writer)
+}
 
+func (s *Server) handleRequestLoop(ctx context.Context, sess *session, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) error {
 	for {
 		_ = conn.SetDeadline(deadlineFromMS(s.cfg.RequestTimeoutMS))
 
@@ -246,7 +317,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 				Message:   ipc.ErrorMessage(code),
 				Data: map[string]interface{}{
 					"session_id":    sess.id,
-					"session_state": string(sess.state),
+					"session_state": string(sess.currentState()),
 					"state_trace":   sess.traceSnapshot(),
 				},
 			})
@@ -261,7 +332,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 				Message:   ipc.ErrorMessage(ipc.CodeErrUnsupportedVer),
 				Data: map[string]interface{}{
 					"session_id":    sess.id,
-					"session_state": string(sess.state),
+					"session_state": string(sess.currentState()),
 					"state_trace":   sess.traceSnapshot(),
 				},
 			})
@@ -294,17 +365,25 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 				Message:   ipc.ErrorMessage(ipc.CodeErrSessionExpired),
 				Data: map[string]interface{}{
 					"session_id":    sess.id,
-					"session_state": string(sess.state),
+					"session_state": string(sess.currentState()),
 					"state_trace":   sess.traceSnapshot(),
 				},
 			})
 			return nil
 		}
 
-		if !sess.allowRequest(s.cfg.RateLimitPerMinute) {
+		if !s.withinTimestampSkew(req.Timestamp) {
+			response := s.invalidTimestampResponse(sess, req)
+			s.logAuditRequest(sess, req, loopStartedAt, response)
+			_ = writeResponseFrame(writer, response)
+			continue
+		}
+		if !s.allowPrincipalRequest(sess) || !sess.allowRequest(s.cfg.RateLimitPerMinute) {
+			principal, _ := principalForSession(sess)
 			message := fmt.Sprintf(
-				"rate limit exceeded: package=%s session=%s action=%s limit=%d/min",
-				sess.packageName,
+				"rate limit exceeded: package=%s uid=%d session=%s action=%s limit=%d/min scope=principal",
+				principal.PackageName,
+				principal.UID,
 				sess.id,
 				req.Action,
 				s.cfg.RateLimitPerMinute,
@@ -324,22 +403,30 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 
-		if cachedResp, ok := s.idempotencyCache.get(req.Action, req.RequestID, sess.id); ok {
-			responseCopy := cachedResp
-			responseCopy.Data = mergeData(s.sessionData(sess), cachedResp.Data)
-			s.logAuditRequest(sess, req, loopStartedAt, responseCopy)
-			if err := writeResponseFrame(writer, responseCopy); err != nil {
-				sess.transition(StateClosed)
-				return err
+		principal, ok := principalForSession(sess)
+		if !ok {
+			response := ipc.Response{
+				RequestID: req.RequestID,
+				OK:        false,
+				Code:      ipc.CodeErrPeerVerifyFailed,
+				Message:   "request has no authenticated principal",
+				Data:      s.sessionData(sess),
 			}
+			s.logAuditRequest(sess, req, loopStartedAt, response)
+			_ = writeResponseFrame(writer, response)
 			continue
 		}
-
-		if req.Action == "subscribe_events" {
-			if err := s.handleSubscribeEvents(ctx, sess, req, conn, writer); err != nil {
-				sess.transition(StateClosed)
-				return err
+		digest, err := canonicalArgsDigest(req.Args)
+		if err != nil {
+			response := ipc.Response{
+				RequestID: req.RequestID,
+				OK:        false,
+				Code:      ipc.CodeErrInvalidRequest,
+				Message:   "request arguments cannot be normalized for replay protection",
+				Data:      mergeData(s.sessionData(sess), map[string]interface{}{"action": req.Action}),
 			}
+			s.logAuditRequest(sess, req, loopStartedAt, response)
+			_ = writeResponseFrame(writer, response)
 			continue
 		}
 
@@ -348,16 +435,42 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) error {
 		if longAction {
 			_ = conn.SetDeadline(time.Time{})
 		}
-		response := s.handleRequest(sess, req)
+		var subscription *eventSubscription
+		var response ipc.Response
+		var status replayStatus
+		if req.Action == ipc.ActionSubscribeEvents {
+			response, subscription = s.prepareEventSubscription(sess, req)
+			status = replayExecuted
+		} else {
+			response, status = s.idempotencyCache.execute(ctx, principal.OwnerKey(), req.Action, req.RequestID, digest, func() ipc.Response {
+				return s.cacheableResponse(sess, s.handleRequestWithContext(ctx, sess, req))
+			})
+		}
+		replayStatus := status
 		if longAction {
 			_ = conn.SetDeadline(deadlineFromMS(s.cfg.RequestTimeoutMS))
 		}
-		s.idempotencyCache.put(req.Action, req.RequestID, sess.id, response)
+		if replayStatus != replayExecuted && replayStatus != replayHit {
+			response = s.replayErrorResponse(ctx, sess, req, replayStatus)
+		}
 		mergedResp := response
+		// Cached bodies omit connection-local metadata, so a replay receives the
+		// current session identity without losing action-specific response fields.
 		mergedResp.Data = mergeData(s.sessionData(sess), response.Data)
 		s.logAuditRequest(sess, req, loopStartedAt, mergedResp)
 		if err := writeResponseFrame(writer, mergedResp); err != nil {
+			if subscription != nil {
+				s.unregisterEventSub(subscription.wake)
+			}
 			sess.transition(StateClosed)
+			return err
+		}
+		if subscription != nil {
+			err := s.streamEventSubscription(ctx, sess, subscription, conn, writer)
+			sess.transition(StateClosed)
+			if errors.Is(err, errSessionExpired) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -379,6 +492,46 @@ func writeResponseFrame(writer *bufio.Writer, resp ipc.Response) error {
 		return err
 	}
 	return writeJSONFrame(writer, payload)
+}
+
+func (s *Server) cacheableResponse(sess *session, response ipc.Response) ipc.Response {
+	data := copyMap(response.Data)
+	for key := range s.sessionData(sess) {
+		// package_name is also an action response field (for example the focused
+		// window package). The replay principal already fixes the auth package.
+		if key != "package_name" {
+			delete(data, key)
+		}
+	}
+	response.Data = data
+	return response
+}
+
+func (s *Server) replayErrorResponse(ctx context.Context, sess *session, req ipc.Request, status replayStatus) ipc.Response {
+	code := ipc.CodeErrInvalidRequest
+	message := "request_id was already used with different arguments"
+	switch status {
+	case replayCacheFull:
+		code = ipc.CodeErrRateLimited
+		message = "replay cache is full; retry after existing requests complete"
+	case replayContextCanceled:
+		err := ctx.Err()
+		if err == nil {
+			err = context.Canceled
+		}
+		code = executionContextCode(err)
+		message = executionContextMessage(err)
+	case replayAborted:
+		code = ipc.CodeErrUnknown
+		message = "request execution aborted before a response was recorded"
+	}
+	return ipc.Response{
+		RequestID: req.RequestID,
+		OK:        false,
+		Code:      code,
+		Message:   message,
+		Data:      mergeData(s.sessionData(sess), map[string]interface{}{"action": req.Action}),
+	}
 }
 
 func deadlineFromMS(timeoutMS int) time.Time {
@@ -444,13 +597,14 @@ func writeJSONFrameWithTimeout(conn net.Conn, writer *bufio.Writer, payload []by
 }
 
 func (s *Server) logAudit(sess *session, req ipc.Request, startedAt time.Time, code int, msg string, errMsg string, level audit.AuditLevel) {
+	snapshot := sess.snapshot()
 	entry := audit.AuditLogEntry{
 		RequestID:       req.RequestID,
-		SessionID:       sess.id,
-		CallerUID:       sess.peerCreds.UID,
-		CallerPID:       sess.peerCreds.PID,
-		PackageName:     sess.packageName,
-		SignatureDigest: sess.signatureDigest,
+		SessionID:       snapshot.id,
+		CallerUID:       snapshot.peerCreds.UID,
+		CallerPID:       snapshot.peerCreds.PID,
+		PackageName:     snapshot.packageName,
+		SignatureDigest: snapshot.signatureDigest,
 		Action:          req.Action,
 		AuditLevel:      level,
 		StartedAt:       startedAt.Unix(),
@@ -466,7 +620,9 @@ func (s *Server) logAudit(sess *session, req ipc.Request, startedAt time.Time, c
 	v, bt := audit.GetVersionInfo()
 	entry.DaemonVersion = v
 	entry.DaemonBuildTime = bt
-	_ = s.logger.Log(entry)
+	if err := s.logger.Log(entry); err != nil {
+		s.logger.Warn(fmt.Sprintf("audit write failed: request_id=%s action=%s error=%v", req.RequestID, req.Action, err))
+	}
 }
 
 func (s *Server) logAuditRequest(sess *session, req ipc.Request, startedAt time.Time, resp ipc.Response) {
@@ -480,48 +636,104 @@ func (s *Server) logAuditRequest(sess *session, req ipc.Request, startedAt time.
 	s.logAudit(sess, req, startedAt, code, msg, errMsg, level)
 }
 
-// ExecuteStep implements task.StepExecutor. It routes the action through the
-// task's owning session. If the original submitting session has closed (common
-// when the App opens a new connection for task_get polling), it falls back to
-// any active authenticated session so task steps can continue executing.
-func (s *Server) ExecuteStep(ctx context.Context, sessionID, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
+// ExecuteStep implements task.StepExecutor using the task's immutable principal
+// snapshot. Connection sessions are never consulted for step identity, so closing
+// or reconnecting the submitting socket cannot affect execution.
+func (s *Server) ExecuteStep(ctx context.Context, _ string, taskID string, action string, args map[string]interface{}, timeoutMS int) (code int, message string, data map[string]interface{}, latencyMS int64) {
 	started := time.Now()
+	if timeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		return executionContextCode(err), executionContextMessage(err), nil, time.Since(started).Milliseconds()
+	}
+
+	t, ok := s.taskScheduler.Registry().SnapshotByID(taskID)
+	if !ok {
+		return ipc.CodeErrTaskNotFound, ipc.ErrorMessage(ipc.CodeErrTaskNotFound), nil, time.Since(started).Milliseconds()
+	}
+	principal := t.Owner
+	if principal.PackageName == "" || principal.UID <= 0 || principal.SignatureDigest == "" {
+		return ipc.CodeErrPeerVerifyFailed, "task has no authenticated principal snapshot", nil, time.Since(started).Milliseconds()
+	}
 
 	req := ipc.Request{
 		RequestID: fmt.Sprintf("task-step-%d", time.Now().UnixNano()),
+		Timestamp: time.Now().Unix(),
 		Action:    action,
 		Args:      args,
 		Version:   s.cfg.ProtocolVersion,
 	}
-
-	sess := s.getSession(sessionID)
-	if sess == nil {
-		// Original session closed (connection dropped). Fall back to any active
-		// session so multi-step tasks survive cross-connection polling.
-		sess = s.anyActiveSession()
+	sess := s.taskExecutionSession(t)
+	if !s.allowPrincipalRequest(sess) {
+		resp := ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrRateLimited,
+			Message:   ipc.ErrorMessage(ipc.CodeErrRateLimited),
+			Data:      s.sessionData(sess),
+		}
+		s.logAuditRequest(sess, req, started, resp)
+		return resp.Code, resp.Message, resp.Data, time.Since(started).Milliseconds()
 	}
-	if sess == nil {
-		return ipc.CodeErrSessionExpired, ipc.ErrorMessage(ipc.CodeErrSessionExpired), nil, time.Since(started).Milliseconds()
+	resp := s.handleRequestWithContext(ctx, sess, req)
+	if err := ctx.Err(); err != nil {
+		resp = ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      executionContextCode(err),
+			Message:   executionContextMessage(err),
+			Data:      resp.Data,
+		}
 	}
-
-	resp := s.handleRequest(sess, req)
+	s.logAuditRequest(sess, req, started, resp)
 	return resp.Code, resp.Message, resp.Data, time.Since(started).Milliseconds()
+}
+
+func (s *Server) taskExecutionSession(t task.Task) *session {
+	principal := t.Owner
+	sessionID := t.SessionID
+	if sessionID == "" {
+		sessionID = "task-" + t.ID
+	}
+	return &session{
+		id:                     sessionID,
+		state:                  StateReady,
+		trace:                  []string{string(StateReady)},
+		packageName:            principal.PackageName,
+		signatureDigest:        principal.SignatureDigest,
+		peerUID:                principal.UID,
+		peerVerified:           true,
+		peerPackageBound:       true,
+		peerKnownPackages:      []string{principal.PackageName},
+		peerVerificationMethod: "task-principal-snapshot",
+		peerCreds: peerCredentials{
+			UID:    principal.UID,
+			Method: "task-principal-snapshot",
+		},
+		capabilities: s.capabilityList(),
+	}
+}
+
+func executionContextCode(err error) int {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ipc.CodeErrTimeout
+	}
+	return ipc.CodeErrCancelled
+}
+
+func executionContextMessage(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "task step timed out"
+	}
+	return "task step cancelled"
 }
 
 // onTaskStateChange is called by the scheduler whenever a task transitions state.
 func (s *Server) onTaskStateChange(taskID string, oldState, newState task.TaskState, snapshot map[string]interface{}) {
 	s.logger.Info(fmt.Sprintf("task state transition: task=%s %s -> %s", taskID, oldState, newState))
-}
-
-// anyActiveSession returns the first active authenticated session.
-func (s *Server) anyActiveSession() *session {
-	s.sessionsMu.RLock()
-	for _, sess := range s.sessions {
-		s.sessionsMu.RUnlock()
-		return sess
-	}
-	s.sessionsMu.RUnlock()
-	return nil
 }
 
 func (s *Server) registerSession(sess *session) {
@@ -537,11 +749,4 @@ func (s *Server) unregisterSession(sessionID string) {
 	s.sessionsMu.Lock()
 	delete(s.sessions, sessionID)
 	s.sessionsMu.Unlock()
-}
-
-func (s *Server) getSession(sessionID string) *session {
-	s.sessionsMu.RLock()
-	sess := s.sessions[sessionID]
-	s.sessionsMu.RUnlock()
-	return sess
 }

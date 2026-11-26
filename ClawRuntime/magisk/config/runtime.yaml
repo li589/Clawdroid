@@ -23,4 +23,4 @@ capability:
   file_bridge_enabled: true
 
 paths:
-  readonly_whitelist: "/sdcard,/storage/emulated/0,/sdcard/Pictures,/sdcard/Download,/data/local/tmp/clawdroid,/data/adb/modules/clawruntime"
+  readonly_whitelist: "/sdcard,/storage/emulated/0,/sdcard/Pictures,/sdcard/Download,/data/local/tmp/clawdroid/captures,/data/local/tmp/clawdroid/xposed"

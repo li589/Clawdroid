@@ -49,11 +49,13 @@ type Scheduler struct {
 	onStateChange StateChangeHandler
 	opts          SchedulerOptions
 
-	// taskMu protects running map, inflight counter, and terminal state updates.
-	// It is NOT held during step execution to avoid blocking the executor.
+	// taskMu protects queued/running cancel maps, inflight counter, idle signal,
+	// and terminal state updates. It is NOT held during step execution.
 	taskMu      sync.RWMutex
-	running     map[string]context.CancelFunc // taskID -> cancel function
+	queued      map[string]context.CancelFunc // taskID -> cancel function while waiting for a slot
+	running     map[string]context.CancelFunc // taskID -> cancel function while executing/compensating
 	inflight    int
+	idleCh      chan struct{} // non-nil while work remains; closed when the scheduler is idle
 	workerSlots chan struct{}
 	closed      bool
 }
@@ -71,6 +73,7 @@ func NewSchedulerWithOptions(executor StepExecutor, onStateChange StateChangeHan
 		executor:      executor,
 		onStateChange: onStateChange,
 		opts:          opts,
+		queued:        make(map[string]context.CancelFunc),
 		running:       make(map[string]context.CancelFunc),
 		workerSlots:   make(chan struct{}, opts.MaxConcurrent),
 	}
@@ -93,6 +96,45 @@ func (s *Scheduler) InflightCount() int {
 	return s.inflight
 }
 
+// WaitForIdle waits until all queued, running, and compensating work has stopped.
+// It returns false if timeout elapses first. A non-positive timeout only checks
+// the current state.
+func (s *Scheduler) WaitForIdle(timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		s.taskMu.RLock()
+		idle := s.isIdleLocked()
+		idleCh := s.idleCh
+		s.taskMu.RUnlock()
+		if idle {
+			return true
+		}
+
+		select {
+		case <-idleCh:
+		case <-timer.C:
+			return false
+		}
+	}
+}
+
+// isIdleLocked reports whether dispatch and any detached compensation goroutine
+// have both finished. Caller must hold taskMu.
+func (s *Scheduler) isIdleLocked() bool {
+	return s.inflight == 0 && len(s.queued) == 0 && len(s.running) == 0
+}
+
+// signalIdleLocked wakes WaitForIdle callers once no scheduler-owned work
+// remains. Caller must hold taskMu.
+func (s *Scheduler) signalIdleLocked() {
+	if s.idleCh != nil && s.isIdleLocked() {
+		close(s.idleCh)
+		s.idleCh = nil
+	}
+}
+
 // RunningCount returns tasks currently holding a worker slot.
 func (s *Scheduler) RunningCount() int {
 	s.taskMu.RLock()
@@ -101,6 +143,8 @@ func (s *Scheduler) RunningCount() int {
 }
 
 // Submit submits a new task and starts its execution when a worker slot is free.
+// It copies t before applying defaults or publishing it, so the caller may read
+// or mutate t after Submit returns without affecting the registered task.
 func (s *Scheduler) Submit(ctx context.Context, t *Task) error {
 	if t.ID == "" {
 		return fmt.Errorf("task ID is required")
@@ -109,121 +153,224 @@ func (s *Scheduler) Submit(ctx context.Context, t *Task) error {
 		return fmt.Errorf("task must have at least one step")
 	}
 
-	t.State = TaskStateCreated
-	if t.RetryPolicy.MaxAttempts == 0 && t.RetryPolicy.InitialDelayMS == 0 {
-		t.RetryPolicy = DefaultRetryPolicy()
+	owned := cloneTask(t)
+	owned.State = TaskStateCreated
+	if owned.OwnerKey == "" {
+		owned.OwnerKey = owned.SessionID
+	}
+	if !owned.RetryPolicyConfigured && owned.RetryPolicy == (RetryPolicy{}) {
+		owned.RetryPolicy = DefaultRetryPolicy()
+	}
+	if err := owned.RetryPolicy.Validate(); err != nil {
+		return fmt.Errorf("invalid retry policy: %w", err)
+	}
+	for i := range owned.Steps {
+		if owned.Steps[i].TimeoutMS == 0 {
+			owned.Steps[i].TimeoutMS = DefaultStepTimeoutMS
+		}
+		if owned.Steps[i].TimeoutMS < MinStepTimeoutMS || owned.Steps[i].TimeoutMS > MaxStepTimeoutMS {
+			return fmt.Errorf("steps[%d]: timeout_ms must be between %d and %d", i, MinStepTimeoutMS, MaxStepTimeoutMS)
+		}
 	}
 
-	if err := s.registry.Submit(t.SessionID, t); err != nil {
+	if err := s.registry.Submit(owned.OwnerKey, &owned); err != nil {
 		return err
 	}
 
 	s.taskMu.Lock()
 	if s.closed {
 		s.taskMu.Unlock()
-		_ = s.registry.Remove(t.SessionID, t.ID)
+		_ = s.registry.Remove(owned.OwnerKey, owned.ID)
 		return fmt.Errorf("scheduler is closed")
 	}
 	if s.inflight >= s.opts.MaxInflight {
 		s.taskMu.Unlock()
-		_ = s.registry.Remove(t.SessionID, t.ID)
+		_ = s.registry.Remove(owned.OwnerKey, owned.ID)
 		return ErrQueueFull
 	}
+	// Task lifetime is independent of the request/connection context. Cancellation
+	// is explicit through Cancel or scheduler Close.
+	taskCtx, cancel := context.WithCancel(context.Background())
+	if s.idleCh == nil {
+		s.idleCh = make(chan struct{})
+	}
 	s.inflight++
-	s.transitionLocked(t, TaskStateQueued)
-	t.QueuedAt = time.Now()
+	s.queued[owned.ID] = cancel
+	if !s.transitionLocked(owned.ID, TaskStateQueued) {
+		delete(s.queued, owned.ID)
+		cancel()
+		s.inflight--
+		s.signalIdleLocked()
+		s.taskMu.Unlock()
+		_ = s.registry.Remove(owned.OwnerKey, owned.ID)
+		return fmt.Errorf("failed to queue task %q", owned.ID)
+	}
 	s.taskMu.Unlock()
 
-	go s.dispatchTask(t)
+	go s.dispatchTask(taskCtx, owned.ID)
 	return nil
 }
 
-func (s *Scheduler) dispatchTask(t *Task) {
-	// Wait for a concurrency slot so multiple agents can run in parallel up to MaxConcurrent.
-	s.workerSlots <- struct{}{}
+func (s *Scheduler) dispatchTask(ctx context.Context, taskID string) {
 	defer func() {
-		<-s.workerSlots
 		s.taskMu.Lock()
 		if s.inflight > 0 {
 			s.inflight--
 		}
+		s.signalIdleLocked()
 		s.taskMu.Unlock()
 	}()
 
-	s.taskMu.RLock()
-	closed := s.closed
-	s.taskMu.RUnlock()
-	if closed {
-		s.transition(t, TaskStateCancelled)
+	// A cancelled queued task must leave the queue without consuming a slot or
+	// invoking its executor.
+	select {
+	case <-ctx.Done():
+		s.cancelTask(taskID)
+		return
+	case s.workerSlots <- struct{}{}:
+	}
+	defer func() { <-s.workerSlots }()
+
+	s.taskMu.Lock()
+	cur, ok := s.registry.SnapshotByID(taskID)
+	if !ok {
+		s.taskMu.Unlock()
 		return
 	}
-	s.runTask(t)
+	if s.closed {
+		if cur.State == TaskStateQueued {
+			s.cancelLocked(taskID)
+		}
+		s.taskMu.Unlock()
+		return
+	}
+	// Cancel and this transition are serialized by taskMu. Rechecking under the
+	// lock closes the race where a queued task was cancelled while acquiring a slot.
+	if cur.State != TaskStateQueued || !s.transitionLocked(taskID, TaskStateRunning) {
+		s.taskMu.Unlock()
+		return
+	}
+	cancel := s.queued[taskID]
+	delete(s.queued, taskID)
+	s.running[taskID] = cancel
+	if err := s.registry.UpdateByID(taskID, func(t *Task) error {
+		t.StartedAt = time.Now()
+		return nil
+	}); err != nil {
+		s.taskMu.Unlock()
+		return
+	}
+	s.taskMu.Unlock()
+
+	s.runTask(ctx, taskID)
 }
 
-// Cancel requests cancellation of a running task.
+// Cancel requests cancellation of a queued, running, waiting, or retrying task.
+// Compensating follows its own legal terminal path and cannot be cancelled here.
 func (s *Scheduler) Cancel(taskID string) bool {
-	s.taskMu.RLock()
-	defer s.taskMu.RUnlock()
-	cancel, ok := s.running[taskID]
-	if !ok {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	return s.cancelLocked(taskID)
+}
+
+func (s *Scheduler) cancelLocked(taskID string) bool {
+	cur, ok := s.registry.SnapshotByID(taskID)
+	if !ok || !schedulerCanCancel(cur.State) {
 		return false
 	}
-	cancel()
-	return true
+	// Wake the executor before publishing Cancelled. The executor cannot perform a
+	// competing scheduler transition until this lock is released and the state is set.
+	if cancel := s.queued[taskID]; cancel != nil {
+		cancel()
+	}
+	if cancel := s.running[taskID]; cancel != nil {
+		cancel()
+	}
+	return s.transitionLocked(taskID, TaskStateCancelled)
 }
 
-// Close stops all running tasks and prevents new submissions.
+func schedulerCanCancel(state TaskState) bool {
+	switch state {
+	case TaskStateQueued, TaskStateRunning, TaskStateWaitingSignal, TaskStateRetrying:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Scheduler) cancelTask(taskID string) bool {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	return s.cancelLocked(taskID)
+}
+
+// Close stops all active tasks and prevents new submissions. It is safe to call
+// repeatedly or concurrently; cancellation is non-blocking, so callers that need
+// quiescence should follow it with WaitForIdle.
 func (s *Scheduler) Close() {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
+	if s.closed {
+		return
+	}
 	s.closed = true
-	for _, cancel := range s.running {
-		cancel()
+	for taskID := range s.queued {
+		s.cancelLocked(taskID)
+	}
+	for taskID := range s.running {
+		if cancel := s.running[taskID]; cancel != nil {
+			cancel()
+		}
+		if cur, ok := s.registry.SnapshotByID(taskID); ok && schedulerCanCancel(cur.State) {
+			s.transitionLocked(taskID, TaskStateCancelled)
+		}
 	}
 }
 
 // transitionLocked transitions the task state via the registry so that every
 // State/EndedAt write is serialized under r.mu (no cross-lock race). Caller
 // must hold taskMu (protects s.running/inflight and the cancel-func bookkeeping).
-func (s *Scheduler) transitionLocked(t *Task, newState TaskState) {
+func (s *Scheduler) transitionLocked(taskID string, newState TaskState) bool {
 	// Read previous state from the registry (under r.mu) so we never race with
 	// the single writer in Registry.SetState.
 	oldState := newState
-	if cur, ok := s.registry.SnapshotByID(t.ID); ok {
+	if cur, ok := s.registry.SnapshotByID(taskID); ok {
 		oldState = cur.State
 	}
 	// Apply the state change under the registry lock and read back the result.
-	if !s.registry.SetState(t.ID, newState) {
+	if !s.registry.SetState(taskID, newState) {
 		// Transition invalid or task gone; read current state for logging.
-		cur, ok := s.registry.SnapshotByID(t.ID)
+		cur, ok := s.registry.SnapshotByID(taskID)
 		if !ok {
-			return
+			return false
 		}
-		slog.Error("task state transition failed", "task_id", t.ID, "from", cur.State, "to", newState)
-		return
+		slog.Error("task state transition failed", "task_id", taskID, "from", cur.State, "to", newState)
+		return false
 	}
-	// t.State is owned exclusively by the registry; do not write it here.
 	if newState.IsTerminal() {
-		if cancel, ok := s.running[t.ID]; ok {
+		if cancel := s.queued[taskID]; cancel != nil {
 			cancel()
-			delete(s.running, t.ID)
+			delete(s.queued, taskID)
+		}
+		if cancel := s.running[taskID]; cancel != nil {
+			cancel()
+			delete(s.running, taskID)
 		}
 	}
 	if s.onStateChange != nil {
 		// Build snapshot from registry for a consistent view.
-		if cur, ok := s.registry.SnapshotByID(t.ID); ok {
-			s.onStateChange(t.ID, oldState, newState, cur.StateSnapshot())
-		} else {
-			s.onStateChange(t.ID, oldState, newState, t.StateSnapshot())
+		if cur, ok := s.registry.SnapshotByID(taskID); ok {
+			s.onStateChange(taskID, oldState, newState, cur.StateSnapshot())
 		}
 	}
+	return true
 }
 
 // transition transitions the task state safely. Acquires taskMu write lock.
-func (s *Scheduler) transition(t *Task, newState TaskState) {
+func (s *Scheduler) transition(taskID string, newState TaskState) bool {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
-	s.transitionLocked(t, newState)
+	return s.transitionLocked(taskID, newState)
 }
 
 // GetTaskState reads the current task state. It reads through the registry lock
@@ -236,37 +383,25 @@ func (s *Scheduler) GetTaskState(taskID, sessionID string) (TaskState, bool) {
 	return cur.State, true
 }
 
-func (s *Scheduler) runTask(t *Task) {
-	ctx, cancel := context.WithCancel(context.Background())
-	s.taskMu.Lock()
-	s.running[t.ID] = cancel
-	s.taskMu.Unlock()
-
+func (s *Scheduler) runTask(ctx context.Context, taskID string) {
 	defer func() {
-		cancel() // cancel the original execution context
-	 // If the task entered Compensating state, the compensation goroutine
-	 // replaced s.running[t.ID] with its own cancel func and will clean up.
-	 // Otherwise, remove the stale entry now.
+		// If the task entered Compensating state, the compensation goroutine
+		// replaced s.running[taskID] with its own cancel func and will clean up.
+		// Otherwise, remove the stale entry now.
 		s.taskMu.Lock()
-		cur, ok := s.registry.SnapshotByID(t.ID)
+		cur, ok := s.registry.SnapshotByID(taskID)
 		if !ok || cur.State != TaskStateCompensating {
-			delete(s.running, t.ID)
+			delete(s.running, taskID)
 		}
 		s.taskMu.Unlock()
 	}()
 
-	s.transition(t, TaskStateRunning)
-	s.registry.UpdateByID(t.ID, func(t *Task) error {
-		t.StartedAt = time.Now()
-		return nil
-	})
-
-	s.executeSteps(ctx, t)
+	s.executeSteps(ctx, taskID)
 }
 
-func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
+func (s *Scheduler) executeSteps(ctx context.Context, taskID string) {
 	for {
-		err := s.registry.UpdateByID(t.ID, func(task *Task) error {
+		err := s.registry.UpdateByID(taskID, func(task *Task) error {
 			if task.CurrentStep >= len(task.Steps) {
 				return fmt.Errorf("all steps completed")
 			}
@@ -276,17 +411,17 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 			return nil
 		})
 		if err != nil {
-			curTask, ok := s.registry.GetByID(t.ID)
+			curTask, ok := s.registry.SnapshotByID(taskID)
 			if !ok {
 				return
 			}
 			if curTask.CurrentStep >= len(curTask.Steps) {
-				s.transition(curTask, TaskStateSucceeded)
+				s.transition(taskID, TaskStateSucceeded)
 			}
 			return
 		}
 
-		curTask, ok := s.registry.GetByID(t.ID)
+		curTask, ok := s.registry.SnapshotByID(taskID)
 		if !ok || curTask.CurrentStep >= len(curTask.Steps) {
 			return
 		}
@@ -294,10 +429,26 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 
 		result := s.executeStepWithRetry(ctx, curTask, step)
 
-		s.registry.UpdateByID(t.ID, func(task *Task) error {
+		published := false
+		_ = s.registry.UpdateByID(taskID, func(task *Task) error {
+			if task.State == TaskStateCancelled || ctx.Err() != nil {
+				return nil
+			}
 			task.StepResults = append(task.StepResults, result)
+			if result.OK {
+				// Keep result publication and progress advancement atomic so snapshots
+				// never report more completed steps than the current step index.
+				task.CurrentStep++
+			}
+			published = true
 			return nil
 		})
+		if !published {
+			if ctx.Err() != nil {
+				s.cancelTask(taskID)
+			}
+			return
+		}
 
 		if !result.OK {
 			if step.OnFailure != StepPolicyRetry {
@@ -306,27 +457,22 @@ func (s *Scheduler) executeSteps(ctx context.Context, t *Task) {
 				}
 			} else {
 				if result.Code == -1 {
-					s.transition(curTask, TaskStateCancelled)
+					s.cancelTask(taskID)
 					return
 				}
-				s.registry.UpdateByID(t.ID, func(task *Task) error {
+				s.registry.UpdateByID(taskID, func(task *Task) error {
 					task.Error = result.Message
 					task.ErrorCode = result.Code
 					return nil
 				})
-				s.transition(curTask, TaskStateFailed)
+				s.transition(taskID, TaskStateFailed)
 				return
 			}
-		} else {
-			s.registry.UpdateByID(t.ID, func(task *Task) error {
-				task.CurrentStep++
-				return nil
-			})
 		}
 	}
 }
 
-func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step) StepResult {
+func (s *Scheduler) executeStepWithRetry(ctx context.Context, t Task, step Step) StepResult {
 	retryCount := 0
 	delay := time.Duration(t.RetryPolicy.InitialDelayMS) * time.Millisecond
 	maxDelay := time.Duration(t.RetryPolicy.MaxDelayMS) * time.Millisecond
@@ -335,8 +481,16 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 	}
 
 	for {
+		if ctx.Err() != nil {
+			return StepResult{
+				StepIndex: t.CurrentStep,
+				Action:    step.Action,
+				Code:      -1,
+				Message:   "cancelled before step execution",
+			}
+		}
 		started := time.Now()
-		code, message, data, latencyMS := s.executor.ExecuteStep(ctx, t.SessionID, t.ID, step.Action, step.Args, step.TimeoutMS)
+		code, message, data, latencyMS := s.executeStepContext(ctx, t, step)
 		result := StepResult{
 			StepIndex:  t.CurrentStep,
 			Action:     step.Action,
@@ -349,7 +503,7 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 			RetryCount: retryCount,
 		}
 
-		if result.OK || step.OnFailure != StepPolicyRetry {
+		if result.OK || result.Code == -1 || step.OnFailure != StepPolicyRetry {
 			return result
 		}
 
@@ -357,6 +511,11 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 			return result
 		}
 
+		if !s.transition(t.ID, TaskStateRetrying) {
+			result.Code = -1
+			result.Message = "cancelled before retry backoff"
+			return result
+		}
 		select {
 		case <-ctx.Done():
 			result.Code = -1
@@ -367,12 +526,27 @@ func (s *Scheduler) executeStepWithRetry(ctx context.Context, t *Task, step Step
 
 		delay = time.Duration(math.Min(float64(delay*2), float64(maxDelay)))
 		retryCount++
+		if !s.transition(t.ID, TaskStateRunning) {
+			result.Code = -1
+			result.Message = "cancelled before retry"
+			return result
+		}
 	}
 }
 
-func (s *Scheduler) handleStepFailure(ctx context.Context, t *Task, step Step, result StepResult) bool {
+func (s *Scheduler) executeStepContext(ctx context.Context, t Task, step Step) (int, string, map[string]interface{}, int64) {
+	stepCtx := ctx
+	cancel := func() {}
+	if step.TimeoutMS > 0 {
+		stepCtx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutMS)*time.Millisecond)
+	}
+	defer cancel()
+	return s.executor.ExecuteStep(stepCtx, t.SessionID, t.ID, step.Action, step.Args, step.TimeoutMS)
+}
+
+func (s *Scheduler) handleStepFailure(ctx context.Context, t Task, step Step, result StepResult) bool {
 	if result.Code == -1 {
-		s.transition(t, TaskStateCancelled)
+		s.cancelTask(t.ID)
 		return false
 	}
 
@@ -383,7 +557,7 @@ func (s *Scheduler) handleStepFailure(ctx context.Context, t *Task, step Step, r
 			t.ErrorCode = result.Code
 			return nil
 		})
-		s.transition(t, TaskStateFailed)
+		s.transition(t.ID, TaskStateFailed)
 		return false
 
 	case StepPolicySkip:
@@ -399,19 +573,33 @@ func (s *Scheduler) handleStepFailure(ctx context.Context, t *Task, step Step, r
 			t.ErrorCode = result.Code
 			return nil
 		})
-		s.transition(t, TaskStateCompensating)
 		// Compensation uses its own context, independent of the task's execution
-		// context (which runTask's defer will cancel). Register the compensation
-		// cancel func in s.running so Cancel()/Close() can terminate it.
+		// context. Create it first, then atomically replace the running cancel and
+		// publish Compensating under taskMu so Close cannot miss the new context.
 		compCtx, cancelComp := context.WithCancel(context.Background())
 		s.taskMu.Lock()
+		previousCancel := s.running[t.ID]
 		s.running[t.ID] = cancelComp
+		if !s.transitionLocked(t.ID, TaskStateCompensating) {
+			if previousCancel != nil {
+				s.running[t.ID] = previousCancel
+			} else {
+				delete(s.running, t.ID)
+			}
+			s.taskMu.Unlock()
+			cancelComp()
+			return false
+		}
+		if previousCancel != nil {
+			previousCancel()
+		}
 		s.taskMu.Unlock()
 		go func() {
 			defer cancelComp()
 			s.runCompensation(compCtx, t)
 			s.taskMu.Lock()
 			delete(s.running, t.ID)
+			s.signalIdleLocked()
 			s.taskMu.Unlock()
 		}()
 		return false
@@ -425,13 +613,13 @@ func (s *Scheduler) handleStepFailure(ctx context.Context, t *Task, step Step, r
 			t.ErrorCode = result.Code
 			return nil
 		})
-		s.transition(t, TaskStateFailed)
+		s.transition(t.ID, TaskStateFailed)
 		return false
 	}
 }
 
-func (s *Scheduler) runCompensation(ctx context.Context, t *Task) {
-	curTask, ok := s.registry.GetByID(t.ID)
+func (s *Scheduler) runCompensation(ctx context.Context, t Task) {
+	curTask, ok := s.registry.SnapshotByID(t.ID)
 	if !ok {
 		return
 	}
@@ -444,13 +632,16 @@ func (s *Scheduler) runCompensation(ctx context.Context, t *Task) {
 
 		select {
 		case <-ctx.Done():
-			s.transition(curTask, TaskStateFailed)
+			s.transition(curTask.ID, TaskStateFailed)
 			return
 		case <-time.After(100 * time.Millisecond):
 		}
 
-		_, _, _, _ = s.executor.ExecuteStep(ctx, t.SessionID, t.ID, step.CompensateAction, step.CompensateArgs, step.TimeoutMS)
+		compStep := step
+		compStep.Action = step.CompensateAction
+		compStep.Args = step.CompensateArgs
+		_, _, _, _ = s.executeStepContext(ctx, t, compStep)
 	}
 
-	s.transition(curTask, TaskStateFailed)
+	s.transition(curTask.ID, TaskStateFailed)
 }

@@ -53,11 +53,15 @@ file (`*.jks`) is **never** committed to git — it is excluded by `.gitignore`.
 
 ## CI Behavior
 
-GitHub Actions does **not** have access to the keystore. When
-`clawdroid.keystore.path` is absent from `local.properties`, the release
-build type falls back to **unsigned** output (`app-release-unsigned.apk`).
-This is intentional — CI verifies compilation, while signed release APKs
-are produced locally.
+Release signing is fail-closed. `assembleRelease`, `bundleRelease`, and the
+generic `assemble` / `build` tasks fail when the keystore path, store password,
+or alias is missing, or when the configured keystore file does not exist. They
+never fall back to an unsigned APK. The key password may be omitted and then
+uses the store password.
+
+Debug tasks do not require release credentials. CI without access to the
+keystore should run debug compilation/tests, or receive the signing values and
+keystore through protected secrets.
 
 ## Lost Keystore
 

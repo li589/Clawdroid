@@ -934,7 +934,8 @@ internal class ChatViewModel(
         ensureTaskUi: Boolean,
         originPrompt: String = "",
         finishTaskUi: Boolean = ensureTaskUi,
-        bindRuntimeOnSubmit: Boolean = true
+        bindRuntimeOnSubmit: Boolean = true,
+        updateTaskSteps: Boolean = true
     ): String {
         val dispatcher = toolDispatcher
         if (dispatcher == null) {
@@ -964,12 +965,16 @@ internal class ChatViewModel(
             arguments = arguments,
             stepListener = AgentStepListener { index, stepId, title, started, stepResult ->
                 if (started) {
-                    taskController.ensureTaskStepSlot(index, title)
-                    taskController.markTaskStepRunning(index, "正在执行$title")
+                    if (updateTaskSteps) {
+                        taskController.ensureTaskStepSlot(index, title)
+                        taskController.markTaskStepRunning(index, "正在执行$title")
+                    }
                 } else {
                     val output = stepResult?.output.orEmpty()
                     val ok = stepResult?.success == true
-                    taskController.markTaskStepFinished(index, ok, output)
+                    if (updateTaskSteps) {
+                        taskController.markTaskStepFinished(index, ok, output)
+                    }
                     renderedSteps += renderTaskStep(index + 1, title, output)
                     if (stepResult != null) {
                         applyAgentStepSideEffects(stepId, arguments, stepResult)
@@ -1034,14 +1039,16 @@ internal class ChatViewModel(
         ensureTaskUi: Boolean,
         originPrompt: String,
         finishTaskUi: Boolean,
-        bindRuntimeOnSubmit: Boolean
+        bindRuntimeOnSubmit: Boolean,
+        updateTaskSteps: Boolean
     ): String = runAgentById(
         agentId = agentId,
         arguments = arguments,
         ensureTaskUi = ensureTaskUi,
         originPrompt = originPrompt,
         finishTaskUi = finishTaskUi,
-        bindRuntimeOnSubmit = bindRuntimeOnSubmit
+        bindRuntimeOnSubmit = bindRuntimeOnSubmit,
+        updateTaskSteps = updateTaskSteps
     )
 
     override fun currentAiRuntimeSnapshot(): AiRuntimeSnapshot {

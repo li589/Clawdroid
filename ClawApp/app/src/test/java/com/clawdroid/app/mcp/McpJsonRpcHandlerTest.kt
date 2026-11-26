@@ -1,12 +1,19 @@
 package com.clawdroid.app.mcp
 
+import android.content.Context
+import com.clawdroid.app.data.AppSettingsStore
+import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolCatalog
 import com.clawdroid.app.tools.ClawToolDispatcher
 import com.clawdroid.app.tools.ClawToolExecutor
 import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -43,6 +50,50 @@ class McpJsonRpcHandlerTest {
         val result = json.getJSONObject("result")
         assertFalse(result.getBoolean("isError"))
         assertTrue(result.getJSONArray("content").getJSONObject(0).getString("text").contains("pong-ok"))
+    }
+
+    @Test
+    fun dangerousToolRequiresInAppConfirmationWhenEnabled() = runBlocking {
+        val context = mockk<Context>()
+        mockkObject(AppSettingsStore)
+        try {
+            every { AppSettingsStore.loadAgentOrchestrationSettings(context) } returns
+                AgentOrchestrationSettings(requireCommandReview = true)
+            val dispatcher = mockk<ClawToolDispatcher>()
+            val handler = McpJsonRpcHandler(dispatcher, appContext = context)
+            val response = handler.handle(
+                """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"file_write","arguments":{"path":"a.txt","content":"x"}}}"""
+            )!!
+            val result = JSONObject(response).getJSONObject("result")
+            assertTrue(result.getBoolean("isError"))
+            assertTrue(result.getJSONArray("content").getJSONObject(0).getString("text").contains("确认"))
+            coVerify(exactly = 0) { dispatcher.execute(any<String>(), any()) }
+        } finally {
+            unmockkObject(AppSettingsStore)
+        }
+    }
+
+    @Test
+    fun dangerousWrapperToolsRequireInAppConfirmationWhenEnabled() = runBlocking {
+        val context = mockk<Context>()
+        mockkObject(AppSettingsStore)
+        try {
+            every { AppSettingsStore.loadAgentOrchestrationSettings(context) } returns
+                AgentOrchestrationSettings(requireCommandReview = true)
+            val dispatcher = mockk<ClawToolDispatcher>()
+            val handler = McpJsonRpcHandler(dispatcher, appContext = context)
+            for (name in listOf("task_submit", "run_agent", "run_agents_parallel")) {
+                val response = handler.handle(
+                    """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"$name","arguments":{}}}"""
+                )!!
+                val result = JSONObject(response).getJSONObject("result")
+                assertTrue(result.getBoolean("isError"))
+                assertTrue(result.getJSONArray("content").getJSONObject(0).getString("text").contains("确认"))
+            }
+            coVerify(exactly = 0) { dispatcher.execute(any<String>(), any()) }
+        } finally {
+            unmockkObject(AppSettingsStore)
+        }
     }
 
     @Test

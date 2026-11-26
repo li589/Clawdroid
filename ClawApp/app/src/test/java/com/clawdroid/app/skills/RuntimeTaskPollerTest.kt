@@ -7,7 +7,9 @@ import com.clawdroid.app.tools.ClawToolDispatcher
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -88,7 +90,10 @@ class RuntimeTaskPollerTest {
         )
         coEvery {
             dispatcher.execute(ClawTool.TASK_CANCEL, any())
-        } returns ClawToolCallResult(success = true, output = "cancelled")
+        } coAnswers {
+            assertTrue(currentCoroutineContext().isActive)
+            ClawToolCallResult(success = true, output = "cancelled")
+        }
 
         val job = launch {
             RuntimeTaskPoller.awaitTerminal(

@@ -3,6 +3,8 @@ package com.clawdroid.app.ai
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolDispatcher
+import com.clawdroid.app.tools.MAX_PARALLEL_AGENTS
+import com.clawdroid.app.tools.parseParallelAgentIds
 import com.clawdroid.app.data.model.AgentOrchestrationSettings
 import com.clawdroid.app.ui.ChatAiLoop
 import com.clawdroid.app.data.model.ChatMessageState
@@ -45,7 +47,8 @@ internal interface AgentToolLoopHost {
         ensureTaskUi: Boolean,
         originPrompt: String = "",
         finishTaskUi: Boolean = ensureTaskUi,
-        bindRuntimeOnSubmit: Boolean = true
+        bindRuntimeOnSubmit: Boolean = true,
+        updateTaskSteps: Boolean = true
     ): String
     fun ensureTaskStepSlot(stepIndex: Int, title: String)
     fun markTaskStepRunning(stepIndex: Int, detail: String)
@@ -643,14 +646,8 @@ internal class AgentToolLoopController(
         normalizedPrompt: String
     ): Pair<Boolean, String> {
         val rawIds = enrichedArgs.stringArg("agent_ids", "agents", "agent_id", "agent")
-        val ids = rawIds
-            .split(',', ';', '|', ' ', '\n', '\t')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-        if (ids.isEmpty()) {
-            return false to "失败: agent_ids 不能为空"
-        }
+        val ids = parseParallelAgentIds(rawIds)
+            ?: return false to "失败: agent_ids 为空或超过最多 $MAX_PARALLEL_AGENTS 个"
         return coroutineScope {
             val deferred = ids.map { agentId ->
                 async(Dispatchers.Default) {
@@ -669,6 +666,7 @@ internal class AgentToolLoopController(
                         ensureTaskUi = false,
                         finishTaskUi = false,
                         bindRuntimeOnSubmit = false,
+                        updateTaskSteps = false,
                         originPrompt = normalizedPrompt
                     )
                     val ok = !reply.startsWith("失败") && !reply.contains("任务中止")

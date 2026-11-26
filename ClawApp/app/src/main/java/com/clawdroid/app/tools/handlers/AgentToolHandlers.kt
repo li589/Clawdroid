@@ -6,6 +6,7 @@ import com.clawdroid.app.skills.ClawSkillCatalog
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ToolHandler
+import com.clawdroid.app.tools.parseParallelAgentIds
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
@@ -52,12 +53,8 @@ fun agentToolHandlers(agentRunner: ClawAgentRunner): Map<ClawTool, ToolHandler> 
     },
     ClawTool.RUN_AGENTS_PARALLEL to ToolHandler { _, arguments ->
         val rawIds = arguments.string("agent_ids", "agents", "agent_id", "agent")
-        val ids = rawIds
-            .split(',', ';', '|', ' ', '\n', '\t')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-        if (ids.isEmpty()) {
+        val ids = parseParallelAgentIds(rawIds)
+        if (ids == null) {
             return@ToolHandler ClawToolCallResult(
                 success = false,
                 output = "失败: agent_ids 不能为空",

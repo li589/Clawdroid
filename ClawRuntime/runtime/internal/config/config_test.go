@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -87,36 +88,115 @@ func TestValidateRejectsEmptySharedSecret(t *testing.T) {
 	}
 }
 
-func TestValidateAcceptsNonEmptySharedSecret(t *testing.T) {
+func TestValidateAcceptsHexSharedSecret(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
-	cfg.AuthSharedSecret = "local-secret"
+	cfg.AuthSharedSecret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected config to be valid, got: %v", err)
 	}
 }
 
-func TestValidateRejectsTemplatePlaceholderSecret(t *testing.T) {
+func TestValidateRejectsInvalidSharedSecrets(t *testing.T) {
 	t.Parallel()
 
-	cfg := Default()
-	cfg.AuthSharedSecret = "REPLACE_WITH_LOCAL_SECRET"
+	testCases := []struct {
+		name   string
+		secret string
+	}{
+		{name: "whitespace", secret: "   "},
+		{name: "template placeholder", secret: "REPLACE_WITH_LOCAL_SECRET"},
+		{name: "other replace placeholder", secret: "replace_with_generated_secret"},
+		{name: "example placeholder", secret: "<64-char-random-secret>"},
+		{name: "short hex", secret: "0123456789abcdef0123456789abcde"},
+		{name: "non hex", secret: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
+	}
 
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected placeholder secret to be rejected")
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Default()
+			cfg.AuthSharedSecret = tc.secret
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected shared secret %q to be rejected", tc.secret)
+			}
+		})
 	}
 }
 
-func TestValidateRejectsInvalidAllowedSignaturePrefix(t *testing.T) {
+func TestValidateRejectsInvalidAllowedSignatures(t *testing.T) {
+	t.Parallel()
+
+	validSecret := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testCases := []struct {
+		name       string
+		signatures []string
+	}{
+		{name: "invalid prefix", signatures: []string{"md5:abc"}},
+		{name: "missing digest", signatures: []string{"sha256:"}},
+		{name: "short digest", signatures: []string{"sha256:" + strings.Repeat("a", 63)}},
+		{name: "long digest", signatures: []string{"sha256:" + strings.Repeat("a", 65)}},
+		{name: "non hex digest", signatures: []string{"sha256:" + strings.Repeat("z", 64)}},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Default()
+			cfg.AuthSharedSecret = validSecret
+			cfg.AllowedSignatures = tc.signatures
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected signatures %#v to be rejected", tc.signatures)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsCompleteAllowedSignature(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
-	cfg.AuthSharedSecret = "local-secret"
-	cfg.AllowedSignatures = []string{"md5:abc"}
+	cfg.AuthSharedSecret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.AllowedSignatures = []string{"", "sha256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"}
 
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected invalid signature prefix to be rejected")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected config to be valid, got: %v", err)
+	}
+}
+
+func TestValidateRejectsSurroundingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	validSecret := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	validSignature := "sha256:" + strings.Repeat("a", 64)
+	testCases := []struct {
+		name   string
+		secret string
+		sig    string
+	}{
+		{name: "leading shared secret whitespace", secret: " " + validSecret, sig: validSignature},
+		{name: "trailing shared secret whitespace", secret: validSecret + "\t", sig: validSignature},
+		{name: "leading signature whitespace", secret: validSecret, sig: " " + validSignature},
+		{name: "trailing signature whitespace", secret: validSecret, sig: validSignature + " "},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Default()
+			cfg.AuthSharedSecret = tc.secret
+			cfg.AllowedSignatures = []string{tc.sig}
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected surrounding whitespace to be rejected instead of normalized only for validation")
+			}
+		})
 	}
 }

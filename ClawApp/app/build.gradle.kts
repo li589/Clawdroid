@@ -5,13 +5,31 @@ plugins {
 
 import java.util.Properties
 
-fun readLocalProperty(file: java.io.File, key: String): String? {
-    if (!file.exists()) {
-        return null
+fun readLocalProperties(file: java.io.File): Map<String, String> {
+    if (!file.isFile) {
+        return emptyMap()
     }
     val properties = Properties()
     file.inputStream().use(properties::load)
-    return properties.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
+    return properties.stringPropertyNames().associateWith { properties.getProperty(it) }
+}
+
+fun readLocalProperty(file: java.io.File, key: String): String? {
+    return readLocalProperties(file)[key]?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+fun validatedSharedSecret(value: String, source: String): String {
+    val secret = value.trim()
+    if (secret.isEmpty()) {
+        error("$source ClawRuntime shared secret must not be empty.")
+    }
+    if (secret.startsWith("REPLACE_", ignoreCase = true) || secret.contains('<') || secret.contains('>')) {
+        error("$source ClawRuntime shared secret is a placeholder; generate a local secret first.")
+    }
+    if (secret.length < 32 || secret.length % 2 != 0 || !secret.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+        error("$source ClawRuntime shared secret must contain at least 32 hexadecimal characters (64 recommended).")
+    }
+    return secret
 }
 
 fun ensureAndroidPrefsSpoolDir(): java.io.File {
@@ -24,26 +42,38 @@ val androidPrefsRoot = ensureAndroidPrefsSpoolDir()
 System.setProperty("ANDROID_PREFS_ROOT", androidPrefsRoot.absolutePath)
 
 val clawRuntimeSharedSecret = run {
-    val envSecret = providers.environmentVariable("CLAWDROID_RUNTIME_SHARED_SECRET").orNull
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-    val repoLocalSecret = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.runtime.sharedSecret")
-    val appLocalSecret = readLocalProperty(rootDir.resolve("local.properties"), "clawdroid.runtime.sharedSecret")
-    val gradlePropertySecret = providers.gradleProperty("clawdroid.clawRuntimeSharedSecret").orNull
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-    envSecret
-        ?: repoLocalSecret
-        ?: appLocalSecret
-        ?: gradlePropertySecret
-        ?: error(
+    val repoProperties = readLocalProperties(rootDir.parentFile.resolve("local.properties"))
+    val appProperties = readLocalProperties(rootDir.resolve("local.properties"))
+    // Keep this order aligned with sync-shared-secret.ps1. Conflicting values
+    // are errors rather than silent overrides, so App and Runtime cannot drift.
+    val candidates = buildList {
+        providers.environmentVariable("CLAWDROID_RUNTIME_SHARED_SECRET").orNull?.let {
+            add("CLAWDROID_RUNTIME_SHARED_SECRET" to it)
+        }
+        repoProperties["clawdroid.runtime.sharedSecret"]?.let {
+            add("repo local.properties" to it)
+        }
+        appProperties["clawdroid.runtime.sharedSecret"]?.let {
+            add("App local.properties" to it)
+        }
+        providers.gradleProperty("clawdroid.clawRuntimeSharedSecret").orNull?.let {
+            add("Gradle property clawdroid.clawRuntimeSharedSecret" to it)
+        }
+    }
+    if (candidates.isEmpty()) {
+        error(
             "Missing ClawRuntime shared secret. Set CLAWDROID_RUNTIME_SHARED_SECRET or define clawdroid.runtime.sharedSecret in the repo-level local.properties. See README.md and local.properties.example."
         )
+    }
+    val validated = candidates.map { (source, value) -> validatedSharedSecret(value, source) }
+    if (validated.distinct().size > 1) {
+        error("Conflicting ClawRuntime shared secret values across: ${candidates.joinToString { it.first }}. Keep every configured source identical.")
+    }
+    validated.first()
 }
 
-// Release signing configuration (optional).
-// Reads keystore path/password/alias from local.properties.
-// If any field is missing, release builds fall back to unsigned (CI-friendly).
+// Release signing is fail-closed. Reads keystore path/password/alias from the
+// repo-level local.properties; key password may explicitly match store password.
 // See ClawApp/keystore/README.md for setup instructions.
 val releaseKeystorePath = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.keystore.path")
 val releaseKeystorePassword = readLocalProperty(rootDir.parentFile.resolve("local.properties"), "clawdroid.keystore.password")
@@ -53,6 +83,21 @@ val releaseKeyPassword = readLocalProperty(rootDir.parentFile.resolve("local.pro
 val hasReleaseSigningConfig = !releaseKeystorePath.isNullOrEmpty() &&
     !releaseKeystorePassword.isNullOrEmpty() &&
     !releaseKeyAlias.isNullOrEmpty()
+
+fun validateReleaseSigning() {
+    val missing = buildList {
+        if (releaseKeystorePath.isNullOrEmpty()) add("clawdroid.keystore.path")
+        if (releaseKeystorePassword.isNullOrEmpty()) add("clawdroid.keystore.password")
+        if (releaseKeyAlias.isNullOrEmpty()) add("clawdroid.keystore.alias")
+    }
+    if (missing.isNotEmpty()) {
+        error("Release builds require complete signing configuration in repo-level local.properties. Missing: ${missing.joinToString()}.")
+    }
+    val keystoreFile = rootDir.resolve(releaseKeystorePath!!).canonicalFile
+    if (!keystoreFile.isFile) {
+        error("Release signing keystore does not exist: $keystoreFile")
+    }
+}
 
 android {
     namespace = "com.clawdroid.app"
@@ -73,9 +118,8 @@ android {
     }
 
     signingConfigs {
-        // Only register the release signing config when a keystore is configured
-        // in local.properties. Otherwise release builds output unsigned APKs
-        // (this is the CI-friendly default).
+        // Debug configuration remains usable without release credentials. The
+        // release variant is rejected below unless this config is complete.
         if (hasReleaseSigningConfig) {
             create("release") {
                 storeFile = rootDir.resolve(releaseKeystorePath!!)
@@ -133,6 +177,28 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+}
+
+// AGP may create every variant while planning a debug task graph, so variant
+// callbacks cannot enforce a debug-safe release gate. Gate only tasks that can
+// produce release artifacts; lintRelease/testReleaseUnitTest must stay usable
+// without release credentials. Retain a task-level guard for wrapper tasks.
+val releaseProducingTaskNames = setOf(
+    "assembleRelease",
+    "bundleRelease",
+    "packageRelease",
+    "assemble",
+    "build",
+)
+val requestedTaskNames = gradle.startParameter.taskNames.map { it.substringAfterLast(':') }
+if (requestedTaskNames.any { it in releaseProducingTaskNames }) {
+    validateReleaseSigning()
+}
+val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
+    doFirst { validateReleaseSigning() }
+}
+tasks.matching { it.name in releaseProducingTaskNames }.configureEach {
+    dependsOn(verifyReleaseSigning)
 }
 
 dependencies {

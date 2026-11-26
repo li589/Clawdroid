@@ -4,10 +4,16 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.annotation.SuppressLint
 import android.net.Uri
 import android.os.Build
 import com.clawdroid.app.runtime.ClawRuntimeClient
+
+@SuppressLint("NewApi") // The SDK guard is covered by AppToolServiceCompatibilityTest.
+internal fun versionCodeFor(info: PackageInfo, sdkInt: Int): Long =
+    if (sdkInt >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
 
 class AppToolService(
     private val context: Context,
@@ -127,7 +133,7 @@ class AppToolService(
                     appendLine("package=$pkg")
                     appendLine("label=$label")
                     appendLine("versionName=${pkgInfo.versionName}")
-                    appendLine("versionCode=${pkgInfo.longVersionCode}")
+                    appendLine("versionCode=${versionCodeFor(pkgInfo, Build.VERSION.SDK_INT)}")
                     appendLine("debuggable=${appInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0}")
                     appendLine("launchActivity=${launch?.component?.className.orEmpty()}")
                     appendLine("possiblyRunning=$running")

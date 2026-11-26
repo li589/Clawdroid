@@ -115,9 +115,8 @@ time.sleep(1.5)
 # Known limitation unless Runtime whitelist expands: am force-stop
 data, text, err = expect_tool("app_stop settings", "app_stop", {"package": "com.android.settings"})
 if not rows[-1]["ok"] and ("3002" in (text + err) or "not allowed" in (text + err)):
-    rows[-1]["ok"] = True
-    rows[-1]["detail"] = "EXPECTED_LIMIT: " + rows[-1]["detail"]
-    print("[PASS] app_stop settings (documented Runtime whitelist limit)")
+    rows[-1]["known_limit"] = "Runtime shell whitelist currently rejects am force-stop"
+    print("[FAIL] app_stop settings (known Runtime whitelist limit; not counted as PASS)")
 
 _, text, _ = expect_tool("download_start", "download_start", {
     "url": "https://httpbin.org/bytes/1024",

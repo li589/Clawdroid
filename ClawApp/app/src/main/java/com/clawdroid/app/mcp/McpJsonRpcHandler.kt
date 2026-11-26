@@ -1,5 +1,6 @@
 package com.clawdroid.app.mcp
 
+import com.clawdroid.app.data.AppSettingsStore
 import com.clawdroid.app.fault.FaultCodes
 import com.clawdroid.app.fault.FaultIsolation
 import com.clawdroid.app.skills.ClawAgentCatalog
@@ -34,6 +35,7 @@ class McpJsonRpcHandler(
             "2024-11-05",
             "2025-03-26"
         )
+        private val REVIEW_WRAPPER_TOOLS = setOf("task_submit", "run_agent", "run_agents_parallel")
     }
 
     suspend fun handle(raw: String): String? {
@@ -131,6 +133,13 @@ class McpJsonRpcHandler(
             val name = params.optString("name", "").trim()
             if (name.isEmpty()) {
                 return toolError("tool name is required")
+            }
+            val reviewRequired = appContext?.let {
+                val settings = AppSettingsStore.loadAgentOrchestrationSettings(it)
+                settings.needsCommandReview(name) || name in REVIEW_WRAPPER_TOOLS
+            } == true
+            if (reviewRequired) {
+                return toolError("危险工具 $name 需要在 App 内确认后执行；MCP 通道不能绕过确认。")
             }
             val argsJson = params.optJSONObject("arguments") ?: JSONObject()
             val arguments = argsJson.toMap()

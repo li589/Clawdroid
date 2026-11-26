@@ -93,15 +93,7 @@
           var out = await mermaid.render(id, text.trim());
           root.innerHTML = out.svg;
         } else if (mode === 'svg') {
-          var wrap = document.createElement('div');
-          wrap.className = 'svg-wrap';
-          var trimmed = text.trim();
-          if (trimmed.indexOf('<svg') === -1) {
-            showError('不是有效的 SVG');
-            return;
-          }
-          wrap.innerHTML = trimmed;
-          root.appendChild(wrap);
+          showError('SVG 预览已禁用，以避免执行不可信内容');
         } else {
           showError('未知模式: ' + mode);
         }

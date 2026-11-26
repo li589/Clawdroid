@@ -2,19 +2,24 @@
 # This file should stay private and must not be committed.
 
 # Shared secret used by both ClawApp and ClawRuntime packaging scripts.
-clawdroid.runtime.sharedSecret=<64-char-random-secret>
+# Leave this commented out to generate a 64-character random hex secret, or set
+# at least 32 hexadecimal characters. Empty values and placeholders are rejected.
+# Generate/synchronize from the repository root:
+#   pwsh -File ClawRuntime/scripts/sync-shared-secret.ps1
+# clawdroid.runtime.sharedSecret=
 
 # Optional but recommended for release packages.
 # Comma-separated SHA256 signature digests accepted by ClawRuntime.
 # Include both release and debug certificate digests so either variant can connect.
 # Compute via: keytool -list -v -keystore <jks> -alias <alias> | findstr SHA256:
 # Then lowercase, strip colons, prefix with "sha256:".
-# Example:
-# clawdroid.runtime.allowedSignatures=sha256:aaaaaaaa,sha256:bbbbbbbb
+# Example (each digest must contain exactly 64 hexadecimal characters):
+# clawdroid.runtime.allowedSignatures=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
-# Optional: release APK signing keystore.
-# When all four keys are present, ./gradlew assembleRelease produces a signed APK.
-# When any is missing, release builds fall back to unsigned (CI-friendly).
+# Release APK signing keystore (required for every release build).
+# Path, store password, and alias must all be configured; key password defaults
+# to the store password when omitted. Release tasks fail if configuration is
+# incomplete or the keystore file is missing. Debug builds do not require it.
 # Path is relative to ClawApp/ (the Gradle rootDir).
 # See ClawApp/keystore/README.md for setup instructions.
 # clawdroid.keystore.path=keystore/clawdroid-release.jks

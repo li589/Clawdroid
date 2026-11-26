@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.annotation.SuppressLint
 import com.clawdroid.app.BuildConfig
 import com.clawdroid.app.focus.ClawFocusContentProvider
 
@@ -15,6 +16,7 @@ internal object XposedFocusPush {
     @Volatile
     internal var modulePackageOverride: String? = null
 
+    @SuppressLint("NewApi") // The legacy call(String, ...) overload is available before API 29.
     fun notify(context: Context, payloadJson: String): Boolean {
         val packageName = modulePackageOverride ?: BuildConfig.APPLICATION_ID
         return runCatching {

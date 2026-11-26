@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 const xposedFocusLatestRelative = "xposed/focus_latest.json"
 
 func (s *Server) handleReportXposedFocus(sess *session, req ipc.Request) ipc.Response {
-	if !slices.Contains(sess.capabilities, ipc.CapabilityEventReport) {
+	if !sess.hasCapability(ipc.CapabilityEventReport) {
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
@@ -89,7 +88,8 @@ func (s *Server) captureXposedFocusState() map[string]interface{} {
 	reported := copyMap(s.latestXposedFocus)
 	s.focusMu.RUnlock()
 	file := readXposedFocusLatestFile(s.cfg.AuditDir)
-	return pickNewerXposedState(reported, file)
+	now := time.Now()
+	return pickNewerXposedState(freshXposedState(reported, now), freshXposedState(file, now))
 }
 
 func readXposedFocusLatestFile(auditDir string) map[string]interface{} {

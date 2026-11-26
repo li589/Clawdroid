@@ -46,6 +46,16 @@ class SandboxShellServiceTest {
     }
 
     @Test
+    fun drainLimited_stores_only_bounded_prefix_and_drains_pipe() {
+        val engine = engine()
+        val input = java.io.ByteArrayInputStream(ByteArray(100_000) { 1 })
+        val output = java.io.ByteArrayOutputStream()
+        engine.drainLimited(input, output, 2_000)
+        assertEquals(2_000, output.size())
+        assertEquals(0, input.available())
+    }
+
+    @Test
     fun result_codec_roundtrip() {
         val original = ClawToolCallResult(
             success = true,

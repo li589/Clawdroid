@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -35,11 +36,11 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		SocketName:         "clawdroid_secure_ipc",
-		AuditDir:           paths.AuditDir,
-		LogLevel:           "info",
-		ProtocolVersion:    1,
-		RequestTimeoutMS:   8000,
+		SocketName:       "clawdroid_secure_ipc",
+		AuditDir:         paths.AuditDir,
+		LogLevel:         "info",
+		ProtocolVersion:  1,
+		RequestTimeoutMS: 8000,
 		// Must fit base64(file chunk) + JSON wrapper for read_file_limited responses.
 		MaxPayloadBytes:    2 * 1024 * 1024,
 		RateLimitPerMinute: 120,
@@ -250,19 +251,40 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.AuthSharedSecret) == "" {
+	if c.AuthSharedSecret != strings.TrimSpace(c.AuthSharedSecret) {
+		return fmt.Errorf("auth.shared_secret must not contain leading or trailing whitespace")
+	}
+	secret := c.AuthSharedSecret
+	if secret == "" {
 		return fmt.Errorf("auth.shared_secret must not be empty")
 	}
-	if strings.EqualFold(strings.TrimSpace(c.AuthSharedSecret), "REPLACE_WITH_LOCAL_SECRET") {
-		return fmt.Errorf("auth.shared_secret must be replaced before runtime startup")
+	upperSecret := strings.ToUpper(secret)
+	if strings.HasPrefix(upperSecret, "REPLACE_") || strings.ContainsAny(secret, "<>") {
+		return fmt.Errorf("auth.shared_secret must be replaced with a generated hex secret before runtime startup")
+	}
+	if len(secret) < 32 {
+		return fmt.Errorf("auth.shared_secret must contain at least 32 hexadecimal characters")
+	}
+	if _, err := hex.DecodeString(secret); err != nil {
+		return fmt.Errorf("auth.shared_secret must contain only hexadecimal characters")
 	}
 	for _, signature := range c.AllowedSignatures {
-		normalized := strings.ToLower(strings.TrimSpace(signature))
+		if signature != strings.TrimSpace(signature) {
+			return fmt.Errorf("auth.allowed_signatures must not contain leading or trailing whitespace")
+		}
+		normalized := strings.ToLower(signature)
 		if normalized == "" {
 			continue
 		}
 		if !strings.HasPrefix(normalized, "sha256:") {
 			return fmt.Errorf("auth.allowed_signatures must use sha256: prefix")
+		}
+		digest := strings.TrimPrefix(normalized, "sha256:")
+		if len(digest) != 64 {
+			return fmt.Errorf("auth.allowed_signatures must contain a 64-character SHA-256 digest")
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return fmt.Errorf("auth.allowed_signatures must contain hexadecimal SHA-256 digests")
 		}
 	}
 	return nil

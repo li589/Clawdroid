@@ -18,8 +18,8 @@ func TestComputeArgDigest(t *testing.T) {
 	if digest == "" {
 		t.Fatal("expected non-empty digest")
 	}
-	if len(digest) != 16 {
-		t.Fatalf("expected 16-char truncated digest, got %d chars", len(digest))
+	if len(digest) != 64 {
+		t.Fatalf("expected full SHA-256 digest, got %d chars", len(digest))
 	}
 
 	digest2 := ComputeArgDigest(map[string]interface{}{
@@ -65,7 +65,12 @@ func TestAuditLevelForAction(t *testing.T) {
 		{"read_file_limited", AuditLevelMedium},
 		{"inject_tap", AuditLevelHigh},
 		{"inject_swipe", AuditLevelHigh},
+		{"inject_keyevent", AuditLevelHigh},
 		{"exec_shell_limited", AuditLevelHigh},
+		{"task_submit", AuditLevelHigh},
+		{"task_cancel", AuditLevelHigh},
+		{"task_get", AuditLevelMedium},
+		{"task_list", AuditLevelMedium},
 		{"unknown_action", AuditLevelMedium},
 	}
 
@@ -90,19 +95,19 @@ func TestFileLoggerWritesJSONL(t *testing.T) {
 	defer fl.Close()
 
 	entry := AuditLogEntry{
-		RequestID:   "req-001",
-		SessionID:   "sess-002",
-		CallerUID:   1000,
-		CallerPID:   1234,
-		PackageName: "com.clawdroid.app",
-		Action:      "inject_tap",
-		ArgDigest:  "a1b2c3d4e5f60000",
-		AuditLevel: AuditLevelHigh,
-		StartedAt:  1234567890,
-		EndedAt:    1234567895,
-		ResultCode: 0,
-		ErrorMessage: "",
-		LatencyMS:   5,
+		RequestID:     "req-001",
+		SessionID:     "sess-002",
+		CallerUID:     1000,
+		CallerPID:     1234,
+		PackageName:   "com.clawdroid.app",
+		Action:        "inject_tap",
+		ArgDigest:     "a1b2c3d4e5f60000",
+		AuditLevel:    AuditLevelHigh,
+		StartedAt:     1234567890,
+		EndedAt:       1234567895,
+		ResultCode:    0,
+		ErrorMessage:  "",
+		LatencyMS:     5,
 		DaemonVersion: "0.2.0",
 	}
 

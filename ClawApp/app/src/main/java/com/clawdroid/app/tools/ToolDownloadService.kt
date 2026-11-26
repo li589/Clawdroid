@@ -6,12 +6,12 @@ import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
-import java.net.URL
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
@@ -50,6 +50,7 @@ class ToolDownloadService(
 
     private val tasks = ConcurrentHashMap<String, DownloadTask>()
     private val cancelFlags = ConcurrentHashMap<String, Boolean>()
+    private val activeDownloads = AtomicInteger(0)
 
     fun start(
         url: String,
@@ -75,10 +76,18 @@ class ToolDownloadService(
             resume = resume,
             threads = threads.coerceIn(1, 8)
         )
+        if (activeDownloads.incrementAndGet() > DownloadLimits.MAX_ACTIVE_DOWNLOADS) {
+            activeDownloads.decrementAndGet()
+            return ClawToolCallResult(false, "失败: 下载并发数已达上限", error = "download_limit")
+        }
         tasks[id] = task
         cancelFlags[id] = false
         thread(name = "claw-download-$id", isDaemon = true) {
-            runDownload(task)
+            try {
+                runDownload(task)
+            } finally {
+                activeDownloads.decrementAndGet()
+            }
         }
         return ClawToolCallResult(
             success = true,
@@ -131,6 +140,11 @@ class ToolDownloadService(
             val total = meta.contentLength
             val acceptRanges = meta.acceptRanges
             task.totalBytes = total
+            if (!DownloadLimits.isWithinSizeLimit(total)) {
+                task.state = DownloadState.Failed
+                task.error = "download exceeds ${DownloadLimits.MAX_DOWNLOAD_BYTES} bytes"
+                return
+            }
 
             val useMulti = task.threads > 1 && acceptRanges && total > 0 &&
                 total >= 256 * 1024L && !task.resume
@@ -181,10 +195,7 @@ class ToolDownloadService(
     private data class RemoteMeta(val contentLength: Long, val acceptRanges: Boolean)
 
     private fun probeRemote(url: String): RemoteMeta {
-        val head = open(url).apply {
-            requestMethod = "HEAD"
-            instanceFollowRedirects = true
-        }
+        val head = open(url, method = "HEAD")
         return try {
             val code = head.responseCode
             if (code in 200..399) {
@@ -211,7 +222,6 @@ class ToolDownloadService(
         }
         val connection = open(task.url).apply {
             requestMethod = "GET"
-            instanceFollowRedirects = true
             if (existing > 0) {
                 setRequestProperty("Range", "bytes=$existing-")
             }
@@ -244,6 +254,9 @@ class ToolDownloadService(
                         raf.write(buf, 0, n)
                         task.downloadedBytes = raf.filePointer
                         task.updatedAtMs = System.currentTimeMillis()
+                        if (!DownloadLimits.isWithinSizeLimit(raf.filePointer)) {
+                            throw IllegalStateException("download exceeds ${DownloadLimits.MAX_DOWNLOAD_BYTES} bytes")
+                        }
                     }
                 }
             }
@@ -303,7 +316,6 @@ class ToolDownloadService(
         val connection = open(task.url).apply {
             requestMethod = "GET"
             setRequestProperty("Range", "bytes=$start-$end")
-            instanceFollowRedirects = true
         }
         try {
             val code = connection.responseCode
@@ -325,6 +337,9 @@ class ToolDownloadService(
                         val done = progress.addAndGet(n.toLong())
                         task.downloadedBytes = done
                         task.updatedAtMs = System.currentTimeMillis()
+                        if (!DownloadLimits.isWithinSizeLimit(done)) {
+                            throw IllegalStateException("download exceeds ${DownloadLimits.MAX_DOWNLOAD_BYTES} bytes")
+                        }
                     }
                 }
             }
@@ -335,12 +350,8 @@ class ToolDownloadService(
         }
     }
 
-    private fun open(url: String): HttpURLConnection {
-        return (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 120_000
-        }
-    }
+    private fun open(url: String, method: String = "GET"): HttpURLConnection =
+        HttpUrlSecurity.open(url, connectTimeoutMs = 15_000, readTimeoutMs = 120_000, method = method)
 
     private fun resolveDest(destPath: String?, url: String): File {
         if (!destPath.isNullOrBlank()) {
@@ -372,7 +383,15 @@ class ToolDownloadService(
     private fun resolveExisting(path: String): File? {
         val candidate = File(path.trim())
         val file = if (candidate.isAbsolute) candidate else File(context.cacheDir, path.trim())
-        return file.takeIf { it.exists() && it.isFile }
+        val target = runCatching { file.canonicalFile }.getOrElse { file.absoluteFile }
+        val roots = listOfNotNull(
+            context.filesDir,
+            context.cacheDir,
+            context.getExternalFilesDir(null),
+            context.externalCacheDir
+        ).map { root -> runCatching { root.canonicalFile }.getOrElse { root.absoluteFile } }
+        val allowed = roots.any { root -> target == root || target.path.startsWith(root.path + File.separator) }
+        return file.takeIf { allowed && it.exists() && it.isFile }
     }
 
     private fun taskJson(task: DownloadTask): JSONObject {

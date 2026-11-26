@@ -73,7 +73,7 @@ internal fun RichMessageContent(
                     is RichBlock.Math -> PreviewableFence(
                         title = if (block.display) "公式" else "行内公式",
                         source = block.latex,
-                        previewMode = "katex",
+                        previewMode = previewModeForRichBlock(block),
                         defaultPreview = true,
                         contentColor = contentColor,
                         darkTheme = darkTheme
@@ -81,7 +81,7 @@ internal fun RichMessageContent(
                     is RichBlock.Mermaid -> PreviewableFence(
                         title = "Mermaid",
                         source = block.source,
-                        previewMode = "mermaid",
+                        previewMode = previewModeForRichBlock(block),
                         defaultPreview = true,
                         contentColor = contentColor,
                         darkTheme = darkTheme
@@ -89,19 +89,19 @@ internal fun RichMessageContent(
                     is RichBlock.Svg -> PreviewableFence(
                         title = "SVG",
                         source = block.source,
-                        previewMode = "svg",
-                        defaultPreview = true,
+                        previewMode = previewModeForRichBlock(block),
+                        defaultPreview = false,
                         contentColor = contentColor,
                         darkTheme = darkTheme
                     )
                     is RichBlock.Drawio -> PreviewableFence(
                         title = "Draw.io",
                         source = block.source,
-                        previewMode = if (block.previewAsSvg) "svg" else null,
-                        defaultPreview = block.previewAsSvg,
+                        previewMode = previewModeForRichBlock(block),
+                        defaultPreview = false,
                         contentColor = contentColor,
                         darkTheme = darkTheme,
-                        unsupportedHint = "当前仅支持 SVG 形式的 drawio 预览；其它源码可复制后在 diagrams.net 打开。"
+                        unsupportedHint = "SVG/Draw.io WebView 预览已禁用以安全显示源码；可复制后在 diagrams.net 打开。"
                     )
                     RichBlock.ThematicBreak -> HorizontalDivider(
                         modifier = Modifier.padding(vertical = 4.dp),
@@ -111,6 +111,12 @@ internal fun RichMessageContent(
             }
         }
     }
+}
+
+internal fun previewModeForRichBlock(block: RichBlock): String? = when (block) {
+    is RichBlock.Math -> "katex"
+    is RichBlock.Mermaid -> "mermaid"
+    else -> null
 }
 
 private fun blockContentKey(block: RichBlock): Any = when (block) {

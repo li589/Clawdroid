@@ -17,13 +17,15 @@ Root 执行侧：Go 守护进程 + Magisk 模块打包。
 
 ```powershell
 cd ClawRuntime
-.\scripts\sync-shared-secret.ps1   # 从仓库根 local.properties 生成 runtime.generated.yaml
-.\scripts\build-runtime.ps1        # → magisk/bin/clawdroid-runtime (android/arm64)
-.\scripts\build-magisk.ps1         # → dist/ClawRuntime-magisk.zip
+.\scripts\sync-shared-secret.ps1   # 初始化/校验密钥，生成 runtime.generated.yaml
+.\scripts\build-runtime.ps1        # → magisk/bin/clawdroid-runtime (android/arm64) + 构建元数据
+.\scripts\build-magisk.ps1         # 校验来源/新鲜度后 → dist/ClawRuntime-magisk.zip
 ```
 
-密钥源与 App 相同：`clawdroid.runtime.sharedSecret` / `CLAWDROID_RUNTIME_SHARED_SECRET`。  
-发布包建议：`.\scripts\build-magisk.ps1 -RequireAllowedSignatures`。
+密钥来源与 App 一致，所有已配置的非空值必须相同；空值、占位符、少于 32 位或非 hex 值会失败。
+`build-runtime.ps1` 先在同目录临时 binary 上追加并校验带 magic/length/hash 的来源 metadata trailer，成功后才原子替换旧 binary；`clawdroid-runtime.build.json` 仅用于人读。
+`build-magisk.ps1` 在暂存前后各核对一次 binary 内嵌的 Git revision、源码 fingerprint、原始 binary SHA-256 与 Android 目标，拒绝重打旧二进制；ZIP 也先写临时文件并验证 CRC，成功后才原子替换旧包。
+`build-magisk.ps1` 默认拒绝空 `auth.allowed_signatures`；仅本地开发可用 `-AllowEmptyAllowedSignatures` 显式放行。
 
 ## IPC
 

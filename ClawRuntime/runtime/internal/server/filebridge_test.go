@@ -157,7 +157,7 @@ func TestResolveAllowedWritePathRejectsReadonlyWhitelist(t *testing.T) {
 	}
 }
 
-func TestResolveAllowedWritePathRejectsAuditDir(t *testing.T) {
+func TestResolveAllowedReadAndWritePathsRejectAuditDir(t *testing.T) {
 	t.Parallel()
 
 	baseDir := t.TempDir()
@@ -172,9 +172,8 @@ func TestResolveAllowedWritePathRejectsAuditDir(t *testing.T) {
 
 	srv := &Server{cfg: config.Config{AuditDir: auditDir}}
 
-	// Audit dir is under baseDir, so reads are allowed, but writes must be blocked.
-	if _, err := srv.resolveAllowedReadPath(auditFile); err != nil {
-		t.Fatalf("read of audit file should be allowed: %v", err)
+	if _, err := srv.resolveAllowedReadPath(auditFile); err == nil {
+		t.Fatal("expected read of audit directory to be rejected")
 	}
 	if _, err := srv.resolveAllowedWritePath(auditFile); err == nil {
 		t.Fatal("expected write to audit directory to be rejected")

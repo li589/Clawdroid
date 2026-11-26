@@ -161,11 +161,11 @@ class FtpTransferService(
         var channel: ChannelSftp? = null
         return try {
             val jsch = JSch()
+            jsch.setHostKeyRepository(SftpKnownHostsRepository(File(context.filesDir, "sftp_known_hosts")))
             session = jsch.getSession(user, host, port).also { s ->
                 s.setPassword(password)
                 val config = Properties()
-                // P0: password auth against known hosts; accept any host key (document risk).
-                config["StrictHostKeyChecking"] = "no"
+                config["StrictHostKeyChecking"] = "yes"
                 s.setConfig(config)
                 s.timeout = timeoutMs
                 s.connect(timeoutMs)

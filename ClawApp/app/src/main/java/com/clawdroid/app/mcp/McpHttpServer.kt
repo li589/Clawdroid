@@ -23,6 +23,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+internal fun decodeQueryComponent(value: String): String =
+    URLDecoder.decode(value, "UTF-8")
+
 /**
  * Localhost MCP HTTP+SSE transport (2024-11-05 style) for ADB port-forward.
  *
@@ -501,7 +504,7 @@ class McpHttpServer(
             val idx = pair.indexOf('=')
             if (idx <= 0) return@mapNotNull null
             val key = pair.substring(0, idx)
-            val value = URLDecoder.decode(pair.substring(idx + 1), StandardCharsets.UTF_8)
+            val value = decodeQueryComponent(pair.substring(idx + 1))
             key to value
         }.toMap()
     }

@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"slices"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,17 +22,18 @@ import (
 )
 
 const (
-	subscribeEventTaskStateChanged     = "task_state_changed"
-	subscribeEventDaemonStatus         = "daemon_status_changed"
-	subscribeEventCapabilityChanged    = "capability_changed"
-	subscribeEventWindowChanged        = "window_changed"
-	subscribeEventXposedFocusChanged   = "xposed_focus_changed"
-	subscribeEventXposedViewChanged    = "xposed_view_changed"
-	subscribeEventSubscriptionClosed   = "subscription_closed"
-	maxSubscribeEvents                 = 16
-	eventStreamPollInterval            = 2 * time.Second
-	eventStreamHeartbeatEvery          = 5
-	eventWriteTimeout                  = 5 * time.Second
+	subscribeEventTaskStateChanged   = "task_state_changed"
+	subscribeEventDaemonStatus       = "daemon_status_changed"
+	subscribeEventCapabilityChanged  = "capability_changed"
+	subscribeEventWindowChanged      = "window_changed"
+	subscribeEventXposedFocusChanged = "xposed_focus_changed"
+	subscribeEventXposedViewChanged  = "xposed_view_changed"
+	subscribeEventSubscriptionClosed = "subscription_closed"
+	maxSubscribeEvents               = 16
+	maxConcurrentEventSubscriptions  = 32
+	eventStreamPollInterval          = 2 * time.Second
+	eventStreamHeartbeatEvery        = 5
+	eventWriteTimeout                = 5 * time.Second
 )
 
 var allowedSubscribeEvents = map[string]struct{}{
@@ -46,6 +48,13 @@ var allowedSubscribeEvents = map[string]struct{}{
 type subscribeEventsArgs struct {
 	Events []string `json:"events"`
 }
+
+type eventSubscription struct {
+	wake chan struct{}
+	args subscribeEventsArgs
+}
+
+var errSessionExpired = errors.New("session expired")
 
 type eventFrame struct {
 	Event     string                 `json:"event"`
@@ -62,64 +71,69 @@ type eventSnapshot struct {
 	xposedViewState  map[string]interface{}
 }
 
-func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req ipc.Request, conn net.Conn, writer *bufio.Writer) error {
+func (s *Server) prepareEventSubscription(sess *session, req ipc.Request) (ipc.Response, *eventSubscription) {
 	s.finalizeCapabilityState(sess)
-
-	// Security: enforce event.subscribe capability
-	if !slices.Contains(sess.capabilities, ipc.CapabilityEventSubscribe) {
-		return writeResponseFrame(writer, ipc.Response{
+	if !sess.hasCapability(ipc.CapabilityEventSubscribe) {
+		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
 			Code:      ipc.CodeErrCapabilityNotGranted,
 			Message:   "event.subscribe capability not granted",
 			Data:      s.sessionData(sess),
-		})
+		}, nil
 	}
-
-	// Rate limiting is enforced uniformly for all actions by the main request
-	// loop in handleConnection (server.go) before routing here. Re-checking
-	// here would double-consume the per-minute token budget for subscribe_events
-	// versus every other action.
 
 	args, err := parseSubscribeEventsArgs(req.Args)
 	if err != nil {
-		return writeResponseFrame(writer, ipc.Response{
+		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
 			Code:      ipc.CodeErrInvalidRequest,
 			Message:   err.Error(),
 			Data:      s.sessionData(sess),
-		})
+		}, nil
 	}
 
-	if err := writeResponseFrame(writer, ipc.Response{
+	wake := make(chan struct{}, 1)
+	if !s.registerEventSub(wake) {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      ipc.CodeErrRateLimited,
+			Message:   "global event subscription limit exceeded",
+			Data: mergeData(s.sessionData(sess), map[string]interface{}{
+				"max_event_subscriptions": maxConcurrentEventSubscriptions,
+			}),
+		}, nil
+	}
+	return ipc.Response{
 		RequestID: req.RequestID,
 		OK:        true,
 		Code:      ipc.CodeOK,
 		Message:   ipc.ErrorMessage(ipc.CodeOK),
 		Data: mergeData(s.sessionData(sess), map[string]interface{}{
-			"subscribed":            args.Events,
-			"stream_mode":           "continuous",
-			"initial_snapshot_len":  len(args.Events),
-			"poll_interval_ms":      eventStreamPollInterval.Milliseconds(),
+			"subscribed":           args.Events,
+			"stream_mode":          "continuous",
+			"initial_snapshot_len": len(args.Events),
+			"poll_interval_ms":     eventStreamPollInterval.Milliseconds(),
 		}),
-	}); err != nil {
-		return err
-	}
+	}, &eventSubscription{wake: wake, args: args}
+}
 
+func (s *Server) streamEventSubscription(ctx context.Context, sess *session, subscription *eventSubscription, conn net.Conn, writer *bufio.Writer) error {
+	defer s.unregisterEventSub(subscription.wake)
+	if sess.sessionExpired(s.cfg.SessionTTLSec) {
+		return s.expireSubscriptionSession(sess)
+	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return err
 	}
 
-	// Register a per-subscriber wake channel so report_xposed_* wakes this loop
-	// without being stolen by another subscriber (the previous single shared
-	// channel only ever woke one subscriber per report).
-	wake := make(chan struct{}, 1)
-	s.registerEventSub(wake)
-	defer s.unregisterEventSub(wake)
-
 	currentSnapshot := s.captureEventSnapshot(sess)
-	for _, frame := range buildSnapshotEventFrames(currentSnapshot, args.Events) {
+	for _, frame := range buildSnapshotEventFrames(currentSnapshot, subscription.args.Events) {
+		if sess.sessionExpired(s.cfg.SessionTTLSec) {
+			return s.expireSubscriptionSession(sess)
+		}
 		if err := writeEventFrame(conn, writer, frame); err != nil {
 			return err
 		}
@@ -134,12 +148,15 @@ func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req i
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-		case <-wake:
+		case <-subscription.wake:
+		}
+		if sess.sessionExpired(s.cfg.SessionTTLSec) {
+			return s.expireSubscriptionSession(sess)
 		}
 		heartbeatCounter++
 		nextSnapshot := s.captureEventSnapshot(sess)
-		changedFrames := diffSnapshotEventFrames(currentSnapshot, nextSnapshot, args.Events)
-		if len(changedFrames) == 0 && heartbeatCounter >= eventStreamHeartbeatEvery && slices.Contains(args.Events, subscribeEventDaemonStatus) {
+		changedFrames := diffSnapshotEventFrames(currentSnapshot, nextSnapshot, subscription.args.Events)
+		if len(changedFrames) == 0 && heartbeatCounter >= eventStreamHeartbeatEvery && slices.Contains(subscription.args.Events, subscribeEventDaemonStatus) {
 			changedFrames = append(changedFrames, eventFrame{
 				Event:     subscribeEventDaemonStatus,
 				Timestamp: time.Now().Unix(),
@@ -155,6 +172,12 @@ func (s *Server) handleSubscribeEvents(ctx context.Context, sess *session, req i
 		}
 		currentSnapshot = nextSnapshot
 	}
+}
+
+func (s *Server) expireSubscriptionSession(sess *session) error {
+	sess.setAuthFailure(ipc.CodeErrSessionExpired, "session expired")
+	sess.transition(StateClosed)
+	return errSessionExpired
 }
 
 func parseSubscribeEventsArgs(args map[string]interface{}) (subscribeEventsArgs, error) {
@@ -190,15 +213,16 @@ func parseSubscribeEventsArgs(args map[string]interface{}) (subscribeEventsArgs,
 }
 
 func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
+	packageName := sess.snapshot().packageName
 	rootAvailable := detectRootAvailable()
-	accessibilityEnabled := detectAccessibilityEnabled(sess.packageName)
+	accessibilityEnabled := detectAccessibilityEnabled(packageName)
 	lsposedAvailable := detectLSPosedAvailable()
-	lsposedRuntimeMarker := detectLSPosedRuntimeMarker(sess.packageName)
+	lsposedRuntimeMarker := detectLSPosedRuntimeMarker(packageName)
 	load1, load5, load15 := readLoadAverage()
 	memTotalKB, memAvailableKB := readMemoryInfo()
 	runtimePID, runtimeRSSKB := readCurrentProcessMetrics()
 
-	taskState := s.taskStateForSession(sess.id)
+	taskState := s.taskStateForSession(sess)
 
 	return eventSnapshot{
 		daemonStatus: mergeData(s.versionState(), mergeData(mergeData(s.diagnosticsState(), map[string]interface{}{
@@ -230,12 +254,19 @@ func (s *Server) captureEventSnapshot(sess *session) eventSnapshot {
 }
 
 // taskStateForSession returns a multi-task snapshot for parallel agent monitoring.
+// History is selected by stable owner while session_id remains diagnostic.
 // Includes active_tasks (running+queued) plus the primary chosen task for back-compat.
-func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
-	tasks := s.taskScheduler.Registry().List(sessionID)
+func (s *Server) taskStateForSession(sess *session) map[string]interface{} {
+	sessionSnap := sess.snapshot()
+	principal, ok := principalForSession(sess)
+	ownerKey := ""
+	if ok {
+		ownerKey = principal.OwnerKey()
+	}
+	tasks := s.taskScheduler.Registry().List(ownerKey)
 	if len(tasks) == 0 {
 		return map[string]interface{}{
-			"session_id":   sessionID,
+			"session_id":   sessionSnap.id,
 			"phase":        "idle",
 			"task_count":   0,
 			"active_tasks": []map[string]interface{}{},
@@ -244,7 +275,8 @@ func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
 		}
 	}
 
-	var running, queued, latest *task.Task
+	var running, queued, latest task.Task
+	hasRunning, hasQueued, hasLatest := false, false, false
 	active := make([]map[string]interface{}, 0, 8)
 	runningCount := 0
 	queuedCount := 0
@@ -252,6 +284,7 @@ func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
 		switch t.State {
 		case task.TaskStateRunning:
 			running = t
+			hasRunning = true
 			runningCount++
 			if len(active) < 12 {
 				snap := t.StateSnapshot()
@@ -260,6 +293,7 @@ func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
 			}
 		case task.TaskStateQueued, task.TaskStateCreated:
 			queued = t
+			hasQueued = true
 			queuedCount++
 			if len(active) < 12 {
 				snap := t.StateSnapshot()
@@ -267,22 +301,23 @@ func (s *Server) taskStateForSession(sessionID string) map[string]interface{} {
 				active = append(active, snap)
 			}
 		}
-		if latest == nil || t.CreatedAt.After(latest.CreatedAt) {
+		if !hasLatest || t.CreatedAt.After(latest.CreatedAt) {
 			latest = t
+			hasLatest = true
 		}
 	}
 
-	chosen := running
-	if chosen == nil {
+	chosen := latest
+	if hasQueued {
 		chosen = queued
 	}
-	if chosen == nil {
-		chosen = latest
+	if hasRunning {
+		chosen = running
 	}
 
 	snapshot := chosen.StateSnapshot()
 	snapshot["phase"] = string(chosen.State)
-	snapshot["session_id"] = sessionID
+	snapshot["session_id"] = sessionSnap.id
 	snapshot["task_count"] = len(tasks)
 	snapshot["active_tasks"] = active
 	snapshot["running"] = runningCount

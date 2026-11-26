@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -22,28 +21,28 @@ const (
 )
 
 type AuditLogEntry struct {
-	RequestID       string    `json:"request_id"`
-	SessionID       string    `json:"session_id"`
-	CallerUID       int       `json:"caller_uid"`
-	CallerPID       int       `json:"caller_pid"`
-	PackageName     string    `json:"package_name,omitempty"`
-	SignatureDigest string    `json:"signature_digest,omitempty"`
-	Action          string    `json:"action"`
-	ArgDigest       string    `json:"arg_digest,omitempty"`
+	RequestID       string     `json:"request_id"`
+	SessionID       string     `json:"session_id"`
+	CallerUID       int        `json:"caller_uid"`
+	CallerPID       int        `json:"caller_pid"`
+	PackageName     string     `json:"package_name,omitempty"`
+	SignatureDigest string     `json:"signature_digest,omitempty"`
+	Action          string     `json:"action"`
+	ArgDigest       string     `json:"arg_digest,omitempty"`
 	AuditLevel      AuditLevel `json:"audit_level"`
-	StartedAt       int64     `json:"started_at"`
-	EndedAt         int64     `json:"ended_at"`
-	ResultCode      int       `json:"result_code"`
-	ResultMessage   string    `json:"result_message,omitempty"`
-	ErrorMessage    string    `json:"error_message,omitempty"`
-	LatencyMS       int64     `json:"latency_ms"`
-	DaemonVersion   string    `json:"daemon_version"`
-	DaemonBuildTime string    `json:"daemon_build_time,omitempty"`
+	StartedAt       int64      `json:"started_at"`
+	EndedAt         int64      `json:"ended_at"`
+	ResultCode      int        `json:"result_code"`
+	ResultMessage   string     `json:"result_message,omitempty"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
+	LatencyMS       int64      `json:"latency_ms"`
+	DaemonVersion   string     `json:"daemon_version"`
+	DaemonBuildTime string     `json:"daemon_build_time,omitempty"`
 }
 
 var versionInfo struct {
-	mu       sync.RWMutex
-	version  string
+	mu        sync.RWMutex
+	version   string
 	buildTime string
 }
 
@@ -63,17 +62,24 @@ func GetVersionInfo() (version, buildTime string) {
 var auditLevelOfAction = map[string]AuditLevel{
 	"ping":                AuditLevelLow,
 	"get_capabilities":    AuditLevelLow,
-	"subscribe_events":     AuditLevelLow,
-	"report_xposed_focus":  AuditLevelLow,
-	"report_xposed_view":   AuditLevelLow,
-	"capture_screen":       AuditLevelMedium,
+	"subscribe_events":    AuditLevelLow,
+	"report_xposed_focus": AuditLevelLow,
+	"report_xposed_view":  AuditLevelLow,
+	"capture_screen":      AuditLevelMedium,
 	"read_file_limited":   AuditLevelMedium,
 	"write_file_limited":  AuditLevelHigh,
 	"stat_file_limited":   AuditLevelMedium,
 	"list_dir_limited":    AuditLevelMedium,
 	"inject_tap":          AuditLevelHigh,
 	"inject_swipe":        AuditLevelHigh,
+	"inject_keyevent":     AuditLevelHigh,
 	"exec_shell_limited":  AuditLevelHigh,
+	"task_submit":         AuditLevelHigh,
+	"task_cancel":         AuditLevelHigh,
+	"task_get":            AuditLevelMedium,
+	"task_list":           AuditLevelMedium,
+	"shell_job_list":      AuditLevelMedium,
+	"shell_job_get":       AuditLevelMedium,
 }
 
 func AuditLevelForAction(action string) AuditLevel {
@@ -87,30 +93,12 @@ func ComputeArgDigest(args map[string]interface{}) string {
 	if len(args) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(args))
-	for k := range args {
-		keys = append(keys, k)
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return ""
 	}
-	sort.Strings(keys)
-
-	var sb strings.Builder
-	for _, k := range keys {
-		sb.WriteString(k)
-		sb.WriteString("=")
-		switch v := args[k]; v.(type) {
-		case string:
-			sb.WriteString(v.(string))
-		case float64:
-			fmt.Fprintf(&sb, "%v", v)
-		default:
-			sb.WriteString("?")
-		}
-		sb.WriteString(";")
-	}
-
-	h := sha256.New()
-	h.Write([]byte(sb.String()))
-	return hex.EncodeToString(h.Sum(nil))[:16]
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 type FileLogger struct {
@@ -192,7 +180,7 @@ func (fl *FileLogger) Log(entry AuditLogEntry) error {
 	// fl.mu.Lock, but no other Log call can read a stale sw because rotate
 	// fully replaces the map entry before releasing fl.mu.
 	if needRotate {
-		fl.rotate(entry.AuditLevel, dateStr)
+		return fl.rotate(entry.AuditLevel, dateStr)
 	}
 
 	return nil
@@ -219,7 +207,11 @@ func (fl *FileLogger) openWriter(level AuditLevel, dateStr string) error {
 	if err != nil {
 		return fmt.Errorf("open audit file %s: %w", path, err)
 	}
-	info, _ := f.Stat()
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("stat audit file %s: %w", path, err)
+	}
 	fl.writers[level] = &syncFileWriter{
 		file: f,
 		size: info.Size(),
@@ -228,31 +220,41 @@ func (fl *FileLogger) openWriter(level AuditLevel, dateStr string) error {
 	return nil
 }
 
-func (fl *FileLogger) rotate(level AuditLevel, dateStr string) {
+func (fl *FileLogger) rotate(level AuditLevel, dateStr string) error {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
 	sw := fl.writers[level]
 	if sw == nil {
-		return
+		return nil
 	}
 	sw.mu.Lock()
-	_ = sw.file.Close()
+	closeErr := sw.file.Close()
 	sw.mu.Unlock()
 	delete(fl.writers, level)
 
 	baseName := fmt.Sprintf("audit-%s-%s.jsonl", level, dateStr)
 	path := filepath.Join(fl.auditDir, baseName)
-	rotated := filepath.Join(fl.auditDir, fmt.Sprintf("audit-%s-%s-%d.jsonl", level, dateStr, time.Now().Unix()))
-	_ = os.Rename(path, rotated)
+	rotated := filepath.Join(fl.auditDir, fmt.Sprintf("audit-%s-%s-%d.jsonl", level, dateStr, time.Now().UnixNano()))
+	if err := os.Rename(path, rotated); err != nil {
+		fl.lastError = "rotate rename: " + err.Error()
+		fl.lastErrorAt = time.Now()
+		return fmt.Errorf("rotate audit file: %w", err)
+	}
+	if closeErr != nil {
+		fl.lastError = "rotate close: " + closeErr.Error()
+		fl.lastErrorAt = time.Now()
+	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		fl.setLastError("rotate reopen: " + err.Error())
-		return
+		fl.lastError = "rotate reopen: " + err.Error()
+		fl.lastErrorAt = time.Now()
+		return fmt.Errorf("reopen audit file after rotation: %w", err)
 	}
 	fl.writers[level] = &syncFileWriter{file: f, size: 0}
 	fl.currentDate = dateStr
 	fl.pruneRotatedLocked(level, dateStr, 3)
+	return nil
 }
 
 func (fl *FileLogger) pruneRotatedLocked(level AuditLevel, dateStr string, keep int) {

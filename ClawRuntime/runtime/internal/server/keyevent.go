@@ -1,8 +1,9 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
@@ -13,17 +14,17 @@ import (
 
 // Narrow keyevent allowlist — navigation / editing only.
 var allowedKeyevents = map[string]int{
-	"BACK":       4,
-	"HOME":       3,
-	"APP_SWITCH": 187,
-	"ENTER":      66,
-	"DEL":        67,
-	"TAB":        61,
-	"SPACE":      62,
-	"DPAD_UP":    19,
-	"DPAD_DOWN":  20,
-	"DPAD_LEFT":  21,
-	"DPAD_RIGHT": 22,
+	"BACK":               4,
+	"HOME":               3,
+	"APP_SWITCH":         187,
+	"ENTER":              66,
+	"DEL":                67,
+	"TAB":                61,
+	"SPACE":              62,
+	"DPAD_UP":            19,
+	"DPAD_DOWN":          20,
+	"DPAD_LEFT":          21,
+	"DPAD_RIGHT":         22,
 	"KEYCODE_BACK":       4,
 	"KEYCODE_HOME":       3,
 	"KEYCODE_APP_SWITCH": 187,
@@ -58,6 +59,10 @@ type injectKeyeventArgs struct {
 }
 
 func (s *Server) handleInjectKeyevent(sess *session, req ipc.Request) ipc.Response {
+	return s.handleInjectKeyeventContext(context.Background(), sess, req)
+}
+
+func (s *Server) handleInjectKeyeventContext(ctx context.Context, sess *session, req ipc.Request) ipc.Response {
 	if !s.cfg.InputInjectEnabled {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -79,11 +84,15 @@ func (s *Server) handleInjectKeyevent(sess *session, req ipc.Request) ipc.Respon
 		}
 	}
 
-	if err := executeKeyevent(args); err != nil {
+	if err := executeKeyevent(ctx, args); err != nil {
+		code := ipc.CodeErrInputInjectFailed
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			code = executionContextCode(err)
+		}
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
-			Code:      ipc.CodeErrInputInjectFailed,
+			Code:      code,
 			Message:   err.Error(),
 			Data:      s.sessionData(sess),
 		}
@@ -138,7 +147,10 @@ func parseInjectKeyeventArgs(args map[string]interface{}) (injectKeyeventArgs, e
 	return result, fmt.Errorf("key or keycode is required")
 }
 
-func executeKeyevent(args injectKeyeventArgs) error {
+func executeKeyevent(ctx context.Context, args injectKeyeventArgs) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if runtime.GOOS != "android" && runtime.GOOS != "linux" {
 		return nil
 	}
@@ -147,8 +159,11 @@ func executeKeyevent(args injectKeyeventArgs) error {
 	if args.DisplayID > 0 {
 		commandArgs = []string{"-d", strconv.Itoa(args.DisplayID), "keyevent", strconv.Itoa(args.KeyCode)}
 	}
-	command := exec.Command("input", commandArgs...)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runCommandContext(ctx, "input", commandArgs...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("run input keyevent: %w", ctx.Err())
+		}
 		return fmt.Errorf("run input keyevent failed: %w, output=%s", err, string(output))
 	}
 	return nil

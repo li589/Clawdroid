@@ -8,6 +8,15 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+internal fun encryptSecretOrThrow(plainText: String, encrypt: (String) -> String): String {
+    if (plainText.isEmpty()) return ""
+    return try {
+        encrypt(plainText)
+    } catch (error: Throwable) {
+        throw IllegalStateException("Failed to encrypt secret", error)
+    }
+}
+
 internal object AppSecretCipher {
     private const val androidKeyStore = "AndroidKeyStore"
     private const val transformation = "AES/GCM/NoPadding"
@@ -19,19 +28,14 @@ internal object AppSecretCipher {
         KeyStore.getInstance(androidKeyStore).apply { load(null) }
     }
 
-    fun encrypt(plainText: String): String {
-        if (plainText.isEmpty()) {
-            return ""
-        }
-        return runCatching {
-            val cipher = Cipher.getInstance(transformation)
-            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
-            val iv = cipher.iv
-            val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-            Base64.encodeToString(iv, Base64.NO_WRAP) +
-                ":" +
-                Base64.encodeToString(encrypted, Base64.NO_WRAP)
-        }.getOrDefault("")
+    fun encrypt(plainText: String): String = encryptSecretOrThrow(plainText) { value ->
+        val cipher = Cipher.getInstance(transformation)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
+        val iv = cipher.iv
+        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        Base64.encodeToString(iv, Base64.NO_WRAP) +
+            ":" +
+            Base64.encodeToString(encrypted, Base64.NO_WRAP)
     }
 
     fun decrypt(payload: String): String {

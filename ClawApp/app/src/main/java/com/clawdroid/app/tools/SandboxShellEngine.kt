@@ -18,7 +18,7 @@ internal class SandboxShellEngine(
     )
 
     fun exec(command: String, timeoutMs: Long = 8_000): ClawToolCallResult {
-        val trimmed = command.trim().replace(Regex("\\s+"), " ")
+        val trimmed = command.trim().replace(Regex("""\s+"""), " ")
         if (trimmed.isBlank()) {
             return ClawToolCallResult(false, "失败: 空命令", error = "empty_command")
         }
@@ -33,20 +33,32 @@ internal class SandboxShellEngine(
                 .directory(sandboxRoot)
                 .redirectErrorStream(false)
                 .start()
+            val stdout = java.io.ByteArrayOutputStream()
+            val stderr = java.io.ByteArrayOutputStream()
+            val stdoutReader = kotlin.concurrent.thread(isDaemon = true) {
+                drainLimited(process.inputStream, stdout, 8_000)
+            }
+            val stderrReader = kotlin.concurrent.thread(isDaemon = true) {
+                drainLimited(process.errorStream, stderr, 2_000)
+            }
             val finished = process.waitFor(timeoutMs.coerceIn(1_000, 30_000), TimeUnit.MILLISECONDS)
             if (!finished) {
                 process.destroy()
+                process.waitFor(2, TimeUnit.SECONDS)
                 return ClawToolCallResult(false, "失败: 超时", error = "sandbox_timeout")
             }
-            val stdout = BufferedReader(InputStreamReader(process.inputStream)).readText()
-            val stderr = BufferedReader(InputStreamReader(process.errorStream)).readText()
+            stdoutReader.join(1_000)
+            stderrReader.join(1_000)
+            if (stdoutReader.isAlive || stderrReader.isAlive) {
+                return ClawToolCallResult(false, "失败: 输出管道未在超时内关闭", error = "sandbox_pipe_timeout")
+            }
             val code = process.exitValue()
             val output = buildString {
                 appendLine("cwd=${sandboxRoot.absolutePath}")
                 appendLine("argv=${argv.joinToString(" ")}")
                 appendLine("exit=$code")
-                appendLine("stdout=${stdout.take(8_000)}")
-                append("stderr=${stderr.take(2_000)}")
+                appendLine("stdout=${stdout.toString(Charsets.UTF_8.name())}")
+                append("stderr=${stderr.toString(Charsets.UTF_8.name())}")
             }
             ClawToolCallResult(
                 success = code == 0,
@@ -56,6 +68,20 @@ internal class SandboxShellEngine(
             )
         } catch (error: Exception) {
             ClawToolCallResult(false, "失败: ${error.message}", error = error.message)
+        }
+    }
+
+    internal fun drainLimited(input: java.io.InputStream, output: java.io.ByteArrayOutputStream, limit: Int) {
+        val buffer = ByteArray(8 * 1024)
+        var stored = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read <= 0) break
+            if (stored < limit) {
+                val take = minOf(read, limit - stored)
+                output.write(buffer, 0, take)
+                stored += take
+            }
         }
     }
 

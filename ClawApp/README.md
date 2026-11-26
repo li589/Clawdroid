@@ -8,13 +8,14 @@ Android Brain Host：Compose UI、Agent 编排、工具调度、无障碍 / LSPo
 
 ## 密钥
 
-构建需要与 Runtime **同一**共享密钥：
+构建需要与 Runtime **同一**共享密钥。脚本会校验仓库根与 `ClawApp/` 的
+`local.properties`、`CLAWDROID_RUNTIME_SHARED_SECRET`、Gradle property
+`clawdroid.clawRuntimeSharedSecret` 等所有已配置来源；非空值必须一致，空值和占位符会直接失败。推荐从仓库根运行
+`pwsh -File ClawRuntime/scripts/sync-shared-secret.ps1` 初始化并同步。最终值写入
+`BuildConfig.CLAW_RUNTIME_SHARED_SECRET`。
 
-- 仓库根 `local.properties`：`clawdroid.runtime.sharedSecret=...`
-- 或环境变量 `CLAWDROID_RUNTIME_SHARED_SECRET`
-- 写入 `BuildConfig.CLAW_RUNTIME_SHARED_SECRET`
-
-发布签名白名单（可选）：`clawdroid.runtime.allowedSignatures`。见 [keystore/README.md](keystore/README.md)。
+Release APK 必须配置完整 keystore；缺少配置或文件时失败，不会输出未签名 APK。Debug 构建不要求 release 签名。
+发布签名白名单：`clawdroid.runtime.allowedSignatures`。见 [keystore/README.md](keystore/README.md)。
 
 ## 常用命令
 

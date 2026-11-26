@@ -1,8 +1,9 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strconv"
 
@@ -16,6 +17,10 @@ type injectTapArgs struct {
 }
 
 func (s *Server) handleInjectTap(sess *session, req ipc.Request) ipc.Response {
+	return s.handleInjectTapContext(context.Background(), sess, req)
+}
+
+func (s *Server) handleInjectTapContext(ctx context.Context, sess *session, req ipc.Request) ipc.Response {
 	if !s.cfg.InputInjectEnabled {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -37,11 +42,15 @@ func (s *Server) handleInjectTap(sess *session, req ipc.Request) ipc.Response {
 		}
 	}
 
-	if err := executeTap(args); err != nil {
+	if err := executeTap(ctx, args); err != nil {
+		code := ipc.CodeErrInputInjectFailed
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			code = executionContextCode(err)
+		}
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
-			Code:      ipc.CodeErrInputInjectFailed,
+			Code:      code,
 			Message:   err.Error(),
 			Data:      s.sessionData(sess),
 		}
@@ -87,7 +96,10 @@ func parseInjectTapArgs(args map[string]interface{}) (injectTapArgs, error) {
 	return tapArgs, nil
 }
 
-func executeTap(args injectTapArgs) error {
+func executeTap(ctx context.Context, args injectTapArgs) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if runtime.GOOS != "android" && runtime.GOOS != "linux" {
 		return nil
 	}
@@ -97,8 +109,11 @@ func executeTap(args injectTapArgs) error {
 		commandArgs = []string{"-d", strconv.Itoa(args.DisplayID), "tap", strconv.Itoa(args.X), strconv.Itoa(args.Y)}
 	}
 
-	command := exec.Command("input", commandArgs...)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runCommandContext(ctx, "input", commandArgs...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("run input tap: %w", ctx.Err())
+		}
 		return fmt.Errorf("run input tap failed: %w, output=%s", err, string(output))
 	}
 

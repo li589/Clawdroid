@@ -8,6 +8,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -110,7 +112,9 @@ object RuntimeTaskPoller {
         } catch (cancelled: CancellationException) {
             if (claimCancel(id)) {
                 runCatching {
-                    dispatcher.execute(ClawTool.TASK_CANCEL, mapOf("task_id" to id))
+                    withContext(NonCancellable) {
+                        dispatcher.execute(ClawTool.TASK_CANCEL, mapOf("task_id" to id))
+                    }
                 }
             }
             throw cancelled

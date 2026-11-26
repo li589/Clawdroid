@@ -30,33 +30,34 @@ func (s *Server) diagnosticsState() map[string]interface{} {
 	s.diagMu.RUnlock()
 
 	return map[string]interface{}{
-		"last_error":              lastError,
-		"last_error_at":           unixOrZero(lastErrorAt),
-		"last_rate_limit":         lastRateLimitMessage,
-		"last_rate_limit_at":      unixOrZero(lastRateLimitAt),
-		"rate_limit_hits":         rateLimitHits,
-		"rate_limit_per_minute":   s.cfg.RateLimitPerMinute,
-		"readonly_whitelist":      s.allowedReadRoots(),
-		"uptime_seconds":          int64(time.Since(s.startedAt).Seconds()),
-		"started_at":              s.startedAt.Unix(),
+		"last_error":            lastError,
+		"last_error_at":         unixOrZero(lastErrorAt),
+		"last_rate_limit":       lastRateLimitMessage,
+		"last_rate_limit_at":    unixOrZero(lastRateLimitAt),
+		"rate_limit_hits":       rateLimitHits,
+		"rate_limit_per_minute": s.cfg.RateLimitPerMinute,
+		"readonly_whitelist":    s.allowedReadRoots(),
+		"uptime_seconds":        int64(time.Since(s.startedAt).Seconds()),
+		"started_at":            s.startedAt.Unix(),
 	}
 }
 
 func (s *Server) versionState() map[string]interface{} {
 	return map[string]interface{}{
-		"daemon_status":     "ok",
-		"version": DaemonVersion,
-		"protocol_version":  s.cfg.ProtocolVersion,
-		"socket_name":       s.cfg.SocketName,
-		"log_level":         s.cfg.LogLevel,
+		"daemon_status":    "ok",
+		"version":          DaemonVersion,
+		"protocol_version": s.cfg.ProtocolVersion,
+		"socket_name":      s.cfg.SocketName,
+		"log_level":        s.cfg.LogLevel,
 	}
 }
 
 func (s *Server) healthState(sess *session) map[string]interface{} {
+	packageName := sess.snapshot().packageName
 	rootAvailable := detectRootAvailable()
-	accessibilityEnabled := detectAccessibilityEnabled(sess.packageName)
+	accessibilityEnabled := detectAccessibilityEnabled(packageName)
 	lsposedAvailable := detectLSPosedAvailable()
-	lsposedRuntimeMarker := detectLSPosedRuntimeMarker(sess.packageName)
+	lsposedRuntimeMarker := detectLSPosedRuntimeMarker(packageName)
 	runtimePID, runtimeRSSKB := readCurrentProcessMetrics()
 
 	return mergeData(s.versionState(), mergeData(mergeData(s.diagnosticsState(), map[string]interface{}{

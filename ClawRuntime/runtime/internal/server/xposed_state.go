@@ -3,6 +3,12 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"time"
+)
+
+const (
+	xposedStateTTL        = 30 * time.Second
+	xposedStateFutureSkew = time.Second
 )
 
 // stateEpochMs returns the best-known freshness timestamp for an xposed state map.
@@ -40,6 +46,18 @@ func asInt64(value interface{}) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func freshXposedState(state map[string]interface{}, now time.Time) map[string]interface{} {
+	epochMs := stateEpochMs(state)
+	if epochMs <= 0 {
+		return map[string]interface{}{}
+	}
+	epoch := time.UnixMilli(epochMs)
+	if epoch.After(now.Add(xposedStateFutureSkew)) || now.Sub(epoch) > xposedStateTTL {
+		return map[string]interface{}{}
+	}
+	return state
 }
 
 // pickNewerXposedState chooses the fresher of in-memory vs file-backed state.

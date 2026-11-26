@@ -6,15 +6,15 @@ import "fmt"
 type TaskState string
 
 const (
-	TaskStateCreated      TaskState = "Created"
-	TaskStateQueued       TaskState = "Queued"
-	TaskStateRunning      TaskState = "Running"
+	TaskStateCreated       TaskState = "Created"
+	TaskStateQueued        TaskState = "Queued"
+	TaskStateRunning       TaskState = "Running"
 	TaskStateWaitingSignal TaskState = "WaitingSignal"
-	TaskStateRetrying     TaskState = "Retrying"
-	TaskStateSucceeded    TaskState = "Succeeded"
-	TaskStateFailed       TaskState = "Failed"
-	TaskStateCancelled    TaskState = "Cancelled"
-	TaskStateCompensating TaskState = "Compensating"
+	TaskStateRetrying      TaskState = "Retrying"
+	TaskStateSucceeded     TaskState = "Succeeded"
+	TaskStateFailed        TaskState = "Failed"
+	TaskStateCancelled     TaskState = "Cancelled"
+	TaskStateCompensating  TaskState = "Compensating"
 )
 
 // validTransitions defines the allowed state transitions per protocol.md Section 7.
@@ -23,7 +23,7 @@ var validTransitions = map[TaskState][]TaskState{
 	TaskStateQueued:        {TaskStateRunning, TaskStateCancelled},
 	TaskStateRunning:       {TaskStateSucceeded, TaskStateFailed, TaskStateCancelled, TaskStateCompensating, TaskStateWaitingSignal, TaskStateRetrying},
 	TaskStateWaitingSignal: {TaskStateRunning, TaskStateCancelled},
-	TaskStateRetrying:      {TaskStateRunning, TaskStateFailed},
+	TaskStateRetrying:      {TaskStateRunning, TaskStateFailed, TaskStateCancelled},
 	TaskStateSucceeded:     {},
 	TaskStateFailed:        {},
 	TaskStateCancelled:     {},

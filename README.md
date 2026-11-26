@@ -121,7 +121,7 @@ cd ClawApp
 - 推荐顺序为 `scripts/build-runtime.ps1` -> `scripts/build-magisk.ps1`
 - `scripts/build-magisk.ps1` 会自动执行 `scripts/sync-shared-secret.ps1`
 - Magisk 模块当前会输出 `webroot/status.json`、`webroot/verify.json` 与日志 tail 供本地排查
-- 发布包场景建议使用 `.\scripts\build-magisk.ps1 -RequireAllowedSignatures`
+- `build-magisk.ps1` 默认拒绝空签名名单；仅本地开发可显式使用 `-AllowEmptyAllowedSignatures`
 
 常用命令：
 

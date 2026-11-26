@@ -169,6 +169,10 @@ type execShellArgs struct {
 }
 
 func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Response {
+	return s.handleExecShellLimitedContext(context.Background(), sess, req)
+}
+
+func (s *Server) handleExecShellLimitedContext(ctx context.Context, sess *session, req ipc.Request) ipc.Response {
 	if !s.cfg.ShellEnabled {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -199,7 +203,7 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 	if !ok {
 		// Audit: log rejected shell command attempts for security traceability.
 		s.logger.Info(fmt.Sprintf("exec_shell_limited rejected: session=%s package=%s command=%q not in whitelist",
-			sess.id, sess.packageName, rawCommand))
+			sess.id, sess.snapshot().packageName, rawCommand))
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
@@ -217,18 +221,34 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return ipc.Response{
+			RequestID: req.RequestID,
+			OK:        false,
+			Code:      executionContextCode(err),
+			Message:   executionContextMessage(err),
+			Data:      s.sessionData(sess),
+		}
+	}
+
 	// Reboot tears down the device before command.Run() can return; ack first then fire.
 	if isFireAndForgetShell(template.Name) {
 		job := s.shellJobs.begin(sess.id, args.Command, template.Name)
 		s.logger.Info(fmt.Sprintf("exec_shell_limited fire-and-forget: session=%s command=%q job=%s", sess.id, args.Command, job.ID))
 		go func() {
+			lifecycleCtx := s.shutdownCtx
+			if lifecycleCtx == nil {
+				lifecycleCtx = context.Background()
+			}
 			select {
 			case <-time.After(250 * time.Millisecond):
-			case <-s.shutdownCtx.Done():
+			case <-lifecycleCtx.Done():
 				s.shellJobs.finish(job.ID, "cancelled", 0, "shutdown before reboot", "", false, false, 0)
 				return
 			}
-			cmd := exec.Command(template.CommandArgs[0], template.CommandArgs[1:]...)
+			// Reboot intentionally outlives the successful task-step context; only
+			// daemon shutdown may cancel it.
+			cmd := newCommandContext(lifecycleCtx, template.CommandArgs[0], template.CommandArgs[1:]...)
 			if startErr := cmd.Start(); startErr != nil {
 				s.shellJobs.finish(job.ID, "failed", -1, fmt.Sprintf("reboot start failed: %v", startErr), "", false, false, 0)
 				return
@@ -258,12 +278,14 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 	}
 
 	job := s.shellJobs.begin(sess.id, args.Command, template.Name)
-	result, execErr := executeLimitedShell(template.CommandArgs, args.TimeoutMS)
+	result, execErr := executeLimitedShell(ctx, template.CommandArgs, args.TimeoutMS)
 	state := "succeeded"
 	if execErr != nil {
 		state = "failed"
 		if result.TimedOut {
 			state = "timeout"
+		} else if result.Cancelled {
+			state = "cancelled"
 		}
 	}
 	finished := s.shellJobs.finish(
@@ -284,6 +306,8 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 		code := ipc.CodeErrShellExecFailed
 		if result.TimedOut {
 			code = ipc.CodeErrTimeout
+		} else if result.Cancelled {
+			code = ipc.CodeErrCancelled
 		}
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -291,18 +315,18 @@ func (s *Server) handleExecShellLimited(sess *session, req ipc.Request) ipc.Resp
 			Code:      code,
 			Message:   execErr.Error(),
 			Data: mergeData(s.sessionData(sess), map[string]interface{}{
-				"command":            rawCommand,
-				"template_name":      template.Name,
-				"allowed_commands":   sortedAllowedShellCommands,
-				"timeout_ms":         args.TimeoutMS,
-				"duration_ms":        result.DurationMS,
-				"exit_code":          result.ExitCode,
-				"stdout":             result.Stdout,
-				"stderr":             result.Stderr,
-				"stdout_truncated":   result.StdoutTruncated,
-				"stderr_truncated":   result.StderrTruncated,
-				"timed_out":          result.TimedOut,
-				"job_id":             jobID,
+				"command":          rawCommand,
+				"template_name":    template.Name,
+				"allowed_commands": sortedAllowedShellCommands,
+				"timeout_ms":       args.TimeoutMS,
+				"duration_ms":      result.DurationMS,
+				"exit_code":        result.ExitCode,
+				"stdout":           result.Stdout,
+				"stderr":           result.Stderr,
+				"stdout_truncated": result.StdoutTruncated,
+				"stderr_truncated": result.StderrTruncated,
+				"timed_out":        result.TimedOut,
+				"job_id":           jobID,
 			}),
 		}
 	}
@@ -572,21 +596,22 @@ func parseExecShellArgs(args map[string]interface{}, fallbackTimeoutMS int) (exe
 }
 
 type shellExecResult struct {
-	ExitCode         int
-	Stdout           string
-	Stderr           string
-	StdoutTruncated  bool
-	StderrTruncated  bool
-	TimedOut         bool
-	DurationMS       int64
+	ExitCode        int
+	Stdout          string
+	Stderr          string
+	StdoutTruncated bool
+	StderrTruncated bool
+	TimedOut        bool
+	Cancelled       bool
+	DurationMS      int64
 }
 
-func executeLimitedShell(commandArgs []string, timeoutMS int) (shellExecResult, error) {
+func executeLimitedShell(ctx context.Context, commandArgs []string, timeoutMS int) (shellExecResult, error) {
 	startedAt := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, commandArgs[0], commandArgs[1:]...)
+	command := newCommandContext(ctx, commandArgs[0], commandArgs[1:]...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -594,16 +619,21 @@ func executeLimitedShell(commandArgs []string, timeoutMS int) (shellExecResult, 
 
 	runErr := command.Run()
 	result := shellExecResult{
-		ExitCode:        0,
-		DurationMS:      time.Since(startedAt).Milliseconds(),
+		ExitCode:   0,
+		DurationMS: time.Since(startedAt).Milliseconds(),
 	}
 	result.Stdout, result.StdoutTruncated = truncateShellOutput(stdout.String())
 	result.Stderr, result.StderrTruncated = truncateShellOutput(stderr.String())
 
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		result.TimedOut = true
 		result.ExitCode = -1
 		return result, fmt.Errorf("shell command timed out after %dms", timeoutMS)
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		result.Cancelled = true
+		result.ExitCode = -1
+		return result, fmt.Errorf("shell command cancelled: %w", ctx.Err())
 	}
 
 	if runErr == nil {

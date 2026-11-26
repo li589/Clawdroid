@@ -1,8 +1,9 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strconv"
 
@@ -19,6 +20,10 @@ type injectSwipeArgs struct {
 }
 
 func (s *Server) handleInjectSwipe(sess *session, req ipc.Request) ipc.Response {
+	return s.handleInjectSwipeContext(context.Background(), sess, req)
+}
+
+func (s *Server) handleInjectSwipeContext(ctx context.Context, sess *session, req ipc.Request) ipc.Response {
 	if !s.cfg.InputInjectEnabled {
 		return ipc.Response{
 			RequestID: req.RequestID,
@@ -40,11 +45,15 @@ func (s *Server) handleInjectSwipe(sess *session, req ipc.Request) ipc.Response 
 		}
 	}
 
-	if err := executeSwipe(args); err != nil {
+	if err := executeSwipe(ctx, args); err != nil {
+		code := ipc.CodeErrInputInjectFailed
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			code = executionContextCode(err)
+		}
 		return ipc.Response{
 			RequestID: req.RequestID,
 			OK:        false,
-			Code:      ipc.CodeErrInputInjectFailed,
+			Code:      code,
 			Message:   err.Error(),
 			Data:      s.sessionData(sess),
 		}
@@ -109,7 +118,10 @@ func parseInjectSwipeArgs(args map[string]interface{}) (injectSwipeArgs, error) 
 	return swipeArgs, nil
 }
 
-func executeSwipe(args injectSwipeArgs) error {
+func executeSwipe(ctx context.Context, args injectSwipeArgs) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if runtime.GOOS != "android" && runtime.GOOS != "linux" {
 		return nil
 	}
@@ -134,8 +146,11 @@ func executeSwipe(args injectSwipeArgs) error {
 		}
 	}
 
-	command := exec.Command("input", commandArgs...)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runCommandContext(ctx, "input", commandArgs...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("run input swipe: %w", ctx.Err())
+		}
 		return fmt.Errorf("run input swipe failed: %w, output=%s", err, string(output))
 	}
 

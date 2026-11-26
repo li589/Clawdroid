@@ -267,7 +267,9 @@ Running -> Cancelled
 Running -> Compensating -> Failed
 Running -> Compensating -> Succeeded
 WaitingSignal -> Cancelled
+Retrying -> Running
 Retrying -> Failed
+Retrying -> Cancelled
 ```
 
 状态说明：
@@ -386,7 +388,10 @@ Retrying -> Failed
   "format": "png",
   "width": 1080,
   "height": 2400,
-  "image_base64": "..."
+  "image_path": "/data/local/tmp/clawdroid/captures/capture-0-1783362625194.png",
+  "file_size": 14803,
+  "sha256": "...",
+  "transport": "file_path"
 }
 ```
 
@@ -496,16 +501,16 @@ Retrying -> Failed
 
 ```json
 {
-  "path": "/data/local/tmp/clawdroid/out.txt",
-  "content_base64": "...",
-  "max_bytes": 65536
+  "path": "/data/local/tmp/clawdroid/captures/out.txt",
+  "content": "...",
+  "append": false
 }
 ```
 
 - **参数范围**:
   - `path`: 必须属于可写白名单
-  - `content_base64`: 解码后长度受 `max_bytes` 与守护上限约束
-  - `max_bytes`: `1 - 1048576`
+  - `content`: UTF-8 文本，长度受 1 MiB 守护上限约束
+  - `append`: 可选布尔值，默认 `false`；为 `false` 时覆盖写入
 - **是否幂等**: 否
 - **是否可取消**: 否
 - **默认超时**: `3000 ms`
@@ -733,11 +738,13 @@ Retrying -> Failed
 
 ```json
 {
-  "task_id": "demo-1",
-  "name": "health",
-  "steps": [
-    { "action": "ping", "args": {} }
-  ]
+  "task": {
+    "task_id": "demo-1",
+    "name": "health",
+    "steps": [
+      { "action": "ping", "args": {} }
+    ]
+  }
 }
 ```
 

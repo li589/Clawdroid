@@ -1,8 +1,11 @@
 # Copy this file to local.properties and adjust sdk.dir to your local Android SDK path.
 # Use double backslashes on Windows.
 sdk.dir=C:\\Users\\<your-user>\\AppData\\Local\\Android\\Sdk
-# Optional: keep App and Magisk runtime auth in sync through the repo root local.properties.
-# clawdroid.runtime.sharedSecret=<64-char-random-secret>
+# Optional App-level override for the shared runtime secret. If set, it must be
+# identical to the repo-root value, environment variable, and Gradle property.
+# Leave commented out to use/generate the repo-root value with
+# pwsh -File ClawRuntime/scripts/sync-shared-secret.ps1.
+# clawdroid.runtime.sharedSecret=
 # Release signing keystore (clawdroid.keystore.*) is configured in the
 # repo-root local.properties, not here. See ../local.properties.example
 # and ClawApp/keystore/README.md for setup.
