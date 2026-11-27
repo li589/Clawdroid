@@ -53,7 +53,7 @@ data class AutomationTaskSnapshot(
     val updatedAtEpochMs: Long = 0L
 )
 
-private data class NodeSemantic(
+internal data class NodeSemantic(
     val text: String,
     val viewId: String,
     val className: String,
@@ -81,6 +81,8 @@ object AutomationRuntimeStore {
     val taskSnapshot: StateFlow<AutomationTaskSnapshot> = _taskSnapshot.asStateFlow()
     private var latestNodeSemantics: List<NodeSemantic> = emptyList()
     @Volatile
+    private var observationGeneration: Long = 0L
+    @Volatile
     private var lastPublishAtMs: Long = 0L
     @Volatile
     private var suppressedEventCount: Int = 0
@@ -94,6 +96,7 @@ object AutomationRuntimeStore {
 
     fun onAccessibilityServiceInterrupted() {
         latestNodeSemantics = emptyList()
+        observationGeneration += 1
         _accessibilitySnapshot.value = _accessibilitySnapshot.value.copy(
             serviceConnected = false,
             lastResolvedTapLabel = "",
@@ -122,6 +125,7 @@ object AutomationRuntimeStore {
         val semantics = collectNodeSemantics(rootNode)
         latestNodeSemantics = semantics.nodes
 
+        observationGeneration += 1
         _accessibilitySnapshot.value = AccessibilitySnapshot(
             serviceConnected = true,
             eventCount = _accessibilitySnapshot.value.eventCount + 1 + skipped,
@@ -141,6 +145,10 @@ object AutomationRuntimeStore {
             updatedAtEpochMs = now
         )
     }
+
+    internal fun currentNodeSemantics(): List<NodeSemantic> = latestNodeSemantics
+
+    fun observationGeneration(): Long = observationGeneration
 
     fun confirmLatestPage(
         expectedPackage: String,

@@ -1,7 +1,11 @@
 package com.clawdroid.app.automation
 
+import android.graphics.Rect
+import com.clawdroid.app.focus.LiveXposedFocusStore
+import com.clawdroid.app.focus.LiveXposedViewStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ObservationPortTest {
@@ -29,6 +33,67 @@ class ObservationPortTest {
         )
 
         assertNull(port.current("com.example.app"))
+    }
+
+    @Test
+    fun lsposedFocusSourceMapsIdentityAndGeneration() {
+        LiveXposedFocusStore.clearForTests()
+        LiveXposedFocusStore.updateFromJson(
+            """{"schema_version":2,"package_name":"com.example.app","activity_class":".MainActivity","loaded_at_epoch_ms":100}"""
+        )
+
+        val snapshot = LsposedFocusObservationSource().snapshot("com.example.app")
+
+        assertEquals(ObservationSource.LsposedFocus, snapshot?.source)
+        assertEquals(".MainActivity", snapshot?.activityClass)
+        assertTrue((snapshot?.generation ?: 0) > 0)
+    }
+
+    @Test
+    fun lsposedViewSourceMapsNodesAndBounds() {
+        LiveXposedViewStore.clearForTests()
+        LiveXposedViewStore.updateFromJson(
+            """{"schema_version":1,"package_name":"com.example.app","activity_class":".MainActivity","loaded_at_epoch_ms":100,"node_count":1,"nodes":[{"class":"android.widget.Button","id":"continue","text":"继续","bounds":"[10,20][110,80]","visibility":"visible"}]}"""
+        )
+
+        val snapshot = LsposedViewObservationSource().snapshot("com.example.app")
+
+        assertEquals(1, snapshot?.nodes?.size)
+        assertEquals("继续", snapshot?.nodes?.single()?.label)
+        assertEquals(110, snapshot?.nodes?.single()?.bounds?.right)
+    }
+
+    @Test
+    fun accessibilitySourceMapsClickableNodesAndGeneration() {
+        val source = AccessibilityObservationSource(
+            snapshotProvider = {
+                AccessibilitySnapshot(
+                    serviceConnected = true,
+                    packageName = "com.example.app",
+                    className = ".MainActivity",
+                    updatedAtEpochMs = 100
+                )
+            },
+            nodesProvider = {
+                listOf(
+                    NodeSemantic(
+                        text = "继续",
+                        viewId = "continue",
+                        className = "android.widget.Button",
+                        clickable = true,
+                        enabled = true,
+                        bounds = Rect(10, 20, 110, 80)
+                    )
+                )
+            },
+            generationProvider = { 7 }
+        )
+
+        val snapshot = source.snapshot("com.example.app")
+
+        assertEquals(ObservationSource.Accessibility, snapshot?.source)
+        assertEquals(7L, snapshot?.generation)
+        assertTrue(snapshot?.nodes?.single()?.clickable == true)
     }
 
     private fun snapshot(
