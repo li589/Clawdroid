@@ -4,6 +4,7 @@ import com.clawdroid.app.data.InMemoryTaskStore
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.adapters.TaskCancellationAdapter
 import com.clawdroid.app.tools.adapters.TaskExecutionContext
+import com.clawdroid.app.tools.adapters.TaskResyncAdapter
 import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
 import kotlinx.coroutines.CompletableDeferred
@@ -76,6 +77,54 @@ class TaskEngineTest {
         val task = store.load().single()
         assertEquals(TaskState.WaitingSignal, task.state)
         assertEquals("rt-1", task.checkpoint.runtimeTaskId)
+    }
+
+    @Test
+    fun restoreAllReattachesRuntimeTaskAndContinuesLocalSteps() = runTest {
+        val store = InMemoryTaskStore()
+        val localCalls = mutableListOf<String>()
+        val runtime = object : TaskStepAdapter, TaskResyncAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult = TaskStepResult(false, "submitted", runtimeTaskId = "rt-1", waitReason = "runtime_task")
+
+            override suspend fun resync(taskId: String): ClawRuntimeTaskSnapshot =
+                ClawRuntimeTaskSnapshot(taskId = taskId, state = "Succeeded")
+        }
+        val local = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                localCalls += step.id
+                return TaskStepResult(true, step.title)
+            }
+        }
+        store.save(
+            ExecutionTask(
+                id = "t1",
+                title = "mixed",
+                originPrompt = "run",
+                steps = listOf(
+                    ExecutionStep("runtime", "runtime", StepKind.RuntimeTask),
+                    ExecutionStep("local", "local", StepKind.Tool)
+                ),
+                state = TaskState.Paused,
+                checkpoint = TaskCheckpoint(runtimeTaskId = "rt-1")
+            )
+        )
+        val engine = TaskEngine(
+            store,
+            mapOf(StepKind.RuntimeTask to runtime, StepKind.Tool to local),
+            this
+        )
+
+        engine.restoreAll()
+        advanceUntilIdle()
+
+        assertEquals(listOf("local"), localCalls)
+        assertEquals(TaskState.Succeeded, store.load().single().state)
     }
 
     @Test

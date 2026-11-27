@@ -106,6 +106,7 @@ data class AgentRun(
     val plan: AgentPlan = AgentPlan(),
     val phase: AgentRunPhase = AgentRunPhase.Perceive,
     val runtimeTaskId: String? = null,
+    val executionTaskId: String? = null,
     val eventCount: Int = 0,
     val lastError: String? = null,
     val success: Boolean? = null

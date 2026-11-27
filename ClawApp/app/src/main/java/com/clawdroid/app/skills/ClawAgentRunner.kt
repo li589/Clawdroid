@@ -151,7 +151,6 @@ class ClawAgentRunner(
                     error = "runtime_task_unmapped"
                 )
             engine.submit(task)
-            onRuntimeTaskSubmitted?.invoke(taskId)
             agent.steps.forEachIndexed { index, stepId ->
                 notifyStep(
                     stepListener,

@@ -60,6 +60,16 @@ class AgentKernelTest {
     }
 
     @Test
+    fun linkExecutionTaskStoresUnifiedTaskId() {
+        val kernel = AgentKernel()
+        val turn = kernel.beginTurn("s1", "体检", WorldSnapshot(rootAvailable = true))
+
+        kernel.linkExecutionTask(turn.run.id, "execution-1")
+
+        assertEquals("execution-1", kernel.getRun(turn.run.id)?.executionTaskId)
+    }
+
+    @Test
     fun markAwaitRuntimeStoresTaskId() {
         val kernel = AgentKernel()
         val turn = kernel.beginTurn(

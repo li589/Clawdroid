@@ -85,6 +85,9 @@ class AgentKernel {
     fun markObserving(runId: String): AgentRun? =
         transition(runId) { it.copy(phase = AgentRunPhase.Observe, eventCount = it.eventCount + 1) }
 
+    fun linkExecutionTask(runId: String, taskId: String): AgentRun? =
+        transition(runId) { it.copy(executionTaskId = taskId) }
+
     fun markAwaitRuntime(runId: String, taskId: String?): AgentRun? =
         transition(runId) {
             it.copy(phase = AgentRunPhase.AwaitRuntime, runtimeTaskId = taskId ?: it.runtimeTaskId)

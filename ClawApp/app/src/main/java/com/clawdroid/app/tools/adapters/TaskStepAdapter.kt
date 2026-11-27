@@ -3,6 +3,7 @@ package com.clawdroid.app.tools.adapters
 import com.clawdroid.app.agent.task.ExecutionStep
 import com.clawdroid.app.agent.task.TaskCheckpoint
 import com.clawdroid.app.agent.task.TaskFailure
+import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 
 data class TaskExecutionContext(
     val taskId: String,
@@ -24,4 +25,8 @@ interface TaskStepAdapter {
 
 interface TaskCancellationAdapter {
     suspend fun cancel(taskId: String): TaskStepResult
+}
+
+interface TaskResyncAdapter {
+    suspend fun resync(taskId: String): ClawRuntimeTaskSnapshot?
 }

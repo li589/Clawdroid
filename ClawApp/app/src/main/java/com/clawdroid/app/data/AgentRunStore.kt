@@ -26,7 +26,7 @@ object AgentRunStore {
             return
         }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_PREFIX + run.sessionId, serialize(run)).apply()
+        prefs.edit().putString(KEY_PREFIX + run.sessionId, serializeAgentRun(run)).apply()
     }
 
     fun loadIncomplete(context: Context, sessionId: String): AgentRun? {
@@ -34,7 +34,7 @@ object AgentRunStore {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_PREFIX + id, null)
             ?: return null
-        return runCatching { deserialize(raw) }.getOrNull()
+        return runCatching { deserializeAgentRun(raw) }.getOrNull()
             ?.takeIf { it.phase != AgentRunPhase.Done && it.phase != AgentRunPhase.Idle }
     }
 
@@ -47,12 +47,13 @@ object AgentRunStore {
             .apply()
     }
 
-    private fun serialize(run: AgentRun): String {
+    internal fun serializeAgentRun(run: AgentRun): String {
         return JSONObject()
             .put("id", run.id)
             .put("sessionId", run.sessionId)
             .put("phase", run.phase.name)
             .put("runtimeTaskId", run.runtimeTaskId)
+            .put("executionTaskId", run.executionTaskId)
             .put("eventCount", run.eventCount)
             .put("lastError", run.lastError)
             .put("success", run.success)
@@ -103,7 +104,7 @@ object AgentRunStore {
             .toString()
     }
 
-    private fun deserialize(raw: String): AgentRun {
+    internal fun deserializeAgentRun(raw: String): AgentRun {
         val obj = JSONObject(raw)
         val goalObj = obj.getJSONObject("goal")
         val worldObj = obj.getJSONObject("world")
@@ -161,6 +162,7 @@ object AgentRunStore {
                 AgentRunPhase.valueOf(obj.optString("phase", "Done"))
             }.getOrDefault(AgentRunPhase.Done),
             runtimeTaskId = obj.optString("runtimeTaskId").takeIf { it.isNotBlank() },
+            executionTaskId = obj.optString("executionTaskId").takeIf { it.isNotBlank() },
             eventCount = obj.optInt("eventCount"),
             lastError = obj.optString("lastError").takeIf { it.isNotBlank() },
             success = if (obj.has("success") && !obj.isNull("success")) obj.optBoolean("success") else null

@@ -996,6 +996,9 @@ internal class ChatViewModel(
                 null
             }
         )
+        result.runtimeTaskId?.takeIf { it.isNotBlank() }?.let { executionTaskId ->
+            activeKernelRunId?.let { runId -> agentKernel.linkExecutionTask(runId, executionTaskId) }
+        }
         overviewController.applyToolSideEffects(result)
         if (result.captureArtifact != null) {
             dispatcher.rememberCapture(result.captureArtifact)

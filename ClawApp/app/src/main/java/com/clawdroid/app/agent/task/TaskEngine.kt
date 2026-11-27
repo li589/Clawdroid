@@ -4,6 +4,7 @@ import com.clawdroid.app.data.TaskStore
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.adapters.TaskCancellationAdapter
 import com.clawdroid.app.tools.adapters.TaskExecutionContext
+import com.clawdroid.app.tools.adapters.TaskResyncAdapter
 import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
 import java.util.concurrent.ConcurrentHashMap
@@ -125,6 +126,38 @@ class TaskEngine(
             )
             store.save(updated)
             eventBus.publish(TaskEvent(taskId, TaskState.Cancelled, "任务已取消"))
+        }
+    }
+
+    suspend fun restoreAll() {
+        val tasks = store.load().filterNot { TaskStateMachine.isTerminal(it.state) }
+        for (task in tasks) {
+            val runtimeTaskId = task.checkpoint.runtimeTaskId
+            if (runtimeTaskId != null) {
+                val snapshot = (adapters[StepKind.RuntimeTask] as? TaskResyncAdapter)?.resync(runtimeTaskId)
+                if (snapshot != null) {
+                    applyRuntimeSnapshot(snapshot)
+                    continue
+                }
+            }
+            val current = current(task.id) ?: continue
+            if (current.state == TaskState.Paused || current.state == TaskState.WaitingSignal) continue
+            val step = current.steps.getOrNull(current.checkpoint.nextStepIndex)
+            if (step?.sideEffectKey != null && step.id !in current.checkpoint.completedStepIds) {
+                update(task.id) {
+                    it.copy(
+                        state = TaskState.WaitingSignal,
+                        checkpoint = it.checkpoint.copy(waitingReason = "resume_confirmation_required"),
+                        updatedAtEpochMs = System.currentTimeMillis()
+                    )
+                }
+                eventBus.publish(TaskEvent(task.id, TaskState.WaitingSignal, "恢复前需要确认非幂等步骤"))
+                continue
+            }
+            val resumed = update(task.id) {
+                it.copy(state = TaskState.Running, updatedAtEpochMs = System.currentTimeMillis())
+            } ?: continue
+            if (activeTaskIds.add(resumed.id)) launchTask(resumed.id, alreadyActive = true)
         }
     }
 

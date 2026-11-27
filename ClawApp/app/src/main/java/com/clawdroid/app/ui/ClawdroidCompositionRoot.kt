@@ -156,6 +156,7 @@ internal fun rememberClawdroidCompositionRoot(
     }
     LaunchedEffect(toolDispatcher, taskEngine) {
         toolDispatcher.bindTaskEngine(taskEngine)
+        taskEngine.restoreAll()
     }
 
     DisposableEffect(overviewController, toolDispatcher) {
