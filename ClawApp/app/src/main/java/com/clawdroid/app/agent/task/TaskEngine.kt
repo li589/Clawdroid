@@ -23,6 +23,7 @@ class TaskEngine(
     private val mutex = Mutex()
     private val jobs = ConcurrentHashMap<String, Job>()
     private val activeTaskIds = ConcurrentHashMap.newKeySet<String>()
+    private val pausedTaskIds = ConcurrentHashMap.newKeySet<String>()
 
     val events: SharedFlow<TaskEvent>
         get() = eventBus.events()
@@ -46,6 +47,30 @@ class TaskEngine(
 
     fun restore(task: ExecutionTask) {
         store.save(task)
+    }
+
+    suspend fun pause(taskId: String) {
+        mutex.withLock {
+            val current = current(taskId) ?: return@withLock
+            if (TaskStateMachine.isTerminal(current.state)) return@withLock
+            pausedTaskIds.add(taskId)
+            val updated = current.copy(state = TaskState.Paused, updatedAtEpochMs = System.currentTimeMillis())
+            store.save(updated)
+            eventBus.publish(TaskEvent(taskId, TaskState.Paused, "任务已暂停"))
+        }
+    }
+
+    suspend fun resume(taskId: String) {
+        val resumed = mutex.withLock {
+            pausedTaskIds.remove(taskId)
+            val current = current(taskId) ?: return@withLock false
+            if (current.state != TaskState.Paused) return@withLock false
+            val updated = current.copy(state = TaskState.Running, updatedAtEpochMs = System.currentTimeMillis())
+            store.save(updated)
+            eventBus.publish(TaskEvent(taskId, TaskState.Running, "任务已恢复"))
+            true
+        }
+        if (resumed) launchTask(taskId)
     }
 
     fun current(taskId: String): ExecutionTask? =
@@ -125,6 +150,13 @@ class TaskEngine(
             ?: return
         var task = running
         while (task.checkpoint.nextStepIndex < task.steps.size) {
+            if (taskId in pausedTaskIds) {
+                update(taskId) {
+                    it.copy(state = TaskState.Paused, updatedAtEpochMs = System.currentTimeMillis())
+                }
+                eventBus.publish(TaskEvent(taskId, TaskState.Paused, "任务已暂停"))
+                return
+            }
             val step = task.steps[task.checkpoint.nextStepIndex]
             val attempts = (task.checkpoint.stepAttempts[step.id] ?: 0) + 1
             task = update(taskId) {

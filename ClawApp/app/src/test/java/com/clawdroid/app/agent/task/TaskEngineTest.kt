@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -74,6 +75,53 @@ class TaskEngineTest {
         val task = store.load().single()
         assertEquals(TaskState.WaitingSignal, task.state)
         assertEquals("rt-1", task.checkpoint.runtimeTaskId)
+    }
+
+    @Test
+    fun pauseStopsBeforeNextStepAndResumeContinues() = runTest {
+        val store = InMemoryTaskStore()
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val secondStarted = CompletableDeferred<Unit>()
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                if (step.id == "s1") {
+                    firstStarted.complete(Unit)
+                    releaseFirst.await()
+                } else {
+                    secondStarted.complete(Unit)
+                }
+                return TaskStepResult(true, step.title)
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to adapter), this)
+        engine.submit(
+            ExecutionTask(
+                "t1",
+                "demo",
+                "run",
+                listOf(
+                    ExecutionStep("s1", "one", StepKind.Tool),
+                    ExecutionStep("s2", "two", StepKind.Tool)
+                )
+            )
+        )
+        runCurrent()
+        assertTrue(firstStarted.isCompleted)
+
+        engine.pause("t1")
+        releaseFirst.complete(Unit)
+        advanceUntilIdle()
+
+        assertFalse(secondStarted.isCompleted)
+        assertEquals(TaskState.Paused, store.load().single().state)
+        engine.resume("t1")
+        advanceUntilIdle()
+        assertTrue(secondStarted.isCompleted)
+        assertEquals(TaskState.Succeeded, store.load().single().state)
     }
 
     @Test
