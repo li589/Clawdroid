@@ -30,6 +30,8 @@ Clawdroid Agent 是手机端 **Device Agent**：在能力画像约束下完成�
 | `AgentGoal` | 用户意图 + 成功标准 + 风险级 |
 | `AgentPlan` | 有序/可并行步骤（工具、子 Agent、等待 Runtime task） |
 | `AgentRun` | 一次执行实例：状态、预算钩子、关联 `task_id`、事件计数 |
+| `ExecutionTask` | 统一逻辑任务：步骤、attempt、Runtime 关联、检查点与失败诊断 |
+| `TaskCheckpoint` | 已完成步骤、下一步索引、步骤尝试次数、Runtime task ID 与等待原因 |
 | `AgentSession` | 跨多轮 Goal 的会话句柄（对齐聊天 `sessionId`） |
 | `WorldSnapshot` | 能力画像摘要 + Runtime session 摘要 + 事件流是否开启 |
 | `MemoryBundle` | working / episodic / semantic 检索拼装结果 |
@@ -60,6 +62,17 @@ stateDiagram-v2
 - `AwaitUser` 仅走 **App 内确认**（现有命令审核扩展），不是 Runtime 放行 IPC。
 - `AwaitRuntime` 对齐 `task_wait` / 事件跟踪 / detach 软状态。
 
+### 4.1 统一任务执行引擎
+
+`agent/task/TaskEngine` 是 App 内多步骤执行的唯一状态写入者：
+
+- 输入：`TaskCompiler` 从 Catalog Agent / `AgentPlan` 编译的 `ExecutionTask`。
+- 执行：`LocalToolAdapter`、`RuntimeTaskAdapter`、`AutomationAdapter` 分别承接本地工具、Runtime 子任务和页面自动化。
+- 生命周期：`Created → Queued → Running → WaitingSignal / Retrying / Paused → Succeeded / Failed / Cancelled`；终态不回退。
+- 恢复：`TaskStore` 保存检查点；Runtime 步骤按 task ID 重同步，本地步骤从 `nextStepIndex` 继续；未完成的非幂等步骤进入 `resume_confirmation_required`，由用户在任务中心明确确认继续。
+- 重试：手动重试创建新 attempt 并保留已完成步骤；步骤级自动重试仅接受 `retryable=true` 且无副作用键的失败，使用有界指数退避；超时步骤不会在副作用不确定时自动重放。
+- 投影：Chat 任务卡、任务中心和 Overview 只消费 `TaskEventBus` / `TaskStore`，不各自维护执行状态。
+
 ## 5. 运行时数据流（阶段 A）
 
 ```mermaid
@@ -70,12 +83,20 @@ flowchart TB
   planner[ChatPromptPlanner]
   loop[AgentToolLoopController]
   tools[ClawToolDispatcher]
+  compiler[TaskCompiler]
+  engine[TaskEngine]
+  taskStore[TaskStore]
   ui -->|"beginTurn"| kernel
   kernel --> mem
   kernel -->|"WorldSnapshot Policy Run"| ui
   ui --> planner
   planner --> loop
   loop --> tools
+  ui -->|"Catalog Agent"| compiler
+  compiler --> engine
+  engine --> tools
+  engine --> taskStore
+  engine -->|"TaskEventBus"| ui
   ui -->|"transition complete"| kernel
 ```
 
@@ -85,13 +106,13 @@ flowchart TB
 
 | 包 | 职责 |
 |----|------|
-| `agent/` | Session / Goal / Plan / Run / Policy / WorldSnapshot / Kernel |
+| `agent/` | Session / Goal / Plan / Run / Policy / WorldSnapshot / Kernel / `task` 统一执行引擎 |
 | `ai/` | 模型回合、工具环、LoopDetector、压缩、反思提示 |
 | `chat/` | 自然语言路由与提示拼装 |
 | `skills/` | Catalog Agent / Skill |
 | `tools/` | Dispatcher / Handlers / InputGuards |
 | `data/` | Store + `MemoryFacade` |
-| `ui/` | 观察 Run / 任务台 / 确认框；不实现长循环 |
+| `ui/` | 观察 Run / 任务中心 / 确认框；不实现长循环 |
 
 ## 7. 记忆
 
@@ -125,13 +146,14 @@ flowchart TB
 |------|------|------|
 | **A** | 本文档 + `agent` 内核骨架 + `MemoryFacade` + Chat 薄接线 + 单测 | 已落地 |
 | **B** | 结构化反思、Goal 级 App HITL、`AgentRunStore`、记忆策略产品化 | 本轮落地 |
-| **C** | Supervisor / Role Agent、任务台与 `task_*` 深同步、场景烟测 | 待办 |
+| **C** | Supervisor / Role Agent、任务台与 `task_*` 深同步、场景烟测 | 任务台与统一执行已落地；Supervisor / Role Agent 与真机场景烟测待办 |
 
 延后：OCR / 截图理解 / 端云小模型；Xposed 深度业务默开。
 
 ## 10. 相关文档
 
 - [architecture.md](architecture.md) §4
+- [task-execution-automation-design.md](task-execution-automation-design.md)
 - [下一步计划.md](下一步计划.md)
 - [基础方案设计.md](基础方案设计.md) §十 模型编排
 - `ClawApp/app/src/main/assets/claw/INDEX.md`

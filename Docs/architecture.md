@@ -44,6 +44,7 @@ flowchart TB
 ```
 
 - **工具唯一入口（产品路径）**：Chat / MCP → `ClawToolDispatcher` → `ToolHandler` → 域服务或 `ClawToolExecutor`。
+- **统一任务执行**：Catalog Agent 与本地多步流程经 `TaskCompiler` 编译为 `ExecutionTask`，由 `TaskEngine` 单写调度；Runtime 子任务、本地工具和自动化步骤通过适配器执行，检查点统一持久化到 `TaskStore`。
 - Overview 诊断卡可直连 `ClawToolExecutor` / Runtime，但**新功能**应优先走 Dispatcher，以便权限门与并发 lane 生效。
 - **输入校验分层**：Compose 输入框（长度/控制字符）→ Handler 层 `InputGuards`（路径/Shell/写文件大小）→ Runtime 白名单与文件桥。MCP `tools/call` 不经 AI 参数校验，必须依赖 Handler/`InputGuards`。
 - **Runtime 任务并行**：`task_submit` 受 `max_concurrent_tasks` / `max_inflight_tasks` 约束；事件 `task_state_changed` 含 `active_tasks`；shell 执行有 `job_id` 与有界 `shell_job_*` 监视；审计 JSONL 按体积轮转，服务日志 >5MB 轮转。
@@ -59,13 +60,14 @@ flowchart TB
 1. `ChatViewModel.submitPrompt` → `MemoryFacade` 索引/检索 → `AgentKernel.beginTurn`（Goal / Policy / Run）
 2. 可选 `ContextCompressor`（设置开关；压缩摘要写入 `MemoryGraphStore`）
 3. `ChatPromptPlanner`：有附图时走 AI 多模态路径；否则 规则任务 → `DirectCommandOrchestrator` → `AiAgentOrchestrator`
-4. 工具环：`AgentToolLoopController` + `ToolLoopDetector`
+4. Catalog Agent：`ClawAgentRunner` → `TaskCompiler` → `TaskEngine`；`TaskEventBus` 把同一份检查点投影到 Chat 任务卡、任务中心和 Overview
+5. 工具环：`AgentToolLoopController` + `ToolLoopDetector`
    - 连续失败 → 硬停
    - 无进展指纹 SoftWarn → **跳过执行**（合成「【系统】无进展」步骤，不调 `dispatcher.execute`）
    - 成功同参 → ReusePriorResult（注入摘要，不重跑）
-5. 会话级 `maxModelApiCalls`；耗尽后状态「等待发送继续」，用户发「继续」重置预算
-6. UI：`AgentRunEvent` 时间线（可折叠）；最终回复走 rich chat；`finishChat` 时 `AgentKernel.complete`
-7. `TASK_SUBMIT` 后仍可自动 await；模型亦可主动 `task_wait`；UI 停止/取消与 Runtime `task_cancel` 协同
+6. 会话级 `maxModelApiCalls`；耗尽后状态「等待发送继续」，用户发「继续」重置预算
+7. UI：`AgentRunEvent` 时间线（可折叠）；最终回复走 rich chat；`finishChat` 时 `AgentKernel.complete`
+8. `TASK_SUBMIT` 后仍可自动 await；模型亦可主动 `task_wait`；UI 停止/取消与 Runtime `task_cancel` 协同
 
 **附图（多模态）**：当前用户轮 OpenAI 兼容 `image_url` data URL / Anthropic `image` base64（编码器仍为 JPEG）；气泡可展示图/GIF/视频，`ChatHistoryStore` 可持久 `media` 元数据；送入模型的视觉载荷不进历史原文。Custom 路径明确拒绝视觉。
 
@@ -80,9 +82,11 @@ flowchart TB
 - **读超时**：App `ClawRuntimeIpcClient` 按动作设 `soTimeout`（默认对齐 health `request_timeout_ms`≈10s；`exec_shell_limited`≈`timeout_ms+2s`；`capture_screen`≈45s；inspect/task≈10–15s；事件流握手后 `soTimeout=0`）
 - **服务端 deadline**：处理 `exec_shell_limited` / `capture_screen` 前清除墙钟，结束后恢复，避免短于命令超时误杀
 
-## 6. 设置导航
+## 6. 导航与设置
 
-设置页为 **Hub → Category**（非第四底栏 Tab）：
+底部导航为 **概览 / 聊天 / 任务 / 设置**；任务中心展示活动任务、历史、步骤时间线、失败诊断和暂停/恢复/重试/取消操作。
+
+设置页为 **Hub → Category**：
 
 - 外观 / 模型接入 / Agent 与工具 / 提示词与 Skills / 协助 MCP / Termux 与 Shell / 运行诊断
 
@@ -104,4 +108,5 @@ Termux 与 Shell：`RUN_COMMAND` / Root 授权 / **坏容器清理**（`proot-di
 - [基础方案设计.md](基础方案设计.md) — 原则与长期路线
 - [threat-model.md](threat-model.md)
 - [assist-mcp.md](assist-mcp.md) / [xposed-adapters.md](xposed-adapters.md)
+- [task-execution-automation-design.md](task-execution-automation-design.md) — 统一任务引擎与自动化适配设计
 - 仓库根 [AGENTS.md](../AGENTS.md)

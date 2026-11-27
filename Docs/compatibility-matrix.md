@@ -66,7 +66,8 @@
 
 - `ClawRuntime/runtime`：`go test ./...` 已通过
 - `ClawRuntime`：`build-runtime.ps1`、`sync-shared-secret.ps1`、`build-magisk.ps1` 已通过
-- `ClawApp`：`:app:compileDebugKotlin` 与 `testDebugUnitTest` 已在本地 `JDK 17 + Gradle 8.13` 环境通过
+- `ClawApp`：`:app:compileDebugKotlin`、`:app:testDebugUnitTest`（414 项）、`:app:lintDebug`、`:app:assembleDebug` 与 `:app:assembleDebugAndroidTest` 已通过
+- 统一任务引擎：任务模型、检查点、Runtime 重同步、暂停/恢复、重试/取消、超时、观察融合、目标校验、TaskCenter/Chat/Overview 投影均有 JVM 回归覆盖
 - `v0.2`：已补齐 `session`、`events`、`capability_probe` 的纯逻辑回归测试，用于稳定性收口
 - `ClawRuntime/runtime`：`go test -race ./...`、`go vet ./...`、`GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/runtime` 已通过
 - `ClawRuntime/scripts`：51 个构建/打包回归测试通过；Runtime catalog 检查通过
@@ -117,11 +118,12 @@
 - 设备：Redmi 22041216C（`xaga`），Android `13` / MIUI `V130 (V13.2.3.0.TLOCNXM)`，1080×2460 / density 440。
 - Root：KernelSU / SukiSU Ultra（`com.sukisu.ultra`）；该方案通常不弹自动授权框，需在管理器手动允许 `com.clawdroid.app.debug`。
 - LSPosed：`zygisk_lsposed` 已安装；用户自有 LSPosed Fix（`com.lsposed.fix`）中 Clawdroid 已启用，作用域为 `com.clawdroid.app.debug` 自身 + `system`。重启后 marker 为 `xposed_injected=true`，`lsposed_runtime_loaded=true`。
-- App：`com.clawdroid.app.debug` / `0.1.0-debug`，APK SHA-256 `c0e6df750e2f45096af2f4dd42ba6cd88cfb5e74d9fca91103a7312943429408`。
+- App：`com.clawdroid.app.debug` / `0.1.0-debug`；Runtime 验收时 APK SHA-256 为 `c0e6df750e2f45096af2f4dd42ba6cd88cfb5e74d9fca91103a7312943429408`，统一任务引擎本轮 APK SHA-256 为 `188f45e0a91886ef2addcf5a14ef107b50f65b21a428889b7b0b8889bd1b02de`。
 - Runtime：模块 `clawruntime` / `0.2.0`，验收包 SHA-256 `4df7e23d1dd7aa17d734108d6ac64f8af50195a22ecacfb8e1d462c2ef183995`；`verify.sh` 23 项 PASS，`get_runtime_status.module.runtime_pid` 与真实进程一致。
 - 真实结果：Runtime Probe `Ready`；Capabilities 正常；截图 1080×2460 PNG 与文件桥读取成功；`exec_shell_limited("wm size")` 返回 `Physical size: 1080x2460`；continuous 事件订阅收到 daemon/capability/window 事件；聊天页任务列表、提交、查询通过，取消已完成任务正确返回 `[7002]`。
 - 本轮修复：首次 `ping` 在能力同步前被 2004 拒绝，根因是会话 capabilities 被初始化为非 nil 空切片；模块状态文件中的字符串 `runtime_pid` 未被解析。两项均补回归测试并真机复验。
 - 已知限制：无障碍服务和修改系统设置仍未授权；活跃任务取消与失败重试由 Go 单测/竞态测试覆盖，真机验证了取消接口及终态拒绝逻辑。
+- 统一任务引擎真机进度：本轮 APK 已安装并冷启动成功，无 Clawdroid 进程崩溃；设备仍处于 `MiuiKeyguardPictorialWallpaper` 锁屏遮挡状态，TaskCenter 导航、步骤时间线、暂停/恢复和自动化点击的可见交互未完成真机验收。
 
 ### 下一步扩展清单
 
