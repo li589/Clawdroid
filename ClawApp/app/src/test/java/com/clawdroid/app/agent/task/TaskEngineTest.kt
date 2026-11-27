@@ -2,6 +2,7 @@ package com.clawdroid.app.agent.task
 
 import com.clawdroid.app.data.InMemoryTaskStore
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
+import com.clawdroid.app.tools.adapters.TaskCancellationAdapter
 import com.clawdroid.app.tools.adapters.TaskExecutionContext
 import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
@@ -75,6 +76,68 @@ class TaskEngineTest {
         val task = store.load().single()
         assertEquals(TaskState.WaitingSignal, task.state)
         assertEquals("rt-1", task.checkpoint.runtimeTaskId)
+    }
+
+    @Test
+    fun retryCreatesNewAttemptAndKeepsCompletedSteps() = runTest {
+        val store = InMemoryTaskStore()
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult = if (context.attempt == 1) {
+                TaskStepResult(
+                    success = false,
+                    summary = "fail",
+                    failure = TaskFailure("temp", "retry", retryable = true)
+                )
+            } else {
+                TaskStepResult(true, "ok")
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to adapter), this)
+        engine.submit(ExecutionTask("t1", "demo", "run", listOf(ExecutionStep("s1", "one", StepKind.Tool))))
+        advanceUntilIdle()
+
+        engine.retry("t1")
+        advanceUntilIdle()
+
+        val task = store.load().single()
+        assertEquals(2, task.attempt)
+        assertEquals("t1", task.retryOf)
+        assertEquals(TaskState.Succeeded, task.state)
+    }
+
+    @Test
+    fun cancelIsSentOnceAndTaskBecomesCancelled() = runTest {
+        val store = InMemoryTaskStore()
+        var cancelCalls = 0
+        val adapter = object : TaskStepAdapter, TaskCancellationAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult = TaskStepResult(
+                success = false,
+                summary = "submitted",
+                runtimeTaskId = "rt-1",
+                waitReason = "runtime_task"
+            )
+
+            override suspend fun cancel(taskId: String): TaskStepResult {
+                cancelCalls++
+                return TaskStepResult(true, "cancelled")
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.RuntimeTask to adapter), this)
+        engine.submit(ExecutionTask("t1", "demo", "run", listOf(ExecutionStep("s1", "runtime", StepKind.RuntimeTask))))
+        advanceUntilIdle()
+
+        engine.cancel("t1")
+        engine.cancel("t1")
+        advanceUntilIdle()
+
+        assertEquals(1, cancelCalls)
+        assertEquals(TaskState.Cancelled, store.load().single().state)
     }
 
     @Test

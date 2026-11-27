@@ -21,3 +21,7 @@ data class TaskStepResult(
 interface TaskStepAdapter {
     suspend fun execute(step: ExecutionStep, context: TaskExecutionContext): TaskStepResult
 }
+
+interface TaskCancellationAdapter {
+    suspend fun cancel(taskId: String): TaskStepResult
+}

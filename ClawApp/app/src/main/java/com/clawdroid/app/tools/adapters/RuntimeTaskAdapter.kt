@@ -11,7 +11,7 @@ import org.json.JSONObject
 
 class RuntimeTaskAdapter(
     private val dispatcher: ClawToolDispatcher
-) : TaskStepAdapter {
+) : TaskStepAdapter, TaskCancellationAdapter {
     override suspend fun execute(step: ExecutionStep, context: TaskExecutionContext): TaskStepResult {
         val payload = step.payload.trim()
         if (payload.isBlank()) {
@@ -51,8 +51,19 @@ class RuntimeTaskAdapter(
         )
     }
 
-    suspend fun cancel(taskId: String): ClawToolCallResult =
-        dispatcher.execute(ClawTool.TASK_CANCEL, mapOf("task_id" to taskId))
+    override suspend fun cancel(taskId: String): TaskStepResult {
+        val result = dispatcher.execute(ClawTool.TASK_CANCEL, mapOf("task_id" to taskId))
+        return TaskStepResult(
+            success = result.success,
+            summary = result.output,
+            failure = if (result.success) null else TaskFailure(
+                code = result.error ?: "task_cancel_failed",
+                summary = result.output,
+                detail = result.output,
+                source = "runtime_task"
+            )
+        )
+    }
 
     suspend fun resync(taskId: String): ClawRuntimeTaskSnapshot? {
         val get = dispatcher.execute(ClawTool.TASK_GET, mapOf("task_id" to taskId))

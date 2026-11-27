@@ -2,6 +2,7 @@ package com.clawdroid.app.agent.task
 
 import com.clawdroid.app.data.TaskStore
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
+import com.clawdroid.app.tools.adapters.TaskCancellationAdapter
 import com.clawdroid.app.tools.adapters.TaskExecutionContext
 import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
@@ -24,6 +25,7 @@ class TaskEngine(
     private val jobs = ConcurrentHashMap<String, Job>()
     private val activeTaskIds = ConcurrentHashMap.newKeySet<String>()
     private val pausedTaskIds = ConcurrentHashMap.newKeySet<String>()
+    private val cancelledTaskIds = ConcurrentHashMap.newKeySet<String>()
 
     val events: SharedFlow<TaskEvent>
         get() = eventBus.events()
@@ -71,6 +73,59 @@ class TaskEngine(
             true
         }
         if (resumed) launchTask(taskId)
+    }
+
+    suspend fun retry(taskId: String) {
+        val retried = mutex.withLock {
+            val current = current(taskId) ?: return@withLock false
+            if (current.state != TaskState.Failed && current.state != TaskState.Cancelled) return@withLock false
+            if (jobs[taskId]?.isActive == true) return@withLock false
+            cancelledTaskIds.remove(taskId)
+            pausedTaskIds.remove(taskId)
+            val updated = current.copy(
+                state = TaskState.Queued,
+                attempt = current.attempt + 1,
+                retryOf = current.id,
+                checkpoint = current.checkpoint.copy(
+                    stepAttempts = current.checkpoint.stepAttempts.filterKeys { it in current.checkpoint.completedStepIds },
+                    waitingReason = null
+                ),
+                failure = null,
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+            store.save(updated)
+            eventBus.publish(TaskEvent(taskId, TaskState.Queued, "任务重试已排队"))
+            activeTaskIds.add(taskId)
+            true
+        }
+        if (retried) launchTask(taskId, alreadyActive = true)
+    }
+
+    suspend fun cancel(taskId: String) {
+        if (!cancelledTaskIds.add(taskId)) return
+        val runtimeTaskId = current(taskId)?.checkpoint?.runtimeTaskId
+        jobs[taskId]?.cancel(CancellationException("用户取消任务: $taskId"))
+        pausedTaskIds.remove(taskId)
+        if (runtimeTaskId != null) {
+            runCatching {
+                (adapters[StepKind.RuntimeTask] as? TaskCancellationAdapter)?.cancel(runtimeTaskId)
+            }
+        }
+        mutex.withLock {
+            val current = current(taskId) ?: return@withLock
+            if (TaskStateMachine.isTerminal(current.state)) return@withLock
+            val updated = current.copy(
+                state = TaskState.Cancelled,
+                failure = TaskFailure(
+                    code = "user_cancelled",
+                    summary = "任务已取消",
+                    source = "task_engine"
+                ),
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+            store.save(updated)
+            eventBus.publish(TaskEvent(taskId, TaskState.Cancelled, "任务已取消"))
+        }
     }
 
     fun current(taskId: String): ExecutionTask? =
