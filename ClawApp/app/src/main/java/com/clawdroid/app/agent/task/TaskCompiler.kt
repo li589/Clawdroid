@@ -4,6 +4,7 @@ import com.clawdroid.app.agent.AgentPlan
 import com.clawdroid.app.agent.AgentPlanStep
 import com.clawdroid.app.skills.AgentExecutionMode
 import com.clawdroid.app.skills.AgentRuntimeBridge
+import com.clawdroid.app.skills.AgentStepArguments
 import com.clawdroid.app.skills.ClawAgentDefinition
 import org.json.JSONObject
 
@@ -80,16 +81,23 @@ object TaskCompiler {
                 )
             )
         }
-        val plan = AgentPlan(
+        return ExecutionTask(
+            id = taskId,
+            title = agent.name,
+            originPrompt = agent.id,
             steps = agent.steps.mapIndexed { index, stepId ->
-                AgentPlanStep(
+                val payload = JSONObject().apply {
+                    put("tool", stepId)
+                    put("arguments", JSONObject(AgentStepArguments.forStep(stepId, arguments)))
+                }.toString()
+                ExecutionStep(
                     id = "${agent.id}-$index",
                     title = agent.stepTitles.getOrElse(index) { stepId },
-                    kind = AgentPlanStep.Kind.Tool,
-                    payload = stepId
+                    kind = StepKind.Tool,
+                    payload = payload,
+                    sideEffectKey = "$taskId:$stepId"
                 )
             }
         )
-        return fromAgentPlan(taskId, agent.name, plan, originPrompt = agent.id)
     }
 }

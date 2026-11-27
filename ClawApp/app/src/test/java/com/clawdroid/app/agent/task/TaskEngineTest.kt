@@ -9,6 +9,8 @@ import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -54,6 +56,34 @@ class TaskEngineTest {
     }
 
     @Test
+    fun publishesStepStartAndCompletionEvents() = runTest {
+        val store = InMemoryTaskStore()
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult = TaskStepResult(true, step.title)
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to adapter), this)
+        val messages = mutableListOf<String>()
+        val collector = launch { engine.events.collect { messages += it.message } }
+
+        engine.submit(
+            ExecutionTask(
+                "t1",
+                "demo",
+                "run",
+                listOf(ExecutionStep("s1", "one", StepKind.Tool))
+            )
+        )
+        advanceUntilIdle()
+        collector.cancel()
+
+        assertTrue(messages.any { it == "步骤开始: one" })
+        assertTrue(messages.any { it == "步骤完成: one" })
+    }
+
+    @Test
     fun stepResultDataIsPersistedInCheckpoint() = runTest {
         val store = InMemoryTaskStore()
         val adapter = object : TaskStepAdapter {
@@ -72,6 +102,118 @@ class TaskEngineTest {
         advanceUntilIdle()
 
         assertEquals("token-1", store.load().single().checkpoint.data["resolution_token"])
+    }
+
+    @Test
+    fun retryableStepFailureRetriesWithinPolicy() = runTest {
+        val store = InMemoryTaskStore()
+        var calls = 0
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                calls += 1
+                return if (calls == 1) {
+                    TaskStepResult(
+                        success = false,
+                        summary = "temporary",
+                        failure = TaskFailure("temporary", "临时失败", retryable = true)
+                    )
+                } else {
+                    TaskStepResult(true, "ok")
+                }
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to adapter), this)
+
+        engine.submit(
+            ExecutionTask(
+                "t1",
+                "demo",
+                "run",
+                listOf(
+                    ExecutionStep(
+                        "s1",
+                        "one",
+                        StepKind.Tool,
+                        retry = StepRetryPolicy(maxAttempts = 2, initialDelayMs = 10)
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(2, calls)
+        assertEquals(TaskState.Succeeded, store.load().single().state)
+        assertEquals(2, store.load().single().checkpoint.stepAttempts["s1"])
+    }
+
+    @Test
+    fun stepTimeoutFailsTaskWithoutLeakingActiveState() = runTest {
+        val store = InMemoryTaskStore()
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                delay(1_000)
+                return TaskStepResult(true, "too late")
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to adapter), this)
+
+        engine.submit(
+            ExecutionTask(
+                "t1",
+                "demo",
+                "run",
+                listOf(ExecutionStep("s1", "one", StepKind.Tool, timeoutMs = 10))
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(TaskState.Failed, store.load().single().state)
+        assertEquals("step_timeout", store.load().single().failure?.code)
+    }
+
+    @Test
+    fun sideEffectingStepTimeoutDoesNotAutoRetry() = runTest {
+        val store = InMemoryTaskStore()
+        var calls = 0
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                calls += 1
+                delay(1_000)
+                return TaskStepResult(true, "too late")
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.SafeTap to adapter), this)
+
+        engine.submit(
+            ExecutionTask(
+                "t1",
+                "demo",
+                "run",
+                listOf(
+                    ExecutionStep(
+                        "s1",
+                        "tap",
+                        StepKind.SafeTap,
+                        timeoutMs = 10,
+                        sideEffectKey = "tap-1",
+                        retry = StepRetryPolicy(maxAttempts = 3, initialDelayMs = 1)
+                    )
+                )
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(1, calls)
+        assertEquals(TaskState.Failed, store.load().single().state)
     }
 
     @Test
@@ -255,6 +397,117 @@ class TaskEngineTest {
         advanceUntilIdle()
         assertTrue(secondStarted.isCompleted)
         assertEquals(TaskState.Succeeded, store.load().single().state)
+    }
+
+    @Test
+    fun resumeWaitingRuntimeTaskDoesNotResubmitStep() = runTest {
+        val store = InMemoryTaskStore()
+        var executeCalls = 0
+        var resyncCalls = 0
+        val runtime = object : TaskStepAdapter, TaskResyncAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                executeCalls += 1
+                return TaskStepResult(
+                    success = false,
+                    summary = "submitted",
+                    runtimeTaskId = "rt-1",
+                    waitReason = "runtime_task"
+                )
+            }
+
+            override suspend fun resync(taskId: String): ClawRuntimeTaskSnapshot {
+                resyncCalls += 1
+                return ClawRuntimeTaskSnapshot(taskId = taskId, state = "Running")
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.RuntimeTask to runtime), this)
+        engine.submit(
+            ExecutionTask(
+                "t1",
+                "demo",
+                "run",
+                listOf(ExecutionStep("s1", "runtime", StepKind.RuntimeTask))
+            )
+        )
+        advanceUntilIdle()
+
+        engine.pause("t1")
+        engine.resume("t1")
+        advanceUntilIdle()
+
+        assertEquals(1, executeCalls)
+        assertEquals(1, resyncCalls)
+        assertEquals(TaskState.WaitingSignal, store.load().single().state)
+        assertEquals("rt-1", store.load().single().checkpoint.runtimeTaskId)
+    }
+
+    @Test
+    fun explicitResumeConfirmationRunsPendingSideEffectingStep() = runTest {
+        val store = InMemoryTaskStore()
+        var calls = 0
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                calls += 1
+                return TaskStepResult(true, "confirmed")
+            }
+        }
+        store.save(
+            ExecutionTask(
+                id = "t1",
+                title = "tap",
+                originPrompt = "run",
+                steps = listOf(
+                    ExecutionStep("s1", "tap", StepKind.SafeTap, sideEffectKey = "tap-1")
+                ),
+                state = TaskState.WaitingSignal,
+                checkpoint = TaskCheckpoint(waitingReason = "resume_confirmation_required")
+            )
+        )
+        val engine = TaskEngine(store, mapOf(StepKind.SafeTap to adapter), this)
+
+        engine.resume("t1")
+        advanceUntilIdle()
+
+        assertEquals(1, calls)
+        assertEquals(TaskState.Succeeded, store.load().single().state)
+    }
+
+    @Test
+    fun runtimeWaitingSignalCannotBeResumedAsLocalStep() = runTest {
+        val store = InMemoryTaskStore()
+        var calls = 0
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                calls += 1
+                return TaskStepResult(true, "unexpected")
+            }
+        }
+        store.save(
+            ExecutionTask(
+                id = "t1",
+                title = "runtime",
+                originPrompt = "run",
+                steps = listOf(ExecutionStep("s1", "runtime", StepKind.RuntimeTask)),
+                state = TaskState.WaitingSignal,
+                checkpoint = TaskCheckpoint(runtimeTaskId = "rt-1", waitingReason = "runtime_task")
+            )
+        )
+        val engine = TaskEngine(store, mapOf(StepKind.RuntimeTask to adapter), this)
+
+        engine.resume("t1")
+        advanceUntilIdle()
+
+        assertEquals(0, calls)
+        assertEquals(TaskState.WaitingSignal, store.load().single().state)
     }
 
     @Test

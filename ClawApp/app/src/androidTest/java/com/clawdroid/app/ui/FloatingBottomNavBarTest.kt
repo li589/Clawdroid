@@ -31,6 +31,7 @@ class FloatingBottomNavBarTest {
 
         composeRule.onNodeWithText("概览").assertIsDisplayed().assertHasClickAction()
         composeRule.onNodeWithText("聊天").assertIsDisplayed().assertHasClickAction()
+        composeRule.onNodeWithText("任务").assertIsDisplayed().assertHasClickAction()
         composeRule.onNodeWithText("设置").assertIsDisplayed().assertHasClickAction().performClick()
         composeRule.runOnIdle { assertEquals(ConsolePage.Settings, selected) }
     }

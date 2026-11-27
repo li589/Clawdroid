@@ -3,6 +3,7 @@ package com.clawdroid.app.agent.task
 import com.clawdroid.app.agent.AgentPlan
 import com.clawdroid.app.agent.AgentPlanStep
 import com.clawdroid.app.skills.ClawAgentCatalog
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,6 +32,24 @@ class TaskCompilerTest {
 
         assertEquals(StepKind.RuntimeTask, task.steps.single().kind)
         assertTrue(task.steps.single().payload.contains("get_capabilities"))
+    }
+
+    @Test
+    fun inAppAgentPreservesToolArguments() {
+        val agent = requireNotNull(ClawAgentCatalog.byId("swipe_then_capture"))
+
+        val task = requireNotNull(
+            TaskCompiler.fromAgentDefinition(
+                "t1",
+                agent,
+                mapOf("x1" to 100, "y1" to 200, "x2" to 300, "y2" to 400)
+            )
+        )
+        val payload = JSONObject(task.steps.first().payload)
+
+        assertEquals("inject_swipe", payload.getString("tool"))
+        assertEquals(100, payload.getJSONObject("arguments").getInt("x1"))
+        assertEquals(400, payload.getJSONObject("arguments").getInt("y2"))
     }
 
     @Test

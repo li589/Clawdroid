@@ -13,6 +13,7 @@ import com.clawdroid.app.automation.LsposedViewObservationSource
 import com.clawdroid.app.automation.ObservationPort
 import com.clawdroid.app.agent.task.StepKind
 import com.clawdroid.app.agent.task.TaskEngine
+import com.clawdroid.app.agent.task.TaskStateMachine
 import com.clawdroid.app.data.AppSettingsStore
 import com.clawdroid.app.data.JsonTaskStore
 import com.clawdroid.app.data.SharedPreferencesTaskStorage
@@ -34,6 +35,8 @@ import com.clawdroid.app.tools.ToolServiceRegistry
 import com.clawdroid.app.tools.adapters.AutomationAdapter
 import com.clawdroid.app.tools.adapters.LocalToolAdapter
 import com.clawdroid.app.tools.adapters.RuntimeTaskAdapter
+import com.clawdroid.app.ui.task.TaskCenterViewModel
+import com.clawdroid.app.ui.task.rememberTaskCenterViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,6 +56,7 @@ internal data class ClawdroidGraph(
     val mcpController: McpServerController,
     val overviewController: OverviewController,
     val chatViewModel: ChatViewModel,
+    val taskCenterViewModel: TaskCenterViewModel,
     val settingsViewModel: SettingsViewModel,
     val navigationViewModel: NavigationViewModel
 )
@@ -176,7 +180,13 @@ internal fun rememberClawdroidCompositionRoot(
     LaunchedEffect(toolDispatcher, taskEngine) {
         toolDispatcher.bindTaskEngine(taskEngine)
         taskEngine.restoreAll()
+        overviewController.updateActiveExecution(
+            taskEngine.store.load()
+                .filterNot { TaskStateMachine.isTerminal(it.state) }
+                .maxByOrNull { it.updatedAtEpochMs }
+        )
     }
+    val taskCenterViewModel = rememberTaskCenterViewModel(taskEngine)
 
     DisposableEffect(overviewController, toolDispatcher) {
         overviewController.setCaptureArtifactListener { artifact ->
@@ -188,6 +198,16 @@ internal fun rememberClawdroidCompositionRoot(
     }
 
     val chatViewModel = rememberChatViewModel(context, overviewController, toolDispatcher, taskEngine)
+    LaunchedEffect(taskEngine, chatViewModel, overviewController) {
+        taskEngine.events.collect { event ->
+            val tasks = taskEngine.store.load()
+            overviewController.updateActiveExecution(
+                tasks.filterNot { TaskStateMachine.isTerminal(it.state) }
+                    .maxByOrNull { it.updatedAtEpochMs }
+            )
+            tasks.firstOrNull { it.id == event.taskId }?.let(chatViewModel::onExecutionTaskEvent)
+        }
+    }
     DisposableEffect(overviewController, chatViewModel, taskEngine) {
         overviewController.setRuntimeTaskEventListener { snapshot ->
             chatViewModel.onRuntimeTaskEvent(snapshot)
@@ -227,6 +247,7 @@ internal fun rememberClawdroidCompositionRoot(
         mcpController = mcpController,
         overviewController = overviewController,
         chatViewModel = chatViewModel,
+        taskCenterViewModel = taskCenterViewModel,
         settingsViewModel = settingsViewModel,
         navigationViewModel = navigationViewModel
     )

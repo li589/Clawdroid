@@ -46,6 +46,14 @@ internal fun LazyListScope.statusOverviewScreen(
             )
         }
     }
+    runtimeState.activeExecution?.let { execution ->
+        item(key = "active-execution") {
+            StatusCard(
+                title = "当前任务",
+                content = "${execution.title}\n${execution.status} · ${execution.summary}"
+            )
+        }
+    }
     item(key = "basic-permissions") {
         BasicPermissionsCard(
             status = permissionState.localEnvironmentStatus,

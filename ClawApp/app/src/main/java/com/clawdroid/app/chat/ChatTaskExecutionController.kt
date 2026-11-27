@@ -1,6 +1,9 @@
 package com.clawdroid.app.chat
 
 import android.content.Context
+import com.clawdroid.app.agent.task.ExecutionTask
+import com.clawdroid.app.agent.task.TaskEngine
+import com.clawdroid.app.agent.task.TaskState
 import com.clawdroid.app.data.ChatTaskHistoryStore
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.ClawTool
@@ -25,6 +28,7 @@ internal class ChatTaskExecutionController(
     private val appContext: Context,
     private val scope: CoroutineScope,
     private val toolDispatcher: ClawToolDispatcher?,
+    private val taskEngine: TaskEngine?,
     private val getState: () -> ChatUiState,
     private val updateState: ((ChatUiState) -> ChatUiState) -> Unit,
     private val getCurrentTaskJob: () -> Job?,
@@ -39,6 +43,9 @@ internal class ChatTaskExecutionController(
                 taskExecution = restoredCurrent,
                 taskHistory = persistedState.taskHistory.take(MAX_TASK_HISTORY_ITEMS)
             )
+        }
+        restoredCurrent?.executionTaskId?.let { executionTaskId ->
+            taskEngine?.current(executionTaskId)?.let(::applyExecutionTask)
         }
         val runtimeTaskId = restoredCurrent
             ?.takeIf { it.status == ChatTaskProgressState.Running }
@@ -122,6 +129,15 @@ internal class ChatTaskExecutionController(
         val runningTask = getState().taskExecution
             ?.takeIf { it.status == ChatTaskProgressState.Running }
             ?: return
+        val executionTaskId = runningTask.executionTaskId
+        if (executionTaskId != null) {
+            getCurrentTaskJob()?.cancel(CancellationException("用户取消任务: ${runningTask.title}"))
+            scope.launch {
+                taskEngine?.cancel(executionTaskId)
+                cancelTaskExecution("任务已取消：已停止统一任务 $executionTaskId。")
+            }
+            return
+        }
         val runtimeTaskId = runningTask.runtimeTaskId
         getCurrentTaskJob()?.cancel(
             CancellationException("用户取消任务：${runningTask.title}")
@@ -160,6 +176,49 @@ internal class ChatTaskExecutionController(
             } finally {
                 RuntimeTaskPoller.forgetCancelled(runtimeTaskId)
             }
+        }
+    }
+
+    fun trackExecutionTask(taskId: String) {
+        updateTaskExecution { it.copy(executionTaskId = taskId) }
+    }
+
+    fun applyExecutionTask(task: ExecutionTask) {
+        val current = getState().taskExecution ?: return
+        if (current.executionTaskId != task.id) return
+        val status = when (task.state) {
+            TaskState.Succeeded -> ChatTaskProgressState.Succeeded
+            TaskState.Failed -> ChatTaskProgressState.Failed
+            TaskState.Cancelled -> ChatTaskProgressState.Cancelled
+            else -> ChatTaskProgressState.Running
+        }
+        updateTaskExecution {
+            it.copy(
+                title = task.title,
+                summary = when (task.state) {
+                    TaskState.Retrying -> "等待重试"
+                    TaskState.WaitingSignal -> when (task.checkpoint.waitingReason) {
+                        "resume_confirmation_required" -> "恢复前需要确认非幂等步骤"
+                        "runtime_task" -> "等待 Runtime 任务"
+                        else -> task.checkpoint.waitingReason ?: "等待中"
+                    }
+                    else -> task.failure?.summary ?: "状态: ${task.state}"
+                },
+                status = status,
+                steps = task.steps.map { step ->
+                    val stepStatus = when {
+                        step.id in task.checkpoint.completedStepIds -> ChatTaskProgressState.Succeeded
+                        task.checkpoint.nextStepIndex < task.steps.size &&
+                            task.steps[task.checkpoint.nextStepIndex].id == step.id -> ChatTaskProgressState.Running
+                        else -> ChatTaskProgressState.Pending
+                    }
+                    ChatTaskStepState(step.title, stepStatus)
+                },
+                finishedAtEpochMs = if (status == ChatTaskProgressState.Running) 0L else System.currentTimeMillis(),
+                failure = task.failure?.let { failure ->
+                    ChatTaskFailureState(failure.code, failure.summary, failure.detail)
+                }
+            )
         }
     }
 
@@ -241,8 +300,10 @@ internal class ChatTaskExecutionController(
                 setCurrentTaskJob(null)
             }
         }
-        val previousRuntimeTaskId = getState().taskExecution
+        val previousTask = getState().taskExecution
             ?.takeIf { it.status == ChatTaskProgressState.Running }
+        previousTask?.executionTaskId?.takeIf { it.isNotBlank() }?.let(::requestCancelExecutionTask)
+        val previousRuntimeTaskId = previousTask
             ?.runtimeTaskId
             ?.takeIf { it.isNotBlank() }
         if (!previousRuntimeTaskId.isNullOrBlank()) {
@@ -503,6 +564,12 @@ internal class ChatTaskExecutionController(
     private fun bindRuntimeTaskId(runtimeTaskId: String) {
         updateTaskExecution { task ->
             task.copy(runtimeTaskId = runtimeTaskId)
+        }
+    }
+
+    private fun requestCancelExecutionTask(taskId: String) {
+        scope.launch {
+            taskEngine?.cancel(taskId)
         }
     }
 

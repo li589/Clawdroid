@@ -1,7 +1,11 @@
 package com.clawdroid.app.ui.task
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clawdroid.app.agent.task.ExecutionTask
 import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.agent.task.TaskEventBus
@@ -38,7 +42,9 @@ internal class TaskCenterViewModel(
     }
 
     fun select(taskId: String) {
-        _uiState.update { it.copy(selectedTaskId = taskId) }
+        _uiState.update {
+            it.copy(selectedTaskId = taskId.takeUnless { selected -> selected == it.selectedTaskId })
+        }
     }
 
     fun pause(taskId: String) = viewModelScope.launch { engine.pause(taskId) }
@@ -58,4 +64,18 @@ internal class TaskCenterViewModel(
             )
         }
     }
+}
+
+@Composable
+internal fun rememberTaskCenterViewModel(engine: TaskEngine): TaskCenterViewModel {
+    val factory = remember(engine) {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass.isAssignableFrom(TaskCenterViewModel::class.java))
+                return TaskCenterViewModel(engine.store, engine.eventBus, engine) as T
+            }
+        }
+    }
+    return viewModel(factory = factory)
 }

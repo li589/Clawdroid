@@ -228,6 +228,7 @@ internal object ChatTaskHistoryStore {
             originPrompt = ChatTextLimits.truncateForPersist(item.optString("origin_prompt")),
             retryCount = item.optInt("retry_count", 0),
             retryFromTaskId = item.optString("retry_from_task_id").takeIf { it.isNotBlank() },
+            executionTaskId = item.optString("execution_task_id").takeIf { it.isNotBlank() },
             failure = item.optJSONObject("failure")?.let { failureItem ->
                 val code = failureItem.optString("code")
                 val summary = ChatTextLimits.truncateForPersist(failureItem.optString("summary"))
@@ -288,6 +289,7 @@ internal object ChatTaskHistoryStore {
             put("origin_prompt", ChatTextLimits.truncateForPersist(task.originPrompt))
             put("retry_count", task.retryCount)
             put("retry_from_task_id", task.retryFromTaskId ?: "")
+            put("execution_task_id", task.executionTaskId ?: "")
         }
     }
 }

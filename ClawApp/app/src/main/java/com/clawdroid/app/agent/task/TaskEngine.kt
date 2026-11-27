@@ -11,16 +11,19 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.withLock
 
 class TaskEngine(
-    private val store: TaskStore,
+    internal val store: TaskStore,
     private val adapters: Map<StepKind, TaskStepAdapter>,
     private val scope: CoroutineScope,
-    private val eventBus: TaskEventBus = MutableTaskEventBus()
+    internal val eventBus: TaskEventBus = MutableTaskEventBus()
 ) {
     private val mutex = Mutex()
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -64,16 +67,38 @@ class TaskEngine(
     }
 
     suspend fun resume(taskId: String) {
-        val resumed = mutex.withLock {
+        val (resumed, runtimeTaskId) = mutex.withLock {
             pausedTaskIds.remove(taskId)
-            val current = current(taskId) ?: return@withLock false
-            if (current.state != TaskState.Paused) return@withLock false
-            val updated = current.copy(state = TaskState.Running, updatedAtEpochMs = System.currentTimeMillis())
+            val current = current(taskId) ?: return@withLock false to null
+            val confirmedRecovery = current.state == TaskState.WaitingSignal &&
+                current.checkpoint.waitingReason == "resume_confirmation_required"
+            if (current.state != TaskState.Paused && !confirmedRecovery) return@withLock false to null
+            val currentStep = current.steps.getOrNull(current.checkpoint.nextStepIndex)
+            val waitingOnRuntime = currentStep?.kind == StepKind.RuntimeTask &&
+                current.checkpoint.runtimeTaskId != null
+            val state = if (waitingOnRuntime) TaskState.WaitingSignal else TaskState.Running
+            val updated = current.copy(
+                state = state,
+                checkpoint = if (waitingOnRuntime) {
+                    current.checkpoint
+                } else {
+                    current.checkpoint.copy(waitingReason = null)
+                },
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
             store.save(updated)
-            eventBus.publish(TaskEvent(taskId, TaskState.Running, "任务已恢复"))
-            true
+            eventBus.publish(TaskEvent(taskId, state, "任务已恢复"))
+            true to current.checkpoint.runtimeTaskId.takeIf { waitingOnRuntime }
         }
-        if (resumed) launchTask(taskId)
+        when {
+            !resumed -> Unit
+            runtimeTaskId != null -> {
+                val snapshot = (adapters[StepKind.RuntimeTask] as? TaskResyncAdapter)
+                    ?.resync(runtimeTaskId)
+                if (snapshot != null) applyRuntimeSnapshot(snapshot)
+            }
+            else -> launchTask(taskId)
+        }
     }
 
     suspend fun retry(taskId: String) {
@@ -132,15 +157,16 @@ class TaskEngine(
     suspend fun restoreAll() {
         val tasks = store.load().filterNot { TaskStateMachine.isTerminal(it.state) }
         for (task in tasks) {
-            val runtimeTaskId = task.checkpoint.runtimeTaskId
-            if (runtimeTaskId != null) {
+            val current = current(task.id) ?: continue
+            val currentStep = current.steps.getOrNull(current.checkpoint.nextStepIndex)
+            val runtimeTaskId = current.checkpoint.runtimeTaskId
+            if (currentStep?.kind == StepKind.RuntimeTask && runtimeTaskId != null) {
                 val snapshot = (adapters[StepKind.RuntimeTask] as? TaskResyncAdapter)?.resync(runtimeTaskId)
                 if (snapshot != null) {
                     applyRuntimeSnapshot(snapshot)
                     continue
                 }
             }
-            val current = current(task.id) ?: continue
             if (current.state == TaskState.Paused || current.state == TaskState.WaitingSignal) continue
             val step = current.steps.getOrNull(current.checkpoint.nextStepIndex)
             if (step?.sideEffectKey != null && step.id !in current.checkpoint.completedStepIds) {
@@ -218,7 +244,11 @@ class TaskEngine(
                     updatedAtEpochMs = System.currentTimeMillis()
                 )
                 else -> task.copy(
-                    state = if (task.state == TaskState.Paused) TaskState.Paused else TaskState.Running,
+                    state = when (task.state) {
+                        TaskState.Paused -> TaskState.Paused
+                        TaskState.WaitingSignal -> TaskState.WaitingSignal
+                        else -> TaskState.Running
+                    },
                     checkpoint = task.checkpoint.copy(runtimeTaskId = snapshot.taskId),
                     updatedAtEpochMs = System.currentTimeMillis()
                 )
@@ -257,11 +287,28 @@ class TaskEngine(
                     updatedAtEpochMs = System.currentTimeMillis()
                 )
             } ?: return
+            eventBus.publish(TaskEvent(taskId, TaskState.Running, "步骤开始: ${step.title}"))
             val context = TaskExecutionContext(task.id, task.attempt, task.checkpoint)
             val result = try {
                 val adapter = adapters[step.kind]
                     ?: return fail(task.id, TaskFailure("adapter_missing", "缺少步骤适配器: ${step.kind}", source = step.kind.name))
-                adapter.execute(step, context)
+                if (step.timeoutMs > 0L) {
+                    withTimeout(step.timeoutMs) { adapter.execute(step, context) }
+                } else {
+                    adapter.execute(step, context)
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                TaskStepResult(
+                    success = false,
+                    summary = "步骤执行超时: ${step.title}",
+                    failure = TaskFailure(
+                        code = "step_timeout",
+                        summary = "步骤执行超时",
+                        detail = "timeout_ms=${step.timeoutMs}",
+                        retryable = step.sideEffectKey == null,
+                        source = step.kind.name
+                    )
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -293,7 +340,24 @@ class TaskEngine(
             }
 
             if (!result.success) {
-                fail(taskId, result.failure ?: TaskFailure("step_failed", result.summary, source = step.kind.name))
+                val failure = result.failure
+                    ?: TaskFailure("step_failed", result.summary, source = step.kind.name)
+                val canRetry = failure.retryable &&
+                    step.sideEffectKey == null &&
+                    attempts < step.retry.maxAttempts.coerceAtLeast(0)
+                if (canRetry && taskId !in pausedTaskIds) {
+                    update(taskId) {
+                        it.copy(
+                            state = TaskState.Retrying,
+                            failure = failure,
+                            updatedAtEpochMs = System.currentTimeMillis()
+                        )
+                    }
+                    eventBus.publish(TaskEvent(taskId, TaskState.Retrying, "等待重试: ${step.title}"))
+                    delay(retryDelayMs(step.retry, attempts))
+                    continue
+                }
+                fail(taskId, failure)
                 return
             }
 
@@ -323,6 +387,14 @@ class TaskEngine(
             activeTaskIds.remove(taskId)
             jobs.remove(taskId)
         }
+    }
+
+    private fun retryDelayMs(policy: StepRetryPolicy, attempt: Int): Long {
+        val initial = policy.initialDelayMs.coerceAtLeast(0L)
+        val maximum = policy.maxDelayMs.coerceAtLeast(0L)
+        if (initial == 0L || maximum == 0L) return 0L
+        val multiplier = 1L shl (attempt - 1).coerceIn(0, 30)
+        return if (initial > maximum / multiplier) maximum else minOf(maximum, initial * multiplier)
     }
 
     private suspend fun fail(taskId: String, failure: TaskFailure) {

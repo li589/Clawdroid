@@ -69,6 +69,12 @@ internal data class OverviewAutomationActions(
     val onExecuteSafeTap: () -> Unit
 )
 
+internal data class OverviewExecutionSummary(
+    val title: String,
+    val status: String,
+    val summary: String
+)
+
 internal data class OverviewRuntimeState(
     val latestDaemonMetrics: String,
     val latestRuntimeProcessMetrics: String,
@@ -91,7 +97,8 @@ internal data class OverviewRuntimeState(
     val runtimeTasks: List<ClawRuntimeTaskSnapshot> = emptyList(),
     val runtimeTasksStatus: String = "尚未刷新 Runtime 任务",
     /** App ↔ Magisk Runtime version/action alignment banner (empty when unknown/ok display optional). */
-    val compatBanner: String = ""
+    val compatBanner: String = "",
+    val activeExecution: OverviewExecutionSummary? = null
 )
 
 internal data class SessionInfo(

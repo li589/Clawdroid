@@ -38,5 +38,6 @@ internal data class ChatTaskExecutionState(
     val originPrompt: String = "",
     val retryCount: Int = 0,
     val retryFromTaskId: String? = null,
-    val failure: ChatTaskFailureState? = null
+    val failure: ChatTaskFailureState? = null,
+    val executionTaskId: String? = null
 )

@@ -1,5 +1,7 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.agent.task.ExecutionTask
+import com.clawdroid.app.agent.task.TaskState
 import com.clawdroid.app.runtime.ClawRuntimeConnectionState
 import io.mockk.coEvery
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -14,6 +16,32 @@ import org.junit.Test
 class OverviewControllerRuntimeActionsTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @Test
+    fun unifiedTaskUpdatesOverviewSummaryAndTerminalClearsIt() = runTest {
+        val controller = OverviewController(
+            appContext = createAppContextMock(),
+            runtimeClient = createRuntimeClientMock(),
+            toolExecutor = createToolExecutorMock(),
+            previewLimitBytes = 1024,
+            autoStart = false
+        )
+        val task = ExecutionTask(
+            id = "t1",
+            title = "页面点击",
+            originPrompt = "点击继续",
+            steps = emptyList(),
+            state = TaskState.Running,
+            checkpoint = com.clawdroid.app.agent.task.TaskCheckpoint(waitingReason = "runtime_task")
+        )
+
+        controller.updateActiveExecution(task)
+        assertEquals("页面点击", controller.uiState.value.runtimeState.activeExecution?.title)
+        assertEquals("runtime_task", controller.uiState.value.runtimeState.activeExecution?.summary)
+
+        controller.updateActiveExecution(task.copy(state = TaskState.Succeeded))
+        assertEquals(null, controller.uiState.value.runtimeState.activeExecution)
+    }
 
     @Test
     fun probeSessionUpdatesSummaryAndSessionSnapshot() = runTest {

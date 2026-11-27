@@ -53,6 +53,18 @@ class ClawAgentRunnerTest {
     }
 
     @Test
+    fun inAppAgentUsesTaskEngineWhenProvided() = runTest {
+        val dispatcher = ClawToolDispatcher(mockk(relaxed = true))
+        val engine = mockk<TaskEngine>(relaxed = true)
+        val runner = ClawAgentRunner(dispatcher, taskEngine = engine)
+
+        val result = runner.run("probe_then_capabilities")
+
+        assertTrue(result.success)
+        coVerify(exactly = 1) { engine.submit(match { it.title == "运行时状态检查" }) }
+    }
+
+    @Test
     fun confirmThenSafeTapUsesTaskEngineWhenProvided() = runTest {
         val dispatcher = ClawToolDispatcher(mockk(relaxed = true))
         val engine = mockk<TaskEngine>(relaxed = true)

@@ -44,6 +44,7 @@ import com.clawdroid.app.mcp.assist.AssistMcpController
 import com.clawdroid.app.runtime.ClawRuntimeClient
 import com.clawdroid.app.tools.ClawToolExecutor
 import com.clawdroid.app.tools.LiveToolCapabilityStore
+import com.clawdroid.app.ui.task.TaskCenterScreen
 
 private val floatingNavPillHeight = 68.dp
 private val floatingNavGap = 2.dp
@@ -65,12 +66,14 @@ internal fun ClawdroidShell(
     )
     val overviewController = graph.overviewController
     val chatViewModel = graph.chatViewModel
+    val taskCenterViewModel = graph.taskCenterViewModel
     val settingsViewModel = graph.settingsViewModel
     val navigationViewModel = graph.navigationViewModel
     val assistController = graph.assistController
     val mcpController = graph.mcpController
 
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val taskCenterUiState by taskCenterViewModel.uiState.collectAsStateWithLifecycle()
     val navigationUiState by navigationViewModel.uiState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -220,6 +223,16 @@ internal fun ClawdroidShell(
                         modelSettings = settingsUiState.modelSettings,
                         onVoiceClick = { latestVoiceClick.value.invoke() },
                         onImageClick = { latestImageClick.value.invoke() },
+                        modifier = Modifier.padding(bottom = contentBottomPad)
+                    )
+
+                    ConsolePage.Tasks -> TaskCenterScreen(
+                        state = taskCenterUiState,
+                        onPause = taskCenterViewModel::pause,
+                        onResume = taskCenterViewModel::resume,
+                        onRetry = taskCenterViewModel::retry,
+                        onCancel = taskCenterViewModel::cancel,
+                        onSelect = taskCenterViewModel::select,
                         modifier = Modifier.padding(bottom = contentBottomPad)
                     )
 

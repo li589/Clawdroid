@@ -1,5 +1,8 @@
 package com.clawdroid.app.ui
 
+import com.clawdroid.app.agent.task.ExecutionTask
+import com.clawdroid.app.agent.task.TaskEngine
+import com.clawdroid.app.agent.task.TaskState
 import com.clawdroid.app.data.AppSettingsStore
 import com.clawdroid.app.data.ChatHistoryStore
 import com.clawdroid.app.data.ChatSessionSnapshot
@@ -148,6 +151,46 @@ class ChatViewModelDispatcherTest {
         assertFalse(viewModel.uiState.value.chatBusy)
         getGate.complete(Unit)
         advanceUntilIdle()
+    }
+
+    @Test
+    fun unifiedTaskCancelDelegatesToEngine() = runTest(mainDispatcherRule.dispatcher) {
+        val dispatcher = fakeDispatcher()
+        val engine = mockk<TaskEngine>(relaxed = true)
+        val viewModel = createViewModel(dispatcher, engine)
+
+        viewModel.submitPrompt("/agent runtime_health_sweep", ModelSettings())
+        advanceUntilIdle()
+        val taskId = viewModel.uiState.value.taskExecution?.executionTaskId
+        assertTrue(taskId?.isNotBlank() == true)
+
+        viewModel.cancelCurrentTaskExecution()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { engine.cancel(taskId!!) }
+        assertEquals(ChatTaskProgressState.Cancelled, viewModel.uiState.value.taskExecution?.status)
+    }
+
+    @Test
+    fun secondUnifiedTaskCancelsPreviousEngineTask() = runTest(mainDispatcherRule.dispatcher) {
+        val dispatcher = fakeDispatcher()
+        val engine = mockk<TaskEngine>(relaxed = true)
+        val viewModel = createViewModel(dispatcher, engine)
+
+        viewModel.submitPrompt("/agent runtime_health_sweep", ModelSettings())
+        advanceUntilIdle()
+        val firstTaskId = viewModel.uiState.value.taskExecution?.executionTaskId
+        assertTrue(firstTaskId?.isNotBlank() == true)
+
+        viewModel.submitPrompt("/agent runtime_health_sweep", ModelSettings())
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { engine.cancel(firstTaskId!!) }
+        assertTrue(
+            viewModel.uiState.value.taskHistory.any {
+                it.executionTaskId == firstTaskId && it.status == ChatTaskProgressState.Cancelled
+            }
+        )
     }
 
     @Test
@@ -492,6 +535,47 @@ class ChatViewModelDispatcherTest {
     }
 
     @Test
+    fun restoreUsesUnifiedEngineSnapshotWhenAvailable() = runTest(mainDispatcherRule.dispatcher) {
+        mockkObject(ChatTaskHistoryStore)
+        mockkObject(ChatHistoryStore)
+        try {
+            coEvery { ChatHistoryStore.load(any()) } returns emptyList()
+            every { ChatHistoryStore.save(any(), any()) } just runs
+            every { ChatTaskHistoryStore.load(any()) } returns PersistedChatTaskState(
+                currentTask = ChatTaskExecutionState(
+                    taskId = "chat-engine-1",
+                    title = "统一任务",
+                    summary = "was running",
+                    status = ChatTaskProgressState.Running,
+                    steps = listOf(ChatTaskStepState(title = "步骤 1")),
+                    startedAtEpochMs = 1L,
+                    executionTaskId = "engine-1"
+                ),
+                taskHistory = emptyList()
+            )
+            every { ChatTaskHistoryStore.save(any(), any(), any()) } just runs
+            every { ChatTaskHistoryStore.clear(any()) } just runs
+            val engine = mockk<TaskEngine>(relaxed = true)
+            every { engine.current("engine-1") } returns ExecutionTask(
+                id = "engine-1",
+                title = "统一任务",
+                originPrompt = "run",
+                steps = emptyList(),
+                state = TaskState.Running
+            )
+
+            val viewModel = createViewModel(fakeDispatcher(), engine)
+            advanceUntilIdle()
+
+            assertEquals(ChatTaskProgressState.Running, viewModel.uiState.value.taskExecution?.status)
+            assertEquals("engine-1", viewModel.uiState.value.taskExecution?.executionTaskId)
+        } finally {
+            unmockkObject(ChatTaskHistoryStore)
+            unmockkObject(ChatHistoryStore)
+        }
+    }
+
+    @Test
     fun restoreCancelsLocalOnlyRunningTask() = runTest(mainDispatcherRule.dispatcher) {
         mockkObject(ChatTaskHistoryStore)
         mockkObject(ChatHistoryStore)
@@ -538,7 +622,10 @@ class ChatViewModelDispatcherTest {
         }
     }
 
-    private fun createViewModel(dispatcher: ClawToolDispatcher): ChatViewModel {
+    private fun createViewModel(
+        dispatcher: ClawToolDispatcher,
+        taskEngine: TaskEngine? = null
+    ): ChatViewModel {
         mockkObject(ChatSessionStore)
         mockkObject(AppSettingsStore)
         every { ChatSessionStore.loadSnapshot(any()) } returns ChatSessionSnapshot(
@@ -562,7 +649,8 @@ class ChatViewModelDispatcherTest {
         return ChatViewModel(
             appContext = appContext,
             overviewController = overviewController,
-            toolDispatcher = dispatcher
+            toolDispatcher = dispatcher,
+            taskEngine = taskEngine
         )
     }
 }

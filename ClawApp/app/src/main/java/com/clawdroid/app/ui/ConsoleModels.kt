@@ -3,6 +3,7 @@ package com.clawdroid.app.ui
 internal enum class ConsolePage {
     Overview,
     Chat,
+    Tasks,
     Settings
 }
 

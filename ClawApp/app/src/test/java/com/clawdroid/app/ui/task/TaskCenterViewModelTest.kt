@@ -12,6 +12,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 
@@ -19,6 +20,20 @@ import org.junit.Test
 class TaskCenterViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @Test
+    fun selectingSameTaskTogglesDetailsClosed() = runTest(mainDispatcherRule.dispatcher) {
+        val viewModel = TaskCenterViewModel(
+            InMemoryTaskStore(),
+            MutableTaskEventBus(),
+            mockk(relaxed = true)
+        )
+
+        viewModel.select("t1")
+        assertEquals("t1", viewModel.uiState.value.selectedTaskId)
+        viewModel.select("t1")
+        assertNull(viewModel.uiState.value.selectedTaskId)
+    }
 
     @Test
     fun taskCenterReflectsEngineEvents() = runTest(mainDispatcherRule.dispatcher) {

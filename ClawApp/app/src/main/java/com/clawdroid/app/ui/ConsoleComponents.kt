@@ -43,6 +43,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Home
@@ -342,6 +343,13 @@ internal fun FloatingBottomNavBar(
                 icon = Icons.Outlined.ChatBubbleOutline,
                 label = "聊天",
                 onClick = { onPageSelected(ConsolePage.Chat) }
+            )
+            FloatingNavButton(
+                modifier = Modifier.weight(1f),
+                selected = currentPage == ConsolePage.Tasks,
+                icon = Icons.AutoMirrored.Outlined.List,
+                label = "任务",
+                onClick = { onPageSelected(ConsolePage.Tasks) }
             )
             FloatingNavButton(
                 modifier = Modifier.weight(1f),

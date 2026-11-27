@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clawdroid.app.agent.AgentKernel
+import com.clawdroid.app.agent.task.ExecutionTask
 import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.agent.AgentRunPhase
 import com.clawdroid.app.agent.PolicyDecision
@@ -130,6 +131,7 @@ internal class ChatViewModel(
         appContext = appContext,
         scope = viewModelScope,
         toolDispatcher = toolDispatcher,
+        taskEngine = taskEngine,
         getState = { uiState.value },
         updateState = ::updateState,
         getCurrentTaskJob = { currentTaskJob },
@@ -290,6 +292,8 @@ internal class ChatViewModel(
 
     fun deleteCurrentSession() = sessionCoordinator.deleteCurrentSession()
 
+    fun onExecutionTaskEvent(task: ExecutionTask) = taskController.applyExecutionTask(task)
+
     fun cancelCurrentTaskExecution() = taskController.cancelCurrentTaskExecution()
 
     /** 打断当前正在生成/思考/工具循环的回复。 */
@@ -407,6 +411,18 @@ internal class ChatViewModel(
         taskController.setTaskHistoryFilter(filter)
 
     fun retryTask(task: ChatTaskExecutionState) {
+        val executionTaskId = task.executionTaskId
+        if (executionTaskId != null && taskEngine != null) {
+            updateState { it.copy(chatBusy = true) }
+            viewModelScope.launch {
+                try {
+                    taskEngine.retry(executionTaskId)
+                } finally {
+                    finishChat()
+                }
+            }
+            return
+        }
         val action = task.taskAction ?: return
         if (taskController.isRetryBlocked()) {
             taskController.notifyRetryBlocked()
@@ -949,18 +965,15 @@ internal class ChatViewModel(
         }
         val agent = ClawAgentCatalog.byId(agentId)
             ?: return "任务失败：未知 Agent `$agentId`。"
+        val usesTaskEngine = taskEngine != null
         if (ensureTaskUi) {
-            val running = uiState.value.taskExecution
-                ?.takeIf { it.status == ChatTaskProgressState.Running }
-            if (running == null) {
-                taskController.startDynamicTaskExecution(
-                    title = agent.name,
-                    summary = "正在按“${agent.stepTitles.joinToString(" -> ")}”推进任务。",
-                    initialStepTitles = agent.stepTitles,
-                    originPrompt = originPrompt.ifBlank { agent.name },
-                    preserveJob = currentTaskJob ?: currentCoroutineContext()[Job]
-                )
-            }
+            taskController.startDynamicTaskExecution(
+                title = agent.name,
+                summary = "正在按“${agent.stepTitles.joinToString(" -> ")}”推进任务。",
+                initialStepTitles = agent.stepTitles,
+                originPrompt = originPrompt.ifBlank { agent.name },
+                preserveJob = currentTaskJob ?: currentCoroutineContext()[Job]
+            )
         }
         val renderedSteps = mutableListOf<String>()
         val result = ClawAgentRunner(dispatcher, taskEngine).run(
@@ -998,6 +1011,9 @@ internal class ChatViewModel(
         )
         result.runtimeTaskId?.takeIf { it.isNotBlank() }?.let { executionTaskId ->
             activeKernelRunId?.let { runId -> agentKernel.linkExecutionTask(runId, executionTaskId) }
+            if (usesTaskEngine) {
+                taskController.trackExecutionTask(executionTaskId)
+            }
         }
         overviewController.applyToolSideEffects(result)
         if (result.captureArtifact != null) {
@@ -1011,6 +1027,7 @@ internal class ChatViewModel(
             }?.let { taskController.applyRuntimeTaskSnapshot(it) }
         }
         val footer = when {
+            usesTaskEngine -> "任务已提交：${agent.name}，可在任务中心查看进度。"
             detached -> {
                 val runtimeId = result.runtimeTaskId.orEmpty()
                 "任务跟踪中：${agent.name} 本地轮询已超时，继续通过事件同步 Runtime 任务 $runtimeId。"
@@ -1021,7 +1038,7 @@ internal class ChatViewModel(
         if (finishTaskUi &&
             uiState.value.taskExecution?.status == ChatTaskProgressState.Running
         ) {
-            if (detached) {
+            if (detached || usesTaskEngine) {
                 taskController.updateTaskExecution { task ->
                     task.copy(summary = footer)
                 }

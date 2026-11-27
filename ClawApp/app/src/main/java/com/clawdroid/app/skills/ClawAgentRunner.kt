@@ -44,6 +44,46 @@ fun interface AgentStepListener {
     )
 }
 
+internal object AgentStepArguments {
+    fun forStep(stepId: String, arguments: Map<String, Any?>): Map<String, Any?> = when (stepId) {
+        "capture_screen" -> mapOf(
+            "read_after_capture" to false,
+            "display_id" to (arguments["display_id"] ?: 0)
+        )
+        "inject_swipe" -> mapOf(
+            "x1" to (arguments["x1"] ?: 540),
+            "y1" to (arguments["y1"] ?: 1800),
+            "x2" to (arguments["x2"] ?: 540),
+            "y2" to (arguments["y2"] ?: 400),
+            "duration_ms" to (arguments["duration_ms"] ?: 350),
+            "display_id" to (arguments["display_id"] ?: 0)
+        )
+        "page_confirm" -> mapOf(
+            "expected_package" to (arguments["expected_package"] ?: ""),
+            "expected_text" to (arguments["expected_text"] ?: ""),
+            "expected_view_id" to (arguments["expected_view_id"] ?: "")
+        )
+        "click_precheck" -> mapOf(
+            "expected_package" to (
+                arguments["click_expected_package"]
+                    ?: arguments["expected_package"]
+                    ?: ""
+                ),
+            "target_text" to (
+                arguments["target_text"]
+                    ?: arguments["expected_text"]
+                    ?: ""
+                ),
+            "target_view_id" to (
+                arguments["target_view_id"]
+                    ?: arguments["expected_view_id"]
+                    ?: ""
+                )
+        )
+        else -> emptyMap()
+    }
+}
+
 private suspend fun notifyStep(
     listener: AgentStepListener?,
     index: Int,
@@ -142,8 +182,7 @@ class ClawAgentRunner(
             )
 
         val engine = taskEngine
-        val useTaskEngine = AgentRuntimeBridge.canSubmitAsRuntimeTask(agent) || agent.id == "confirm_then_safe_tap"
-        if (useTaskEngine && engine != null) {
+        if (engine != null) {
             val taskId = "agent-${agent.id}-${System.currentTimeMillis()}"
             val task = TaskCompiler.fromAgentDefinition(taskId, agent, arguments)
                 ?: return ClawToolCallResult(
@@ -152,16 +191,6 @@ class ClawAgentRunner(
                     error = "runtime_task_unmapped"
                 )
             engine.submit(task)
-            agent.steps.forEachIndexed { index, stepId ->
-                notifyStep(
-                    stepListener,
-                    index,
-                    stepId,
-                    agent.stepTitles.getOrElse(index) { stepId },
-                    started = true,
-                    result = null
-                )
-            }
             return ClawToolCallResult(
                 success = true,
                 output = "Agent: ${agent.id}\nMode: TaskEngine\nSubmitted: task_id=$taskId",
@@ -383,7 +412,7 @@ class ClawAgentRunner(
                 started = true,
                 result = null
             )
-            val stepArgs = argumentsForStep(step, arguments)
+            val stepArgs = AgentStepArguments.forStep(step, arguments)
             val result = dispatcher.execute(step, stepArgs)
             report.appendLine("## Step ${index + 1}: $step")
             report.appendLine(if (result.success) "OK" else "FAIL")
@@ -419,49 +448,6 @@ class ClawAgentRunner(
             captureArtifact = lastCapture,
             previewBytes = lastPreview.takeIf { it.isNotEmpty() }
         )
-    }
-
-    private fun argumentsForStep(
-        step: String,
-        arguments: Map<String, Any?>
-    ): Map<String, Any?> {
-        return when (step) {
-            "capture_screen" -> mapOf(
-                "read_after_capture" to false,
-                "display_id" to (arguments["display_id"] ?: 0)
-            )
-            "inject_swipe" -> mapOf(
-                "x1" to (arguments["x1"] ?: 540),
-                "y1" to (arguments["y1"] ?: 1800),
-                "x2" to (arguments["x2"] ?: 540),
-                "y2" to (arguments["y2"] ?: 400),
-                "duration_ms" to (arguments["duration_ms"] ?: 350),
-                "display_id" to (arguments["display_id"] ?: 0)
-            )
-            "page_confirm" -> mapOf(
-                "expected_package" to (arguments["expected_package"] ?: ""),
-                "expected_text" to (arguments["expected_text"] ?: ""),
-                "expected_view_id" to (arguments["expected_view_id"] ?: "")
-            )
-            "click_precheck" -> mapOf(
-                "expected_package" to (
-                    arguments["click_expected_package"]
-                        ?: arguments["expected_package"]
-                        ?: ""
-                ),
-                "target_text" to (
-                    arguments["target_text"]
-                        ?: arguments["expected_text"]
-                        ?: ""
-                ),
-                "target_view_id" to (
-                    arguments["target_view_id"]
-                        ?: arguments["expected_view_id"]
-                        ?: ""
-                )
-            )
-            else -> emptyMap()
-        }
     }
 
     companion object {

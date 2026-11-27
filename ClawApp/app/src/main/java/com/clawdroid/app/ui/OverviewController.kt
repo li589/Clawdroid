@@ -9,6 +9,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clawdroid.app.BuildConfig
+import com.clawdroid.app.agent.task.ExecutionTask
+import com.clawdroid.app.agent.task.TaskState
+import com.clawdroid.app.agent.task.TaskStateMachine
 import com.clawdroid.app.env.LocalEnvironmentStatus
 import com.clawdroid.app.env.RootActionResult
 import com.clawdroid.app.env.ShizukuSupport
@@ -680,6 +683,17 @@ internal class OverviewController(
         }
     }
 
+    fun updateActiveExecution(task: ExecutionTask?) {
+        val summary = task?.takeUnless { TaskStateMachine.isTerminal(it.state) }?.let {
+            OverviewExecutionSummary(
+                title = it.title,
+                status = overviewTaskStateLabel(it.state),
+                summary = it.checkpoint.waitingReason ?: it.failure?.summary ?: "任务执行中"
+            )
+        }
+        updateRuntimeState { it.copy(activeExecution = summary) }
+    }
+
     /**
      * Apply capture/session/task sync plus per-tool Overview status fields after Dispatcher execution.
      */
@@ -939,6 +953,19 @@ internal class OverviewController(
                 refreshRuntimeTasks()
             }
         }
+    }
+
+    private fun overviewTaskStateLabel(state: TaskState): String = when (state) {
+        TaskState.Created -> "已创建"
+        TaskState.Queued -> "排队中"
+        TaskState.Running -> "执行中"
+        TaskState.WaitingSignal -> "等待中"
+        TaskState.Retrying -> "重试中"
+        TaskState.Paused -> "已暂停"
+        TaskState.Succeeded -> "已成功"
+        TaskState.Failed -> "已失败"
+        TaskState.Cancelled -> "已取消"
+        TaskState.Compensating -> "补偿中"
     }
 
     private fun upsertRuntimeTask(snapshot: ClawRuntimeTaskSnapshot) {
