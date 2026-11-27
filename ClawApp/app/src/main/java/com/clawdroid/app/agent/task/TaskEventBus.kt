@@ -16,7 +16,7 @@ interface TaskEventBus {
 }
 
 class MutableTaskEventBus : TaskEventBus {
-    private val flow = MutableSharedFlow<TaskEvent>(extraBufferCapacity = 64)
+    private val flow = MutableSharedFlow<TaskEvent>(replay = 1, extraBufferCapacity = 64)
 
     override fun publish(event: TaskEvent) {
         flow.tryEmit(event)
