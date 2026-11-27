@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -54,24 +54,20 @@ private fun ThemeSettingsCard(
             verticalArrangement = Arrangement.spacedBy(innerSpacing)
         ) {
             Text(text = "外观主题", style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = "当前模式: ${themeModeLabel(currentThemeMode)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
                 verticalArrangement = Arrangement.spacedBy(vSpacing)
             ) {
                 ThemeMode.entries.forEach { mode ->
-                    AssistChip(
+                    FilterChip(
+                        selected = currentThemeMode == mode,
                         onClick = { onThemeModeSelected(mode) },
                         label = { Text(themeModeLabel(mode)) }
                     )
                 }
             }
-            ResultPanel(text = "主题偏好已本地保存，重启后仍会保留。")
+            ResultPanel(text = "主题会自动保存。")
         }
     }
 }

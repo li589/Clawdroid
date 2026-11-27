@@ -6,6 +6,8 @@ import com.clawdroid.app.runtime.ClawRuntimeEventFrame
 import com.clawdroid.app.runtime.RuntimeEventService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -19,17 +21,29 @@ internal class OverviewEventHub(
     private val onEventFrame: (ClawRuntimeEventFrame) -> Unit,
     private val onUnhandledError: (tag: String, message: String) -> Unit = { _, _ -> }
 ) {
+    private var pendingLines = emptyList<String>()
+    private var flushJob: Job? = null
+
     private val frameListener = RuntimeEventService.FrameListener { frame ->
         // Fan-out may arrive on Default; hop to Main for UI state.
         scope.launch(Dispatchers.Main.immediate) {
             onEventFrame(frame)
             val line = "${formatEpochSeconds(frame.timestamp)}  ${summarizeEventFrame(frame)}"
-            updateEventState { current ->
-                current.copy(
-                    eventLines = (listOf(line) + current.eventLines).take(24),
-                    eventLogVersion = current.eventLogVersion + 1,
-                    eventStreaming = true
-                )
+            pendingLines = listOf(line) + pendingLines
+            if (flushJob == null) {
+                flushJob = scope.launch(Dispatchers.Main.immediate) {
+                    delay(80)
+                    val batch = pendingLines.take(24)
+                    pendingLines = emptyList()
+                    updateEventState { current ->
+                        current.copy(
+                            eventLines = (batch + current.eventLines).take(24),
+                            eventLogVersion = current.eventLogVersion + 1,
+                            eventStreaming = true
+                        )
+                    }
+                    flushJob = null
+                }
             }
         }
     }
@@ -51,6 +65,9 @@ internal class OverviewEventHub(
                 onUnhandledError("overview:events-start", message)
             }
         ) {
+            flushJob?.cancel()
+            flushJob = null
+            pendingLines = emptyList()
             updateEventState {
                 it.copy(
                     eventLines = emptyList(),
@@ -116,5 +133,8 @@ internal class OverviewEventHub(
     /** Unregister UI listener only; does not stop the process-scoped subscription. */
     fun detach() {
         eventService.removeListener(frameListener)
+        flushJob?.cancel()
+        flushJob = null
+        pendingLines = emptyList()
     }
 }

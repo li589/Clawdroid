@@ -30,28 +30,23 @@ internal fun LazyListScope.statusOverviewScreen(
     assistMcpStatus: AssistMcpOverviewStatus = AssistMcpOverviewStatus(),
     debugHighlightLongContent: Boolean = false
 ) {
-    item {
+    item(key = "overview-hero") {
         OverviewHeroCard(
             sessionState = runtimeState.session.state,
             localEnvironmentStatus = permissionState.localEnvironmentStatus,
             eventStreaming = eventState.eventStreaming,
-            daemonMetrics = runtimeState.latestDaemonMetrics,
-            runtimeMetrics = runtimeState.latestRuntimeProcessMetrics,
-            windowSummary = runtimeState.latestWindowSummary,
-            runtimeLoaded = runtimeState.session.runtimeLoaded,
-            runtimeProcess = runtimeState.session.runtimeProcess,
-            degradedReason = runtimeState.session.degradedReason
+            windowSummary = runtimeState.latestWindowSummary
         )
     }
     if (runtimeState.compatBanner.isNotBlank()) {
-        item {
+        item(key = "runtime-compat") {
             StatusCard(
                 title = "App ↔ Runtime 对齐",
                 content = runtimeState.compatBanner
             )
         }
     }
-    item {
+    item(key = "basic-permissions") {
         BasicPermissionsCard(
             status = permissionState.localEnvironmentStatus,
             actionStatus = permissionState.permissionActionStatus,
@@ -68,7 +63,7 @@ internal fun LazyListScope.statusOverviewScreen(
             onRootGrantAll = permissionActions.onRootGrantAutomationPermissions
         )
     }
-    item {
+    item(key = "local-environment-ops") {
         LocalEnvironmentOpsCard(
             result = buildLocalEnvironmentPanelResult(permissionState),
             eventStreaming = eventState.eventStreaming,
@@ -84,7 +79,7 @@ internal fun LazyListScope.statusOverviewScreen(
             }
         )
     }
-    item {
+    item(key = "event-subscription") {
         EventSubscriptionCard(
             title = "事件流",
             result = eventState.eventStatus,
@@ -94,7 +89,7 @@ internal fun LazyListScope.statusOverviewScreen(
             onStop = eventActions.onStopEvents
         )
     }
-    item {
+    item(key = "capture-preview") {
         PreviewCard(imageBitmap = latestCapturePreview)
     }
 }

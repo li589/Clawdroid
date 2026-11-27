@@ -27,7 +27,6 @@ private fun LazyListScope.settingsHubScreen(
     actions: SettingsScreenActions
 ) {
     val validationMessage = modelSettingsValidationMessage(state.modelSettings)
-    item { SectionTitle("验收概览") }
     item {
         SettingsReadinessCard(
             currentThemeMode = state.currentThemeMode,
@@ -36,7 +35,6 @@ private fun LazyListScope.settingsHubScreen(
             validationMessage = validationMessage
         )
     }
-    item { SectionTitle("设置分类") }
     item {
         SettingsCategoryHubCard(onOpenCategory = actions.onOpenCategory)
     }

@@ -332,7 +332,8 @@ enum class ClawTool(
     );
 
     companion object {
-        fun byToolId(id: String): ClawTool? = entries.find { it.toolId == id }
+        private val byId = entries.associateBy(ClawTool::toolId)
+        fun byToolId(id: String): ClawTool? = byId[id]
     }
 }
 

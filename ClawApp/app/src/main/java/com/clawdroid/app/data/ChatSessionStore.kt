@@ -215,7 +215,7 @@ internal object ChatSessionStore {
         val welcomeText = context?.let {
             com.clawdroid.app.tools.ClawAssetPromptStore.chatWelcomePrompt(it).trim()
         }.orEmpty().ifBlank {
-            "可以直接像聊天一样下达指令，例如「ping ClawRuntime」、「获取能力」、「截图并预览」、「运行时体检」。"
+            "直接发送指令或选择快捷动作。Runtime 未连接时，先检查运行状态。"
         }
         val welcome = ChatMessage(
             role = ChatRole.Assistant,
@@ -290,7 +290,7 @@ internal object ChatSessionStore {
         return ChatSession(
             id = item.optString("id").ifBlank { return null },
             title = item.optString("title").ifBlank {
-            "可以直接像聊天一样下达指令，例如「ping ClawRuntime」、「获取能力」、「截图并预览」、「运行时体检」。"
+            "直接发送指令或选择快捷动作。Runtime 未连接时，先检查运行状态。"
         },
             updatedAtEpochMs = item.optLong("updated_at_epoch_ms", System.currentTimeMillis()),
             messages = ChatTextLimits.windowMessages(messages)

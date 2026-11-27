@@ -105,7 +105,7 @@ internal fun ChatViewModel.buildChatConsoleActions(
         onClearPendingImage = ::clearPendingImage,
         onQuickPing = { submitPrompt("ping ClawRuntime", modelSettings, onModelCallSuccess) },
         onQuickRuntimeCheck = { submitPrompt("检查运行时状态", modelSettings, onModelCallSuccess) },
-        onQuickCapabilities = { submitPrompt("获取能力", modelSettings, onModelCallSuccess) },
+        onQuickCapabilities = { submitPrompt("获取当前能力", modelSettings, onModelCallSuccess) },
         onQuickCapture = { submitPrompt("截图并预览", modelSettings, onModelCallSuccess) },
         onQuickShell = { submitPrompt("/shell wm size", modelSettings, onModelCallSuccess) },
         onQuickSafeTapTask = { submitPrompt("确认页面后安全点击", modelSettings, onModelCallSuccess) },

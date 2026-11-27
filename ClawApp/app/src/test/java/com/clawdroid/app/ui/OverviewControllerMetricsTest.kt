@@ -34,7 +34,7 @@ class OverviewControllerMetricsTest {
             controller.refreshLocalEnvironmentState(includeRootCheck = true)
             controller.setOverviewActive(true)
             runCurrent()
-            advanceTimeBy(2001)
+            advanceTimeBy(4001)
 
             assertEquals(3, metricsSampler.sampleCount)
             assertEquals(listOf(true, true, true), metricsSampler.requestedRootFlags)
@@ -61,7 +61,7 @@ class OverviewControllerMetricsTest {
             controller.setOverviewActive(true)
             controller.setOverviewActive(true)
             runCurrent()
-            advanceTimeBy(1001)
+            advanceTimeBy(2001)
 
             assertEquals(2, metricsSampler.sampleCount)
         } finally {

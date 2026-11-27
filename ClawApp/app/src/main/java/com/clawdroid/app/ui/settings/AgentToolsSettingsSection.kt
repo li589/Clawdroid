@@ -204,10 +204,9 @@ private fun AgentOrchestrationSettingsCard(
                 label = { Text("最大模型 API 调用") },
                 supportingText = {
                     FieldSupportingText(
-                        "每次你发送一条消息后，该轮 AI 回复过程中的模型调用上限" +
-                            "（默认 ${AgentOrchestrationSettings.DEFAULT_MAX_MODEL_API_CALLS}，" +
-                            "范围 ${AgentOrchestrationSettings.MIN_MODEL_API_CALLS}–" +
-                            "${AgentOrchestrationSettings.MAX_MODEL_API_CALLS_CAP}）；下一条消息会重新计数"
+                        "本轮回复的模型调用上限；下一条消息重新计数。" +
+                            "默认 ${AgentOrchestrationSettings.DEFAULT_MAX_MODEL_API_CALLS}，" +
+                            "范围 ${AgentOrchestrationSettings.MIN_MODEL_API_CALLS}–${AgentOrchestrationSettings.MAX_MODEL_API_CALLS_CAP}"
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),

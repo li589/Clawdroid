@@ -154,7 +154,7 @@ private fun RuntimeSecretOverrideCard() {
                 color = MaterialTheme.colorScheme.primary
             )
             Text(
-                text = "覆盖值必须与 Magisk runtime.yaml 的 auth.shared_secret 一致。留空并保存或点清除则回退编译期密钥。修改后需重开应用以重建 IPC 客户端。",
+                text = "需与 Magisk runtime.yaml 的 shared_secret 一致；保存后重启应用。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

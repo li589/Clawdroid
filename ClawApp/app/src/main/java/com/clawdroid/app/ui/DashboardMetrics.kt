@@ -163,7 +163,7 @@ internal object DashboardMetricsCollector {
             !runtimeProcess.present && !magiskProcess.present -> "Root 已可用，但尚未发现 ClawRuntime 与 Magisk 进程"
             !runtimeProcess.present -> "已采集 Magisk 守护进程；ClawRuntime 进程暂未发现"
             !magiskProcess.present -> "已采集 ClawRuntime 进程；Magisk 守护进程暂未发现"
-            else -> "App 与系统指标每 1 秒刷新一次，Root 进程指标最多每 3 秒刷新一次"
+            else -> "App 与系统指标每 2 秒刷新一次，Root 进程指标最多每 3 秒刷新一次"
         }
     }
 

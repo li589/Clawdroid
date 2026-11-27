@@ -11,6 +11,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -74,13 +77,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
@@ -119,7 +115,7 @@ internal fun responsiveFlowHSpacing() = rememberAdaptableLayoutConfig().flowRowH
 internal fun responsiveFlowVSpacing() = rememberAdaptableLayoutConfig().flowRowVerticalSpacing
 
 @Composable
-internal fun StatusCard(title: String, content: String, maxContentLines: Int = Int.MAX_VALUE) {
+internal fun StatusCard(title: String, content: String, maxContentLines: Int = 10) {
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     ModernCard {
@@ -134,17 +130,15 @@ internal fun StatusCard(title: String, content: String, maxContentLines: Int = I
                     .fillMaxWidth()
                     .padding(top = innerSpacing),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-                shape = RoundedCornerShape(20.dp)
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
                     text = content,
                     style = MaterialTheme.typography.bodyMedium,
-                    overflow = if (maxContentLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis,
+                    overflow = TextOverflow.Ellipsis,
                     maxLines = maxContentLines,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 220.dp)
-                        .verticalScroll(rememberScrollState())
                         .padding(innerSpacing)
                 )
             }
@@ -158,145 +152,78 @@ internal fun OverviewHeroCard(
     sessionState: ClawRuntimeConnectionState,
     localEnvironmentStatus: LocalEnvironmentStatus,
     eventStreaming: Boolean,
-    daemonMetrics: String,
-    runtimeMetrics: String,
-    windowSummary: String,
-    runtimeLoaded: Boolean?,
-    runtimeProcess: String,
-    degradedReason: String
+    windowSummary: String
 ) {
     val hSpacing = responsiveFlowHSpacing()
     val vSpacing = responsiveFlowVSpacing()
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     val rootLabel = rootHeroLabel(localEnvironmentStatus.rootGranted)
-    val a11yLabel = accessibilityHeroLabel(localEnvironmentStatus.accessibilityEnabled)
     val runtimeLabel = runtimeHeroLabel(sessionState, localEnvironmentStatus)
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = CardDefaults.elevatedShape,
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
-                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.16f),
-                            MaterialTheme.colorScheme.surface
-                        )
-                    )
-                )
-                .padding(pad)
+                .padding(pad),
+            verticalArrangement = Arrangement.spacedBy(innerSpacing)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(innerSpacing)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "状态",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    HeroBadge(
-                        text = if (eventStreaming) "活跃" else "空闲",
-                        accent = if (eventStreaming) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
-                    )
-                }
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(hSpacing),
-                    verticalArrangement = Arrangement.spacedBy(vSpacing)
-                ) {
-                    StatusChip(
-                        label = "LSPosed ${lsposedStatusLabel(localEnvironmentStatus)}",
-                        tone = toneForLsposed(localEnvironmentStatus)
-                    )
-                    StatusChip(
-                        label = "Shizuku ${shizukuEnvLabel(localEnvironmentStatus)}",
-                        tone = if (localEnvironmentStatus.shizukuPermissionGranted) {
-                            StatusTone.Success
-                        } else {
-                            StatusTone.Warning
-                        }
-                    )
-                    StatusChip(
-                        label = "SELinux ${selinuxStatusLabel(localEnvironmentStatus)}",
-                        tone = when (localEnvironmentStatus.selinuxEnforcing) {
-                            true -> StatusTone.Warning
-                            false -> StatusTone.Success
-                            null -> StatusTone.Neutral
-                        }
-                    )
-                    StatusChip(
-                        label = "事件 ${eventSubscriptionLabel(eventStreaming)}",
-                        tone = if (eventStreaming) StatusTone.Active else StatusTone.Neutral
-                    )
-                    StatusChip(
-                        label = "网络 ${networkStatusLabel(localEnvironmentStatus)}",
-                        tone = if (localEnvironmentStatus.networkConnected) {
-                            StatusTone.Success
-                        } else {
-                            StatusTone.Warning
-                        }
-                    )
-                }
-                Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.32f),
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(innerSpacing),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        MetricLine(
-                            label = "负载",
-                            value = daemonMetrics.take(80).ifBlank { "—" }
-                        )
-                        MetricLine(
-                            label = "窗口",
-                            value = windowSummary.take(80).ifBlank { "—" }
-                        )
-                        MetricLine(
-                            label = "系统",
-                            value = localEnvironmentStatus.systemVersionLabel
-                                .ifBlank { "—" }
-                                .take(120)
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(innerSpacing)
-                ) {
-                    HeroInfoTile(
-                        modifier = Modifier.weight(1f),
-                        title = "Root",
-                        value = rootLabel,
-                        accent = MaterialTheme.colorScheme.primary
-                    )
-                    HeroInfoTile(
-                        modifier = Modifier.weight(1f),
-                        title = "A11y",
-                        value = a11yLabel,
-                        accent = MaterialTheme.colorScheme.secondary
-                    )
-                    HeroInfoTile(
-                        modifier = Modifier.weight(1f),
-                        title = "Runtime",
-                        value = runtimeLabel,
-                        accent = MaterialTheme.colorScheme.tertiary
-                    )
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "运行状态",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                HeroBadge(
+                    text = if (eventStreaming) "订阅中" else "未订阅",
+                    accent = if (eventStreaming) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
+                )
             }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(hSpacing),
+                verticalArrangement = Arrangement.spacedBy(vSpacing)
+            ) {
+                StatusChip(
+                    label = "Runtime $runtimeLabel",
+                    tone = toneForConnectionState(sessionState)
+                )
+                StatusChip(
+                    label = "Root $rootLabel",
+                    tone = when (localEnvironmentStatus.rootGranted) {
+                        true -> StatusTone.Success
+                        false -> StatusTone.Warning
+                        null -> StatusTone.Neutral
+                    }
+                )
+                StatusChip(
+                    label = "LSPosed ${lsposedStatusLabel(localEnvironmentStatus)}",
+                    tone = toneForLsposed(localEnvironmentStatus)
+                )
+                StatusChip(
+                    label = "事件 ${eventSubscriptionLabel(eventStreaming)}",
+                    tone = if (eventStreaming) StatusTone.Active else StatusTone.Neutral
+                )
+            }
+            MetricLine(
+                label = "窗口",
+                value = windowSummary.take(80).ifBlank { "—" }
+            )
+            MetricLine(
+                label = "系统",
+                value = localEnvironmentStatus.systemVersionLabel
+                    .ifBlank { "—" }
+                    .take(120)
+            )
         }
     }
 }
@@ -386,70 +313,43 @@ internal fun FloatingBottomNavBar(
     onPageSelected: (ConsolePage) -> Unit
 ) {
     val config = rememberAdaptableLayoutConfig()
-    val glassShape = RoundedCornerShape(28.dp)
-    val glassFill = MaterialTheme.colorScheme.surface.copy(alpha = 0.38f)
-    val glassHighlight = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-    Box(
+    Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = config.navBarPaddingH, vertical = 2.dp)
             .navigationBarsPadding()
+            .padding(horizontal = config.navBarPaddingH, vertical = config.navBarPaddingV),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 0.dp
     ) {
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .shadow(
-                    elevation = 10.dp,
-                    shape = glassShape,
-                    ambientColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.18f),
-                    spotColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.22f)
-                )
-                .clip(glassShape)
-                .background(glassFill)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            glassHighlight,
-                            Color.Transparent
-                        )
-                    )
-                )
-                .border(
-                    BorderStroke(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
-                    ),
-                    shape = glassShape
-                )
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(config.navBarSpacing)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.spacedBy(config.navBarSpacing)
-            ) {
-                FloatingNavButton(
-                    modifier = Modifier.weight(1f),
-                    selected = currentPage == ConsolePage.Overview,
-                    icon = Icons.Outlined.Home,
-                    label = "概览",
-                    onClick = { onPageSelected(ConsolePage.Overview) }
-                )
-                FloatingNavButton(
-                    modifier = Modifier.weight(1f),
-                    selected = currentPage == ConsolePage.Chat,
-                    icon = Icons.Outlined.ChatBubbleOutline,
-                    label = "聊天",
-                    onClick = { onPageSelected(ConsolePage.Chat) }
-                )
-                FloatingNavButton(
-                    modifier = Modifier.weight(1f),
-                    selected = currentPage == ConsolePage.Settings,
-                    icon = Icons.Outlined.Settings,
-                    label = "设置",
-                    onClick = { onPageSelected(ConsolePage.Settings) }
-                )
-            }
+            FloatingNavButton(
+                modifier = Modifier.weight(1f),
+                selected = currentPage == ConsolePage.Overview,
+                icon = Icons.Outlined.Home,
+                label = "概览",
+                onClick = { onPageSelected(ConsolePage.Overview) }
+            )
+            FloatingNavButton(
+                modifier = Modifier.weight(1f),
+                selected = currentPage == ConsolePage.Chat,
+                icon = Icons.Outlined.ChatBubbleOutline,
+                label = "聊天",
+                onClick = { onPageSelected(ConsolePage.Chat) }
+            )
+            FloatingNavButton(
+                modifier = Modifier.weight(1f),
+                selected = currentPage == ConsolePage.Settings,
+                icon = Icons.Outlined.Settings,
+                label = "设置",
+                onClick = { onPageSelected(ConsolePage.Settings) }
+            )
         }
     }
 }
@@ -510,7 +410,7 @@ internal fun ChatWorkspaceCard(
                     .fillMaxWidth()
                     .heightIn(min = config.chatAreaMinHeight, max = config.chatAreaMaxHeight),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(16.dp),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
             ) {
                 Column(
@@ -531,7 +431,7 @@ internal fun ChatWorkspaceCard(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f),
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(16.dp),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
             ) {
                 Column(
@@ -619,18 +519,18 @@ internal fun QuickActionCard(
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
                 verticalArrangement = Arrangement.spacedBy(vSpacing)
             ) {
-                AssistChip(onClick = onPing, enabled = actionsEnabled, label = { Text("Ping") })
-                AssistChip(onClick = onRuntimeCheck, enabled = actionsEnabled, label = { Text("运行时检查") })
+                AssistChip(onClick = onPing, enabled = actionsEnabled, label = { Text("连接测试") })
+                AssistChip(onClick = onRuntimeCheck, enabled = actionsEnabled, label = { Text("版本与健康") })
                 AssistChip(onClick = onHealthSweepTask, enabled = actionsEnabled, label = { Text("运行时体检") })
-                AssistChip(onClick = onCapabilities, enabled = actionsEnabled, label = { Text("Capabilities") })
+                AssistChip(onClick = onCapabilities, enabled = actionsEnabled, label = { Text("能力列表") })
                 AssistChip(onClick = onCapture, enabled = actionsEnabled, label = { Text(stringResource(R.string.overview_capture_detect)) })
                 AssistChip(onClick = onSwipeCaptureTask, enabled = actionsEnabled, label = { Text("滑动后截图") })
-                AssistChip(onClick = onShell, enabled = actionsEnabled, label = { Text("wm size") })
+                AssistChip(onClick = onShell, enabled = actionsEnabled, label = { Text("屏幕尺寸") })
                 AssistChip(onClick = onSafeTapTask, enabled = actionsEnabled, label = { Text("确认后点击") })
                 AssistChip(
                     onClick = onEvents,
                     enabled = actionsEnabled,
-                    label = { Text(if (eventStreaming) "停止事件流" else "开始事件流") }
+                    label = { Text(if (eventStreaming) "停止事件订阅" else "开始事件订阅") }
                 )
             }
         }
@@ -666,7 +566,7 @@ internal fun ChatTaskExecutionCard(
         taskExecution?.let(::add)
         addAll(taskHistory)
     }.distinctBy { it.taskId }
-    var selectedTaskId by remember(taskExecution?.taskId, taskHistory, taskHistoryFilter) {
+    var selectedTaskId by remember(taskExecution?.taskId, taskHistoryFilter) {
         mutableStateOf(
             taskExecution?.taskId
                 ?: filteredTaskHistory.firstOrNull()?.taskId
@@ -694,7 +594,7 @@ internal fun ChatTaskExecutionCard(
                 ) {
                     Text(text = "任务执行台", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = "多步骤动作的任务视图",
+                        text = "查看当前与历史任务",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -705,7 +605,7 @@ internal fun ChatTaskExecutionCard(
                 )
             }
             if (taskExecution == null) {
-                ResultPanel(text = "暂无最近任务。可直接发送“检查运行时状态”或“确认页面后安全点击”开始任务。")
+                ResultPanel(text = "暂无任务。发送“检查运行时状态”即可开始。")
             } else {
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -758,11 +658,11 @@ internal fun ChatTaskExecutionCard(
             }
             if (taskHistory.isNotEmpty()) {
                 Text(
-                    text = "任务历史面板 (${filteredTaskHistory.size}/${taskHistory.size})",
+                    text = "历史任务 (${filteredTaskHistory.size}/${taskHistory.size})",
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = "显示历史任务，可查看步骤与重试链",
+                    text = "选择任务查看详情",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -786,41 +686,51 @@ internal fun ChatTaskExecutionCard(
                         )
                     }
                 }
-                filteredTaskHistory.forEachIndexed { index, historyItem ->
-                    StatusCard(
-                        title = "历史 ${index + 1} ${historyItem.title}",
-                        content = buildTaskOverviewText(historyItem),
-                        maxContentLines = 8
-                    )
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(hSpacing),
-                        verticalArrangement = Arrangement.spacedBy(vSpacing)
-                    ) {
-                        AssistChip(
-                            onClick = { selectedTaskId = historyItem.taskId },
-                            label = {
-                                Text(
-                                    if (detailTask?.taskId == historyItem.taskId) {
-                                        "详情已打开"
-                                    } else {
-                                        "查看详情"
-                                    }
-                                )
-                            }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 240.dp),
+                    verticalArrangement = Arrangement.spacedBy(innerSpacing)
+                ) {
+                    itemsIndexed(
+                        items = filteredTaskHistory,
+                        key = { _, item -> item.taskId }
+                    ) { index, historyItem ->
+                        StatusCard(
+                            title = "历史 ${index + 1} ${historyItem.title}",
+                            content = buildTaskOverviewText(historyItem),
+                            maxContentLines = 8
                         )
-                        AssistChip(
-                            onClick = { selectedTaskId = historyItem.taskId },
-                            label = { Text("切到详情面板") }
-                        )
-                        if (historyItem.taskAction != null &&
-                            (historyItem.status == ChatTaskProgressState.Failed ||
-                                historyItem.status == ChatTaskProgressState.Cancelled)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(hSpacing),
+                            verticalArrangement = Arrangement.spacedBy(vSpacing)
                         ) {
                             AssistChip(
-                                onClick = { onRetryTaskExecution(historyItem) },
-                                label = { Text("重试此任务") }
+                                onClick = { selectedTaskId = historyItem.taskId },
+                                label = {
+                                    Text(
+                                        if (detailTask?.taskId == historyItem.taskId) {
+                                            "详情已打开"
+                                        } else {
+                                            "查看详情"
+                                        }
+                                    )
+                                }
                             )
+                            AssistChip(
+                                onClick = { selectedTaskId = historyItem.taskId },
+                                label = { Text("切到详情面板") }
+                            )
+                            if (historyItem.taskAction != null &&
+                                (historyItem.status == ChatTaskProgressState.Failed ||
+                                    historyItem.status == ChatTaskProgressState.Cancelled)
+                            ) {
+                                AssistChip(
+                                    onClick = { onRetryTaskExecution(historyItem) },
+                                    label = { Text("重试此任务") }
+                                )
+                            }
                         }
                     }
                 }
@@ -863,7 +773,7 @@ internal fun ChatReadinessCard(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(text = "AI 编排状态", style = MaterialTheme.typography.titleLarge)
+                    Text(text = "模型与连接", style = MaterialTheme.typography.titleLarge)
                 }
                 HeroBadge(
                     text = if (eventStreaming) "事件活跃" else "事件空闲",
@@ -1030,7 +940,7 @@ private fun TaskDetailPanel(
     val vSpacing = responsiveFlowVSpacing()
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
-        shape = RoundedCornerShape(24.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Column(
             modifier = Modifier
@@ -1048,11 +958,7 @@ private fun TaskDetailPanel(
                 ) {
                     Text(text = "任务详情", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        text = if (isCurrentTask) {
-                            "完整步骤、失败边界与重试链。"
-                        } else {
-                            "历史任务的完整步骤与重试链。"
-                        },
+                        text = if (isCurrentTask) "当前任务的步骤与结果" else "历史任务的步骤与结果",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1109,12 +1015,22 @@ private fun TaskDetailPanel(
             if (task.steps.isEmpty()) {
                 ResultPanel(text = "当前任务暂无步骤记录。")
             } else {
-                task.steps.forEachIndexed { index, step ->
-                    StatusCard(
-                        title = "步骤 ${index + 1} ${step.title}",
-                        content = buildTaskStepText(step),
-                        maxContentLines = 6
-                    )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 280.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    itemsIndexed(
+                        items = task.steps,
+                        key = { index, step -> "$index:${step.title}:${step.status}" }
+                    ) { index, step ->
+                        StatusCard(
+                            title = "步骤 ${index + 1} ${step.title}",
+                            content = buildTaskStepText(step),
+                            maxContentLines = 6
+                        )
+                    }
                 }
             }
         }
@@ -1513,6 +1429,7 @@ internal fun BasicPermissionsCard(
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
     val allCoreOk = corePermissionsGranted(status)
+    var showAdvanced by remember { mutableStateOf(false) }
     ModernCard {
         Column(
             modifier = Modifier
@@ -1522,7 +1439,7 @@ internal fun BasicPermissionsCard(
         ) {
             Text(text = "基础权限", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "开关以系统实时状态为准；曾授权过的项会标注记忆。点击开关跳转系统页，返回后自动复核。",
+                text = "状态随系统实时更新，返回后自动复核。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1543,7 +1460,7 @@ internal fun BasicPermissionsCard(
                 subtitle = permissionMemoryHint(
                     live = status.accessibilityEnabled,
                     remembered = rememberedAccessibility
-                ) ?: "仅手动或 Root 一键开启，启动不会自动授权",
+                ) ?: "需手动或通过 Root 开启",
                 onCheckedChange = { wanted ->
                     if (wanted != status.accessibilityEnabled) onToggleAccessibility()
                 }
@@ -1570,39 +1487,45 @@ internal fun BasicPermissionsCard(
                     if (wanted != status.allFilesAccessGranted) onToggleAllFiles()
                 }
             )
-            PermissionSwitchRow(
-                title = "通知监听",
-                checked = status.notificationListenerEnabled,
-                onCheckedChange = { wanted ->
-                    if (wanted != status.notificationListenerEnabled) onToggleNotificationListener()
-                }
+            AssistChip(
+                onClick = { showAdvanced = !showAdvanced },
+                label = { Text(if (showAdvanced) "收起更多权限" else "更多权限") }
             )
-            PermissionSwitchRow(
-                title = "Shizuku",
-                checked = status.shizukuPermissionGranted,
-                subtitle = when {
-                    status.shizukuPermissionGranted -> null
-                    status.shizukuBinderAlive -> "服务已连接，点击请求授权"
-                    status.shizukuManagerInstalled -> "已安装但服务未连接"
-                    else -> "未安装 Shizuku"
-                },
-                onCheckedChange = { wanted ->
-                    if (wanted != status.shizukuPermissionGranted) onToggleShizuku()
-                }
-            )
-            PermissionSwitchRow(
-                title = "Root 一键授权",
-                subtitle = if (allCoreOk) {
-                    "通知 / 无障碍 / 系统设置 / 全部文件均已就绪"
-                } else {
-                    "用 Root 一次性授予上述核心权限（含无障碍）"
-                },
-                checked = allCoreOk,
-                enabled = !allCoreOk,
-                onCheckedChange = { enable ->
-                    if (enable) onRootGrantAll()
-                }
-            )
+            if (showAdvanced) {
+                PermissionSwitchRow(
+                    title = "通知监听",
+                    checked = status.notificationListenerEnabled,
+                    onCheckedChange = { wanted ->
+                        if (wanted != status.notificationListenerEnabled) onToggleNotificationListener()
+                    }
+                )
+                PermissionSwitchRow(
+                    title = "Shizuku",
+                    checked = status.shizukuPermissionGranted,
+                    subtitle = when {
+                        status.shizukuPermissionGranted -> null
+                        status.shizukuBinderAlive -> "服务已连接，点击请求授权"
+                        status.shizukuManagerInstalled -> "已安装但服务未连接"
+                        else -> "未安装 Shizuku"
+                    },
+                    onCheckedChange = { wanted ->
+                        if (wanted != status.shizukuPermissionGranted) onToggleShizuku()
+                    }
+                )
+                PermissionSwitchRow(
+                    title = "Root 一键授权",
+                    subtitle = if (allCoreOk) {
+                        "通知 / 无障碍 / 系统设置 / 全部文件均已就绪"
+                    } else {
+                        "用 Root 一次性授予上述核心权限（含无障碍）"
+                    },
+                    checked = allCoreOk,
+                    enabled = !allCoreOk,
+                    onCheckedChange = { enable ->
+                        if (enable) onRootGrantAll()
+                    }
+                )
+            }
             val feedback = actionStatus.trim()
             if (feedback.isNotBlank() &&
                 feedback != "未执行权限修复" &&
@@ -1692,13 +1615,13 @@ internal fun LocalEnvironmentOpsCard(
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
                 verticalArrangement = Arrangement.spacedBy(vSpacing)
             ) {
-                AssistChip(onClick = onPing, label = { Text("Ping") })
-                AssistChip(onClick = onCapabilities, label = { Text("Capabilities") })
+                AssistChip(onClick = onPing, label = { Text("连接测试") })
+                AssistChip(onClick = onCapabilities, label = { Text("能力列表") })
                 AssistChip(onClick = onCapture, label = { Text(stringResource(R.string.overview_capture_detect)) })
-                AssistChip(onClick = onShell, label = { Text("wm size") })
+                AssistChip(onClick = onShell, label = { Text("屏幕尺寸") })
                 AssistChip(
                     onClick = onEvents,
-                    label = { Text(if (eventStreaming) "停止事件流" else "开始事件流") }
+                    label = { Text(if (eventStreaming) "停止事件订阅" else "开始事件订阅") }
                 )
             }
             ResultPanel(text = result)
@@ -1924,6 +1847,7 @@ internal fun EventSubscriptionCard(
 ) {
     val pad = responsiveCardPadding()
     val innerSpacing = responsiveCardInnerSpacing()
+    var expanded by remember { mutableStateOf(false) }
     ModernCard {
         Column(
             modifier = Modifier
@@ -1933,7 +1857,7 @@ internal fun EventSubscriptionCard(
         ) {
             Text(text = title, style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "事件流会持续接收 Runtime 推送的窗口、任务与健康变化。需要实时跟踪界面与守护状态时再开启订阅；平时可保持关闭以节省电量。",
+                text = "订阅窗口、任务与健康变化；不用时可关闭以省电。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1951,12 +1875,13 @@ internal fun EventSubscriptionCard(
             )
             ResultPanel(text = result)
             if (recentEvents.isNotEmpty()) {
-                Text(
-                    text = "最近事件",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                AssistChip(
+                    onClick = { expanded = !expanded },
+                    label = { Text(if (expanded) "收起最近事件" else "查看最近事件") }
                 )
-                ResultPanel(text = recentEvents.takeLast(12).joinToString("\n"))
+                if (expanded) {
+                    ResultPanel(text = recentEvents.takeLast(12).joinToString("\n"))
+                }
             }
         }
     }
@@ -2067,22 +1992,32 @@ internal fun LogCard(title: String, content: String) {
 @Composable
 internal fun ResultPanel(text: String) {
     val tone = toneForMessage(text)
-    val config = rememberAdaptableLayoutConfig()
+    var expanded by remember(text) { mutableStateOf(false) }
     Surface(
         color = tone.container(MaterialTheme.colorScheme).copy(alpha = 0.55f),
         tonalElevation = 0.dp,
         shape = CardDefaults.outlinedShape
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = tone.content(MaterialTheme.colorScheme),
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = config.resultPanelMaxHeight)
-                .verticalScroll(rememberScrollState())
-                .padding(12.dp)
-        )
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = tone.content(MaterialTheme.colorScheme),
+                maxLines = if (expanded) Int.MAX_VALUE else 8,
+                overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis
+            )
+            if (text.length > 240) {
+                AssistChip(
+                    onClick = { expanded = !expanded },
+                    label = { Text(if (expanded) "收起详情" else "展开详情") }
+                )
+            }
+        }
     }
 }
 
@@ -2193,7 +2128,7 @@ internal fun ChatBubble(
                             } else {
                                 MaterialTheme.colorScheme.secondary
                             },
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                         Text(
                             text = label,
@@ -2270,7 +2205,7 @@ internal fun ChatBubble(
                     }
                     IconButton(
                         onClick = { copyChatText(context, message.content) },
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.ContentCopy,
@@ -2280,7 +2215,7 @@ internal fun ChatBubble(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -2297,20 +2232,10 @@ private fun copyChatText(context: Context, text: String) {
 
 @Composable
 private fun ChatStreamingDots(color: Color) {
-    val transition = rememberInfiniteTransition(label = "stream-dots")
-    val alpha by transition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(500),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "stream-alpha"
-    )
     Text(
         text = "输入中",
         style = MaterialTheme.typography.labelSmall,
-        color = color.copy(alpha = alpha)
+        color = color
     )
 }
 
@@ -2359,9 +2284,9 @@ internal fun ModernCard(content: @Composable () -> Unit) {
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-        shape = RoundedCornerShape(28.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         content()
     }
@@ -2378,7 +2303,7 @@ private fun MetricInfoCard(
     Surface(
         modifier = Modifier.widthIn(min = config.metricCardMinWidth, max = config.metricCardMaxWidth),
         color = tone.container(MaterialTheme.colorScheme).copy(alpha = 0.20f),
-        shape = RoundedCornerShape(22.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Column(
             modifier = Modifier
@@ -2422,7 +2347,7 @@ private fun ProcessMetricPanel(
     val vSpacing = responsiveFlowVSpacing()
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
-        shape = RoundedCornerShape(24.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Column(
             modifier = Modifier
@@ -2488,42 +2413,6 @@ private fun HeroBadge(text: String, accent: Color) {
 }
 
 @Composable
-private fun HeroInfoTile(
-    modifier: Modifier = Modifier,
-    title: String,
-    value: String,
-    accent: Color
-) {
-    Surface(
-        modifier = modifier,
-        color = accent.copy(alpha = 0.12f),
-        shape = RoundedCornerShape(18.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
 private fun FloatingNavButton(
     modifier: Modifier = Modifier,
     selected: Boolean,
@@ -2532,14 +2421,14 @@ private fun FloatingNavButton(
     onClick: () -> Unit
 ) {
     val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
     } else {
         Color.Transparent
     }
     val borderColor = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.32f)
     } else {
-        MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)
+        Color.Transparent
     }
     val contentColor = if (selected) {
         MaterialTheme.colorScheme.primary
@@ -2548,15 +2437,16 @@ private fun FloatingNavButton(
     }
     Surface(
         modifier = modifier
+            .heightIn(min = 56.dp)
             .clickable(onClick = onClick),
         color = containerColor,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, borderColor)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 7.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {

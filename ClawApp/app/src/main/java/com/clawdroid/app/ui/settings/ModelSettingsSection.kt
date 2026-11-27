@@ -10,12 +10,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
@@ -595,14 +595,13 @@ private fun ModelListPickerPanel(
             if (result.filtered.isEmpty()) {
                 ResultPanel(text = "没有匹配的模型，试试换个关键字或标签")
             } else {
-                Column(
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 280.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .heightIn(max = 280.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    result.filtered.forEach { model ->
+                    items(items = result.filtered, key = { it }) { model ->
                         val selected = model == selectedModel
                         Row(
                             modifier = Modifier
@@ -971,9 +970,9 @@ private fun AdvancedSettingsToggle(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-        shape = RoundedCornerShape(28.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
             modifier = Modifier

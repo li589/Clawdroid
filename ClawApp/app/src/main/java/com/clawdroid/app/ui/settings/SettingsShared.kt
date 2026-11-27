@@ -161,7 +161,7 @@ internal fun SettingsReadinessCard(
                 .padding(pad),
             verticalArrangement = Arrangement.spacedBy(innerSpacing)
         ) {
-            Text(text = "设置总览", style = MaterialTheme.typography.titleLarge)
+            Text(text = "状态摘要", style = MaterialTheme.typography.titleMedium)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
@@ -175,10 +175,10 @@ internal fun SettingsReadinessCard(
             }
             ResultPanel(
                 text = buildString {
-                    append("连接摘要: ")
+                    append("连接: ")
                     append(connectionSummary)
                     append('\n')
-                    append("模型配置: ")
+                    append("配置: ")
                     append(validationMessage ?: "字段完整，可直接测试连接或用于聊天")
                 }
             )
@@ -201,7 +201,7 @@ internal fun SettingsCategoryHubCard(
         ) {
             Text(text = "选择设置项", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "按类别浏览模型接入、Agent 工具、Termux 与诊断等配置。",
+                text = "选择需要修改的配置。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -57,6 +57,7 @@ import com.clawdroid.app.skills.RuntimeTaskPoller
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
 import com.clawdroid.app.tools.ClawToolDispatcher
+import com.clawdroid.app.tools.ClawAssetPromptStore
 import com.clawdroid.app.tools.InputGuards
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -1600,9 +1601,12 @@ internal class ChatViewModel(
     }
 
     private fun welcomeMessage(): ChatMessage {
+        val text = ClawAssetPromptStore.chatWelcomePrompt(appContext).trim().ifBlank {
+            "直接发送指令或选择快捷动作。Runtime 未连接时，先检查运行状态。"
+        }
         return ChatMessage(
             role = ChatRole.Assistant,
-            content = "可以像聊天一样直接下达指令，例如“ping ClawRuntime”、“获取能力”、“截图并预览”、“运行时体检”、“/agents”、“/agent runtime_health_sweep”、“/task_list”、“/task_submit demo ping”、“取消 runtime 任务 <id>”、“执行 wm size”、“开始事件订阅”。"
+            content = text
         )
     }
 

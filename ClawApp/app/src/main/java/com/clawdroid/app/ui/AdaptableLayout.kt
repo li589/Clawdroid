@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -54,9 +53,7 @@ internal enum class ScreenWidthClass {
 internal fun rememberAdaptableLayoutConfig(): AdaptableLayoutConfig {
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp.dp
-    val density = LocalDensity.current
-
-    return remember(configuration) {
+    return remember(screenWidthDp) {
         val screenWidth = when {
             screenWidthDp < 600.dp -> ScreenWidthClass.Compact
             screenWidthDp < 840.dp -> ScreenWidthClass.Medium
@@ -66,12 +63,12 @@ internal fun rememberAdaptableLayoutConfig(): AdaptableLayoutConfig {
         when (screenWidth) {
             ScreenWidthClass.Compact -> AdaptableLayoutConfig(
                 screenWidth = ScreenWidthClass.Compact,
-                flowRowHorizontalSpacing = 6.dp,
-                flowRowVerticalSpacing = 6.dp,
-                cardPadding = 14.dp,
-                cardInnerSpacing = 10.dp,
+                flowRowHorizontalSpacing = 8.dp,
+                flowRowVerticalSpacing = 8.dp,
+                cardPadding = 16.dp,
+                cardInnerSpacing = 12.dp,
                 sectionTitleTopPadding = 16.dp,
-                sectionTitleBottomPadding = 6.dp,
+                sectionTitleBottomPadding = 8.dp,
                 metricCardMinWidth = 140.dp,
                 metricCardMaxWidth = 180.dp,
                 heroInfoTileWeight = 1f,
@@ -83,15 +80,15 @@ internal fun rememberAdaptableLayoutConfig(): AdaptableLayoutConfig {
                 outputPanelMaxHeight = 200.dp,
                 navBarPaddingH = 12.dp,
                 navBarPaddingV = 4.dp,
-                navBarSpacing = 4.dp,
+                navBarSpacing = 8.dp,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
             )
             ScreenWidthClass.Medium -> AdaptableLayoutConfig(
                 screenWidth = ScreenWidthClass.Medium,
                 flowRowHorizontalSpacing = 8.dp,
                 flowRowVerticalSpacing = 8.dp,
-                cardPadding = 16.dp,
-                cardInnerSpacing = 12.dp,
+                cardPadding = 20.dp,
+                cardInnerSpacing = 16.dp,
                 sectionTitleTopPadding = 20.dp,
                 sectionTitleBottomPadding = 8.dp,
                 metricCardMinWidth = 160.dp,
@@ -105,17 +102,17 @@ internal fun rememberAdaptableLayoutConfig(): AdaptableLayoutConfig {
                 outputPanelMaxHeight = 280.dp,
                 navBarPaddingH = 16.dp,
                 navBarPaddingV = 6.dp,
-                navBarSpacing = 6.dp,
+                navBarSpacing = 8.dp,
                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
             )
             ScreenWidthClass.Expanded -> AdaptableLayoutConfig(
                 screenWidth = ScreenWidthClass.Expanded,
-                flowRowHorizontalSpacing = 10.dp,
-                flowRowVerticalSpacing = 10.dp,
+                flowRowHorizontalSpacing = 8.dp,
+                flowRowVerticalSpacing = 8.dp,
                 cardPadding = 20.dp,
-                cardInnerSpacing = 14.dp,
+                cardInnerSpacing = 16.dp,
                 sectionTitleTopPadding = 24.dp,
-                sectionTitleBottomPadding = 10.dp,
+                sectionTitleBottomPadding = 8.dp,
                 metricCardMinWidth = 180.dp,
                 metricCardMaxWidth = 260.dp,
                 heroInfoTileWeight = 1f,

@@ -76,6 +76,7 @@ internal class OverviewController(
     )
 
     private var dashboardSamplingJob: Job? = null
+    private var previewDecodeJob: Job? = null
     private var initialStartupCompleted: Boolean = false
     private var connectionRefreshInFlight: Boolean = false
     private var lastHostStartedRefreshAtMs: Long = 0L
@@ -597,7 +598,7 @@ internal class OverviewController(
                 val rootAvailable = uiState.value.permissionState.localEnvironmentStatus.rootGranted == true
                 val sampledMetrics = metricsSampler.sample(rootAvailable = rootAvailable)
                 _dashboardMetrics.value = sampledMetrics
-                delay(1000)
+                delay(2000)
             }
         }
     }
@@ -606,7 +607,10 @@ internal class OverviewController(
         applyNonPreviewToolSideEffects(result)
         // Decode preview here only — never call renderReadPreviewResult (avoids recursion).
         result.previewBytes?.takeIf { it.isNotEmpty() }?.let { bytes ->
-            capturePreviewStore.publishDecoded(bytes)
+            previewDecodeJob?.cancel()
+            previewDecodeJob = safeLaunch("overview:preview-decode") {
+                capturePreviewStore.publishDecodedAsync(bytes)
+            }
         }
     }
 
@@ -1348,17 +1352,18 @@ internal class OverviewController(
             runtimeEventService.shutdown()
         }
         dashboardSamplingJob?.cancel()
+        previewDecodeJob?.cancel()
         super.onCleared()
     }
 
-    private fun renderReadPreviewResult(result: ClawToolCallResult): String {
+    private suspend fun renderReadPreviewResult(result: ClawToolCallResult): String {
         applyNonPreviewToolSideEffects(result)
         val bytes = result.previewBytes
         if (bytes == null || bytes.isEmpty()) {
             capturePreviewStore.clear()
             return result.output
         }
-        val decoded = capturePreviewStore.publishDecoded(bytes)
+        val decoded = capturePreviewStore.publishDecodedAsync(bytes)
         val runtimeState = uiState.value.runtimeState
         return if (decoded != null) {
             "成功: decoded=${decoded.width}x${decoded.height}, sample=${decoded.sampleSize}, bytes=${formatBytes(bytes.size.toLong())}, capture_size=${formatBytes(runtimeState.capture.latestFileSize)}, format=${runtimeState.capture.latestFormat}"

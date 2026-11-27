@@ -6,8 +6,13 @@ import com.clawdroid.app.env.buildLocalEnvironmentDiagnosis
 import com.clawdroid.app.runtime.ClawRuntimeEventFrame
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.time.Instant
 import java.util.Date
 import java.util.Locale
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
 internal fun buildLocalEnvironmentSummary(status: LocalEnvironmentStatus): String {
     val root = rootStatusLabel(status.rootGranted)
@@ -20,7 +25,9 @@ internal fun buildLocalEnvironmentSummary(status: LocalEnvironmentStatus): Strin
     val writeSettings = permissionGrantedLabel(status.writeSettingsGranted)
     val allFiles = permissionGrantedLabel(status.allFilesAccessGranted)
     val shizuku = shizukuEnvLabel(status)
-    return "Root=$root, Root环境=$magisk, 模块=$module, Runtime=$runtime, LSPosed=$lsposed, Accessibility=$accessibility, 通知=$notification, Shizuku=$shizuku, 系统设置=$writeSettings, 全部文件=$allFiles"
+    return "Root $root · Magisk $magisk · 模块 $module\n" +
+        "Runtime $runtime · LSPosed $lsposed · 无障碍 $accessibility\n" +
+        "通知 $notification · Shizuku $shizuku · 系统设置 $writeSettings · 文件 $allFiles"
 }
 
 internal fun rootStatusLabel(rootGranted: Boolean?): String {
@@ -217,8 +224,9 @@ internal fun formatEpochMillis(value: Long): String {
     if (value <= 0L) {
         return "unknown"
     }
-    val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-    return formatter.format(Date(value))
+    return Instant.ofEpochMilli(value)
+        .atZone(ZoneId.systemDefault())
+        .format(dateTimeFormatter)
 }
 
 internal fun formatEpochSeconds(value: Long): String {

@@ -2,30 +2,45 @@ package com.clawdroid.app.ui
 
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
-/**
- * Owns screenshot preview decode/state for Overview (and future surfaces).
- */
 internal class CapturePreviewStore {
     private val _preview = MutableStateFlow<ImageBitmap?>(null)
     val preview: StateFlow<ImageBitmap?> = _preview.asStateFlow()
+    private val generation = AtomicLong(0)
 
     fun clear() {
+        generation.incrementAndGet()
         _preview.value = null
     }
 
     fun publishDecoded(bytes: ByteArray): DecodedPreview? {
-        // Decode into ImageBitmap only; do not retain the source ByteArray in this store.
+        val token = generation.incrementAndGet()
         val decoded = runCatching { decode(bytes) }.getOrNull()
-        _preview.value = decoded?.image
+        if (generation.get() == token) {
+            _preview.value = decoded?.image
+        }
         return decoded
     }
 
-    fun decode(bytes: ByteArray, maxPreviewDimension: Int = 2048): DecodedPreview? {
+    suspend fun publishDecodedAsync(bytes: ByteArray): DecodedPreview? {
+        val token = generation.incrementAndGet()
+        val decoded = withContext(Dispatchers.Default) {
+            runCatching { decode(bytes) }.getOrNull()
+        }
+        if (generation.get() == token) {
+            _preview.value = decoded?.image
+        }
+        return decoded
+    }
+
+    fun decode(bytes: ByteArray, maxPreviewDimension: Int = 1280): DecodedPreview? {
         val bounds = android.graphics.BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }

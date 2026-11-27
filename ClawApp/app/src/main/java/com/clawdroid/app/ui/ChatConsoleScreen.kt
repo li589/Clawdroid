@@ -14,6 +14,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -58,15 +61,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -82,10 +80,7 @@ import com.clawdroid.app.tools.ClawAssetPromptStore
 internal fun ChatPage(
     state: ChatConsoleState,
     actions: ChatConsoleActions,
-    modifier: Modifier = Modifier,
-    onScrollTowardBottom: () -> Unit = {},
-    onScrollTowardTop: () -> Unit = {},
-    onComposerInteract: () -> Unit = {}
+    modifier: Modifier = Modifier
 ) {
     var toolsExpanded by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -93,28 +88,14 @@ internal fun ChatPage(
     val suggestionPrompts = remember(context) {
         ClawAssetPromptStore.chatSuggestions(context).ifEmpty {
             listOf(
-                "ping ClawRuntime",
-                "获取能力",
+                "检查运行时状态",
+                "获取当前能力",
                 "截图并预览",
-                "运行时体检"
+                "开始事件订阅"
             )
         }
     }
-    val latestScrollDown = rememberUpdatedState(onScrollTowardBottom)
-    val latestScrollUp = rememberUpdatedState(onScrollTowardTop)
-    val nestedScroll = remember {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                when {
-                    available.y < -6f -> latestScrollDown.value()
-                    available.y > 6f -> latestScrollUp.value()
-                }
-                return Offset.Zero
-            }
-        }
-    }
-
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content, state.messages.lastOrNull()?.state) {
+    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.id) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.lastIndex)
         }
@@ -125,7 +106,6 @@ internal fun ChatPage(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .imePadding()
-            .nestedScroll(nestedScroll)
     ) {
         ChatTopBar(
             sessionTitle = state.activeSessionTitle,
@@ -267,27 +247,21 @@ internal fun ChatPage(
             pendingImageLabel = state.pendingImageLabel,
             isBusy = state.chatBusy,
             onInputChange = {
-                onComposerInteract()
                 actions.onInputChange(it)
             },
             onSend = {
-                onComposerInteract()
                 actions.onSend()
             },
             onStop = {
-                onComposerInteract()
                 actions.onInterruptGeneration()
             },
             onVoiceClick = {
-                onComposerInteract()
                 actions.onVoiceClick()
             },
             onImageClick = {
-                onComposerInteract()
                 actions.onImageClick()
             },
             onClearPendingImage = {
-                onComposerInteract()
                 actions.onClearPendingImage()
             }
         )
@@ -411,19 +385,21 @@ private fun ChatTopBar(
             onDismissRequest = { showSessionPicker = false },
             title = { Text("选择对话") },
             text = {
-                Column(
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 360.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (sessionSummaries.isEmpty()) {
-                        Text(
-                            text = "暂无历史对话",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        item(key = "empty-sessions") {
+                            Text(
+                                text = "暂无历史对话",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     } else {
-                        sessionSummaries.forEach { session ->
+                        items(items = sessionSummaries, key = { it.id }) { session ->
                             val selected = session.id == activeSessionId
                             Surface(
                                 modifier = Modifier
@@ -534,7 +510,7 @@ private fun ChatEmptyState(
             color = MaterialTheme.colorScheme.onSurface
         )
         Text(
-            text = "用自然语言控制 Runtime：探测、截图、任务与快捷动作。",
+            text = "发送指令，或选择快捷动作。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -546,30 +522,24 @@ private fun ChatEmptyState(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChatSuggestionRow(
     suggestions: List<String>,
     enabled: Boolean,
     onSuggestion: (String) -> Unit
 ) {
-    Column(
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         suggestions.forEach { prompt ->
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = enabled) { onSuggestion(prompt) },
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-            ) {
-                Text(
-                    text = prompt,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
+            AssistChip(
+                onClick = { onSuggestion(prompt) },
+                enabled = enabled,
+                label = { Text(prompt) }
+            )
         }
     }
 }
@@ -588,8 +558,8 @@ private fun ChatComposerBar(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        shadowElevation = 6.dp
+        tonalElevation = 0.dp,
+        shadowElevation = 2.dp
     ) {
         Column(
             modifier = Modifier
@@ -644,7 +614,7 @@ private fun ChatComposerBar(
                 }
                 Surface(
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(22.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
                 ) {
                     BasicTextField(

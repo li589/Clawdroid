@@ -119,7 +119,7 @@ fun TermuxConsoleScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            text = "Termux Console",
+            text = "Termux 终端",
             style = MaterialTheme.typography.titleLarge
         )
         Text(
@@ -128,7 +128,7 @@ fun TermuxConsoleScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            text = "Requires allow-external-apps=true in ~/.termux/termux.properties",
+            text = "需在 ~/.termux/termux.properties 启用 allow-external-apps。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -171,7 +171,7 @@ fun TermuxConsoleScreen(
                     selectedSessionId = next.id
                 }
             ) {
-                Text("+")
+                Text("新建")
             }
         }
 
@@ -194,7 +194,7 @@ fun TermuxConsoleScreen(
                 if (lines.isEmpty()) {
                     item(key = "empty") {
                         Text(
-                            text = "No output yet. Enter a command below.",
+                            text = "暂无输出，在下方输入命令。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -242,7 +242,7 @@ fun TermuxConsoleScreen(
                 },
                 enabled = selectedSession?.running != true && commandInput.isNotBlank()
             ) {
-                Text(if (selectedSession?.running == true) "…" else "Run")
+                Text(if (selectedSession?.running == true) "运行中" else "运行")
             }
         }
     }
