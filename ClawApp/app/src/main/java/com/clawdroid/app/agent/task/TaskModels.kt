@@ -44,7 +44,8 @@ data class TaskCheckpoint(
     val completedStepIds: Set<String> = emptySet(),
     val stepAttempts: Map<String, Int> = emptyMap(),
     val runtimeTaskId: String? = null,
-    val waitingReason: String? = null
+    val waitingReason: String? = null,
+    val data: Map<String, String> = emptyMap()
 )
 
 data class TaskFailure(

@@ -12,7 +12,9 @@ internal class AccessibilityObservationSource(
     override fun snapshot(packageName: String): ObservationSnapshot? {
         val snapshot = snapshotProvider()
         if (!snapshot.serviceConnected) return null
-        if (snapshot.packageName.isBlank() || !snapshot.packageName.equals(packageName, ignoreCase = true)) {
+        if (snapshot.packageName.isBlank() ||
+            (packageName.isNotBlank() && !snapshot.packageName.equals(packageName, ignoreCase = true))
+        ) {
             return null
         }
         return ObservationSnapshot(

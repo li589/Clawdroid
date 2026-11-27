@@ -54,6 +54,27 @@ class TaskEngineTest {
     }
 
     @Test
+    fun stepResultDataIsPersistedInCheckpoint() = runTest {
+        val store = InMemoryTaskStore()
+        val adapter = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult = TaskStepResult(
+                success = true,
+                summary = "resolved",
+                data = mapOf("resolution_token" to "token-1")
+            )
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to adapter), this)
+
+        engine.submit(ExecutionTask("t1", "demo", "run", listOf(ExecutionStep("s1", "resolve", StepKind.Tool))))
+        advanceUntilIdle()
+
+        assertEquals("token-1", store.load().single().checkpoint.data["resolution_token"])
+    }
+
+    @Test
     fun waitingStepPersistsRuntimeTaskId() = runTest {
         val store = InMemoryTaskStore()
         val adapter = object : TaskStepAdapter {

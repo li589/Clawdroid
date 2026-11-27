@@ -14,7 +14,7 @@ class LsposedFocusObservationSource(
         val raw = rawProvider()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val json = JSONObject(raw)
         val actualPackage = json.optString("package_name")
-        if (actualPackage.isBlank() || !actualPackage.equals(packageName, ignoreCase = true)) return null
+        if (actualPackage.isBlank() || (packageName.isNotBlank() && !actualPackage.equals(packageName, ignoreCase = true))) return null
         ObservationSnapshot(
             source = ObservationSource.LsposedFocus,
             packageName = actualPackage,
@@ -35,7 +35,7 @@ class LsposedViewObservationSource(
         val raw = rawProvider()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val json = JSONObject(raw)
         val actualPackage = json.optString("package_name")
-        if (actualPackage.isBlank() || !actualPackage.equals(packageName, ignoreCase = true)) return null
+        if (actualPackage.isBlank() || (packageName.isNotBlank() && !actualPackage.equals(packageName, ignoreCase = true))) return null
         val nodesArray = json.optJSONArray("nodes") ?: JSONArray()
         val nodes = buildList {
             for (index in 0 until nodesArray.length()) {

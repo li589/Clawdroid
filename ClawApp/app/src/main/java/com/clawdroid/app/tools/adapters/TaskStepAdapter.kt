@@ -16,7 +16,8 @@ data class TaskStepResult(
     val summary: String,
     val failure: TaskFailure? = null,
     val runtimeTaskId: String? = null,
-    val waitReason: String? = null
+    val waitReason: String? = null,
+    val data: Map<String, String> = emptyMap()
 )
 
 interface TaskStepAdapter {

@@ -34,7 +34,8 @@ class TaskStoreTest {
                 completedStepIds = setOf("s0"),
                 stepAttempts = mapOf("s1" to 2),
                 runtimeTaskId = "rt-1",
-                waitingReason = "page"
+                waitingReason = "page",
+                data = mapOf("resolution_token" to "token-1")
             ),
             failure = TaskFailure("temp", "retry", "detail", retryable = true, source = "runtime"),
             createdAtEpochMs = 10,

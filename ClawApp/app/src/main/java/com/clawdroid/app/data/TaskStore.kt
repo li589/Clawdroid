@@ -111,6 +111,9 @@ class JsonTaskStore(private val storage: TaskStorage) : TaskStore {
         })
         putNullable("runtime_task_id", checkpoint.runtimeTaskId)
         putNullable("waiting_reason", checkpoint.waitingReason)
+        put("data", JSONObject().apply {
+            checkpoint.data.forEach { (key, value) -> put(key, value) }
+        })
     }
 
     private fun encodeFailure(failure: TaskFailure): JSONObject = JSONObject().apply {
@@ -171,12 +174,17 @@ class JsonTaskStore(private val storage: TaskStorage) : TaskStore {
         val attempts = buildMap {
             attemptsObject.keys().forEach { key -> put(key, attemptsObject.optInt(key)) }
         }
+        val dataObject = item.optJSONObject("data") ?: JSONObject()
+        val data = buildMap {
+            dataObject.keys().forEach { key -> put(key, dataObject.optString(key)) }
+        }
         return TaskCheckpoint(
             nextStepIndex = item.optInt("next_step_index"),
             completedStepIds = completed,
             stepAttempts = attempts,
             runtimeTaskId = item.optStringOrNull("runtime_task_id"),
-            waitingReason = item.optStringOrNull("waiting_reason")
+            waitingReason = item.optStringOrNull("waiting_reason"),
+            data = data
         )
     }
 

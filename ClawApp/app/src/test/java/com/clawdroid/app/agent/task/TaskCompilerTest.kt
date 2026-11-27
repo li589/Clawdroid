@@ -34,6 +34,32 @@ class TaskCompilerTest {
     }
 
     @Test
+    fun confirmThenSafeTapCompilesAutomationSteps() {
+        val agent = requireNotNull(ClawAgentCatalog.byId("confirm_then_safe_tap"))
+
+        val task = requireNotNull(
+            TaskCompiler.fromAgentDefinition(
+                "t1",
+                agent,
+                mapOf(
+                    "expected_package" to "com.example.app",
+                    "expected_text" to "页面",
+                    "expected_view_id" to "root",
+                    "target_text" to "继续",
+                    "target_view_id" to "continue"
+                )
+            )
+        )
+
+        assertEquals(
+            listOf(StepKind.ConfirmPage, StepKind.ResolveTarget, StepKind.SafeTap),
+            task.steps.map { it.kind }
+        )
+        assertTrue(task.steps.first().payload.contains("com.example.app"))
+        assertTrue(task.steps[1].payload.contains("continue"))
+    }
+
+    @Test
     fun compilerMapsAwaitRuntimeStep() {
         val plan = AgentPlan(
             steps = listOf(

@@ -5,6 +5,7 @@ import com.clawdroid.app.agent.AgentPlanStep
 import com.clawdroid.app.skills.AgentExecutionMode
 import com.clawdroid.app.skills.AgentRuntimeBridge
 import com.clawdroid.app.skills.ClawAgentDefinition
+import org.json.JSONObject
 
 object TaskCompiler {
     fun fromAgentPlan(
@@ -37,6 +38,31 @@ object TaskCompiler {
         agent: ClawAgentDefinition,
         arguments: Map<String, Any?> = emptyMap()
     ): ExecutionTask? {
+        if (agent.id == "confirm_then_safe_tap") {
+            val confirm = JSONObject().apply {
+                put("expected_package", arguments["expected_package"] ?: "")
+                put("expected_text", arguments["expected_text"] ?: "")
+                put("expected_view_id", arguments["expected_view_id"] ?: "")
+            }.toString()
+            val resolve = JSONObject().apply {
+                put("expected_package", arguments["expected_package"] ?: "")
+                put("target_text", arguments["target_text"] ?: arguments["expected_text"] ?: "")
+                put("target_view_id", arguments["target_view_id"] ?: arguments["expected_view_id"] ?: "")
+            }.toString()
+            val tap = JSONObject().apply {
+                put("expected_package", arguments["expected_package"] ?: "")
+            }.toString()
+            return ExecutionTask(
+                id = taskId,
+                title = agent.name,
+                originPrompt = agent.id,
+                steps = listOf(
+                    ExecutionStep("confirm-page", "页面确认", StepKind.ConfirmPage, confirm),
+                    ExecutionStep("resolve-target", "点击前检查", StepKind.ResolveTarget, resolve),
+                    ExecutionStep("safe-tap", "安全点击", StepKind.SafeTap, tap, sideEffectKey = "$taskId:tap")
+                )
+            )
+        }
         if (agent.executionMode == AgentExecutionMode.RuntimeTask) {
             val payload = AgentRuntimeBridge.buildStepsJson(agent, arguments) ?: return null
             return ExecutionTask(

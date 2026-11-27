@@ -142,7 +142,8 @@ class ClawAgentRunner(
             )
 
         val engine = taskEngine
-        if (AgentRuntimeBridge.canSubmitAsRuntimeTask(agent) && engine != null) {
+        val useTaskEngine = AgentRuntimeBridge.canSubmitAsRuntimeTask(agent) || agent.id == "confirm_then_safe_tap"
+        if (useTaskEngine && engine != null) {
             val taskId = "agent-${agent.id}-${System.currentTimeMillis()}"
             val task = TaskCompiler.fromAgentDefinition(taskId, agent, arguments)
                 ?: return ClawToolCallResult(

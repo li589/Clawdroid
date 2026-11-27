@@ -16,7 +16,7 @@ class ObservationPortTest {
             lsposedFocus = fakeProvider(snapshot(ObservationSource.LsposedFocus, now - 20_000)),
             lsposedView = fakeProvider(snapshot(ObservationSource.LsposedView, now - 20_000)),
             accessibility = fakeProvider(snapshot(ObservationSource.Accessibility, now - 100)),
-            now = { now }
+            clock = { now }
         )
 
         assertEquals(ObservationSource.Accessibility, port.current("com.example.app")?.source)
@@ -29,7 +29,7 @@ class ObservationPortTest {
             lsposedFocus = fakeProvider(snapshot(ObservationSource.LsposedFocus, now, packageName = "com.other")),
             lsposedView = fakeProvider(null),
             accessibility = fakeProvider(null),
-            now = { now }
+            clock = { now }
         )
 
         assertNull(port.current("com.example.app"))

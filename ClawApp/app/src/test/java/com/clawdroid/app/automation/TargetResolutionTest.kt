@@ -21,6 +21,16 @@ class TargetResolutionTest {
     }
 
     @Test
+    fun tokenIsValidForLabelOnlyNode() {
+        val snapshot = snapshotWithTargets(1).let {
+            it.copy(nodes = it.nodes.map { node -> node.copy(id = "", viewId = "", label = "Continue") })
+        }
+        val resolution = TargetResolver.resolve(snapshot, targetText = "continue") as TargetResolution.Resolved
+
+        assertTrue(TargetResolver.validate(resolution, snapshot, 100_000))
+    }
+
+    @Test
     fun tokenRejectsPackageMismatch() {
         val snapshot = snapshotWithTargets(1)
         val resolution = TargetResolver.resolve(snapshot, targetText = "继续") as TargetResolution.Resolved

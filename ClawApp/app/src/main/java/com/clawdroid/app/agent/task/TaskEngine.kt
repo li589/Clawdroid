@@ -303,7 +303,8 @@ class TaskEngine(
                         nextStepIndex = it.checkpoint.nextStepIndex + 1,
                         completedStepIds = it.checkpoint.completedStepIds + step.id,
                         runtimeTaskId = result.runtimeTaskId ?: it.checkpoint.runtimeTaskId,
-                        waitingReason = null
+                        waitingReason = null,
+                        data = it.checkpoint.data + result.data
                     ),
                     updatedAtEpochMs = System.currentTimeMillis()
                 )

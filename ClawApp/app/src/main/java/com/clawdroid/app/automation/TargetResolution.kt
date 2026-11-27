@@ -40,7 +40,7 @@ object TargetResolver {
                 val node = candidates.single()
                 TargetResolution.Resolved(
                     token = UUID.randomUUID().toString(),
-                    nodeKey = node.id.ifBlank { node.viewId }.ifBlank { node.label },
+                    nodeKey = node.id.ifBlank { node.viewId }.ifBlank { node.label.lowercase(Locale.ROOT) },
                     label = node.label,
                     bounds = node.bounds,
                     packageName = snapshot.packageName,

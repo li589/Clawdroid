@@ -7,6 +7,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import com.clawdroid.app.ai.AiAgentOrchestrator
+import com.clawdroid.app.automation.AccessibilityObservationSource
+import com.clawdroid.app.automation.LsposedFocusObservationSource
+import com.clawdroid.app.automation.LsposedViewObservationSource
+import com.clawdroid.app.automation.ObservationPort
 import com.clawdroid.app.agent.task.StepKind
 import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.data.AppSettingsStore
@@ -27,6 +31,7 @@ import com.clawdroid.app.tools.LiveToolCapabilityStore
 import com.clawdroid.app.tools.RuntimeEventToolBridge
 import com.clawdroid.app.tools.ToolPermissionGate
 import com.clawdroid.app.tools.ToolServiceRegistry
+import com.clawdroid.app.tools.adapters.AutomationAdapter
 import com.clawdroid.app.tools.adapters.LocalToolAdapter
 import com.clawdroid.app.tools.adapters.RuntimeTaskAdapter
 import kotlinx.coroutines.CoroutineScope
@@ -144,12 +149,26 @@ internal fun rememberClawdroidCompositionRoot(
         )
     }
 
-    val taskEngine = remember(toolDispatcher, eventScope) {
+    val observationPort = remember {
+        ObservationPort(
+            lsposedFocus = LsposedFocusObservationSource(),
+            lsposedView = LsposedViewObservationSource(),
+            accessibility = AccessibilityObservationSource()
+        )
+    }
+    val automationAdapter = remember(observationPort, toolDispatcher) {
+        AutomationAdapter(observationPort, toolDispatcher)
+    }
+    val taskEngine = remember(toolDispatcher, observationPort, automationAdapter, eventScope) {
         TaskEngine(
             store = JsonTaskStore(SharedPreferencesTaskStorage(appContext)),
             adapters = mapOf(
                 StepKind.Tool to LocalToolAdapter(toolDispatcher),
-                StepKind.RuntimeTask to RuntimeTaskAdapter(toolDispatcher)
+                StepKind.RuntimeTask to RuntimeTaskAdapter(toolDispatcher),
+                StepKind.ObservePage to automationAdapter,
+                StepKind.ConfirmPage to automationAdapter,
+                StepKind.ResolveTarget to automationAdapter,
+                StepKind.SafeTap to automationAdapter
             ),
             scope = eventScope
         )

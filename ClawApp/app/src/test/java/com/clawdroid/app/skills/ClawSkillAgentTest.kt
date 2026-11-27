@@ -53,6 +53,21 @@ class ClawAgentRunnerTest {
     }
 
     @Test
+    fun confirmThenSafeTapUsesTaskEngineWhenProvided() = runTest {
+        val dispatcher = ClawToolDispatcher(mockk(relaxed = true))
+        val engine = mockk<TaskEngine>(relaxed = true)
+        val runner = ClawAgentRunner(dispatcher, taskEngine = engine)
+
+        val result = runner.run(
+            "confirm_then_safe_tap",
+            mapOf("expected_package" to "com.example.app", "target_text" to "继续")
+        )
+
+        assertTrue(result.success)
+        coVerify(exactly = 1) { engine.submit(match { it.title == "页面确认后安全点击" }) }
+    }
+
+    @Test
     fun runtimeHealthSweepStopsWhenTaskSubmitFails() = runTest {
         val executor = mockk<ClawToolExecutor>(relaxed = true)
         coEvery { executor.taskSubmit(any()) } returns ClawToolCallResult(
