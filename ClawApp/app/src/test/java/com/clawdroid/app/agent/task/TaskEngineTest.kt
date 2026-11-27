@@ -1,6 +1,7 @@
 package com.clawdroid.app.agent.task
 
 import com.clawdroid.app.data.InMemoryTaskStore
+import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.adapters.TaskExecutionContext
 import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
@@ -73,6 +74,53 @@ class TaskEngineTest {
         val task = store.load().single()
         assertEquals(TaskState.WaitingSignal, task.state)
         assertEquals("rt-1", task.checkpoint.runtimeTaskId)
+    }
+
+    @Test
+    fun olderRuntimeEventCannotRegressSucceededTask() = runTest {
+        val store = InMemoryTaskStore()
+        val engine = TaskEngine(store, emptyMap(), this)
+        engine.restore(ExecutionTask("t1", "demo", "run", emptyList(), TaskState.Succeeded))
+
+        engine.applyRuntimeSnapshot(ClawRuntimeTaskSnapshot(taskId = "t1", state = "Running"))
+
+        assertEquals(TaskState.Succeeded, store.load().single().state)
+    }
+
+    @Test
+    fun runtimeSuccessAdvancesMixedTask() = runTest {
+        val store = InMemoryTaskStore()
+        val localCalls = mutableListOf<String>()
+        val local = object : TaskStepAdapter {
+            override suspend fun execute(
+                step: ExecutionStep,
+                context: TaskExecutionContext
+            ): TaskStepResult {
+                localCalls += step.id
+                return TaskStepResult(true, step.title)
+            }
+        }
+        val engine = TaskEngine(store, mapOf(StepKind.Tool to local), this)
+        engine.restore(
+            ExecutionTask(
+                id = "t1",
+                title = "mixed",
+                originPrompt = "run",
+                steps = listOf(
+                    ExecutionStep("runtime", "runtime", StepKind.RuntimeTask),
+                    ExecutionStep("local", "local", StepKind.Tool)
+                ),
+                state = TaskState.WaitingSignal,
+                checkpoint = TaskCheckpoint(runtimeTaskId = "rt-1", waitingReason = "runtime_task")
+            )
+        )
+
+        engine.applyRuntimeSnapshot(ClawRuntimeTaskSnapshot(taskId = "rt-1", state = "Succeeded"))
+        advanceUntilIdle()
+
+        assertEquals(listOf("local"), localCalls)
+        assertEquals(TaskState.Succeeded, store.load().single().state)
+        assertEquals(setOf("runtime", "local"), store.load().single().checkpoint.completedStepIds)
     }
 
     @Test

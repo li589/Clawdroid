@@ -1,6 +1,7 @@
 package com.clawdroid.app.agent.task
 
 import com.clawdroid.app.data.TaskStore
+import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.adapters.TaskExecutionContext
 import com.clawdroid.app.tools.adapters.TaskStepAdapter
 import com.clawdroid.app.tools.adapters.TaskStepResult
@@ -40,12 +41,7 @@ class TaskEngine(
             eventBus.publish(TaskEvent(queued.id, TaskState.Queued, "任务已排队"))
             queued
         }
-        val job = scope.launch { runTask(queued.id) }
-        jobs[queued.id] = job
-        job.invokeOnCompletion {
-            activeTaskIds.remove(queued.id)
-            jobs.remove(queued.id)
-        }
+        launchTask(queued.id, alreadyActive = true)
     }
 
     fun restore(task: ExecutionTask) {
@@ -55,8 +51,78 @@ class TaskEngine(
     fun current(taskId: String): ExecutionTask? =
         store.load().firstOrNull { it.id == taskId }
 
+    suspend fun applyRuntimeSnapshot(snapshot: ClawRuntimeTaskSnapshot) {
+        val runtimeState = snapshot.state.lowercase()
+        var taskToContinue: String? = null
+        mutex.withLock {
+            val task = store.load().firstOrNull {
+                it.id == snapshot.taskId || it.checkpoint.runtimeTaskId == snapshot.taskId
+            } ?: return@withLock
+            if (TaskStateMachine.isTerminal(task.state)) return@withLock
+            val updated = when (runtimeState) {
+                "succeeded" -> {
+                    val step = task.steps.getOrNull(task.checkpoint.nextStepIndex)
+                    val checkpoint = if (step?.kind == StepKind.RuntimeTask) {
+                        task.checkpoint.copy(
+                            nextStepIndex = task.checkpoint.nextStepIndex + 1,
+                            completedStepIds = task.checkpoint.completedStepIds + step.id,
+                            waitingReason = null
+                        )
+                    } else {
+                        task.checkpoint.copy(waitingReason = null)
+                    }
+                    val state = if (checkpoint.nextStepIndex >= task.steps.size) {
+                        TaskState.Succeeded
+                    } else {
+                        TaskState.Running
+                    }
+                    task.copy(
+                        state = state,
+                        checkpoint = checkpoint,
+                        failure = null,
+                        updatedAtEpochMs = System.currentTimeMillis()
+                    )
+                }
+                "failed" -> task.copy(
+                    state = TaskState.Failed,
+                    failure = TaskFailure(
+                        code = if (snapshot.errorCode != 0) "runtime_${snapshot.errorCode}" else "runtime_task_failed",
+                        summary = snapshot.error.ifBlank { "Runtime 任务失败" },
+                        detail = snapshot.summaryLine(),
+                        retryable = false,
+                        source = "runtime_task"
+                    ),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+                "cancelled" -> task.copy(
+                    state = TaskState.Cancelled,
+                    failure = TaskFailure(
+                        code = "runtime_task_cancelled",
+                        summary = "Runtime 任务已取消",
+                        detail = snapshot.summaryLine(),
+                        source = "runtime_task"
+                    ),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+                else -> task.copy(
+                    state = if (task.state == TaskState.Paused) TaskState.Paused else TaskState.Running,
+                    checkpoint = task.checkpoint.copy(runtimeTaskId = snapshot.taskId),
+                    updatedAtEpochMs = System.currentTimeMillis()
+                )
+            }
+            store.save(updated)
+            eventBus.publish(TaskEvent(updated.id, updated.state, snapshot.summaryLine()))
+            if (runtimeState == "succeeded" && updated.state == TaskState.Running) {
+                taskToContinue = updated.id
+            }
+        }
+        taskToContinue?.let(::launchTask)
+    }
+
     private suspend fun runTask(taskId: String) {
-        val running = transition(taskId, TaskState.Running, "任务执行中") ?: return
+        val running = current(taskId)?.takeIf { it.state == TaskState.Running }
+            ?: transition(taskId, TaskState.Running, "任务执行中")
+            ?: return
         var task = running
         while (task.checkpoint.nextStepIndex < task.steps.size) {
             val step = task.steps[task.checkpoint.nextStepIndex]
@@ -126,6 +192,16 @@ class TaskEngine(
         }
         transition(taskId, TaskState.Succeeded, "任务已完成")
         jobs.remove(taskId)
+    }
+
+    private fun launchTask(taskId: String, alreadyActive: Boolean = false) {
+        if (!alreadyActive && !activeTaskIds.add(taskId)) return
+        val job = scope.launch { runTask(taskId) }
+        jobs[taskId] = job
+        job.invokeOnCompletion {
+            activeTaskIds.remove(taskId)
+            jobs.remove(taskId)
+        }
     }
 
     private suspend fun fail(taskId: String, failure: TaskFailure) {
