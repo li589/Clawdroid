@@ -1,6 +1,7 @@
 package com.clawdroid.app.tools
 
 import android.content.Context
+import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.fault.FaultCodes
 import com.clawdroid.app.fault.FaultIsolation
 import com.clawdroid.app.mcp.assist.AssistMcpController
@@ -94,6 +95,10 @@ class ClawToolDispatcher(
 
     @Volatile
     private var lastCapture: ClawCaptureArtifact? = null
+
+    fun bindTaskEngine(engine: TaskEngine) {
+        agentRunner.bindTaskEngine(engine)
+    }
 
     fun peekLastCapture(): ClawCaptureArtifact? = lastCapture
 

@@ -1,5 +1,7 @@
 package com.clawdroid.app.skills
 
+import com.clawdroid.app.agent.task.TaskCompiler
+import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.ipc.ClawRuntimeTaskSnapshot
 import com.clawdroid.app.tools.ClawTool
 import com.clawdroid.app.tools.ClawToolCallResult
@@ -118,8 +120,14 @@ object ClawAgentCatalog {
 }
 
 class ClawAgentRunner(
-    private val dispatcher: ClawToolDispatcher
+    private val dispatcher: ClawToolDispatcher,
+    taskEngine: TaskEngine? = null
 ) {
+    private var taskEngine: TaskEngine? = taskEngine
+
+    fun bindTaskEngine(engine: TaskEngine) {
+        taskEngine = engine
+    }
     suspend fun run(
         agentId: String,
         arguments: Map<String, Any?> = emptyMap(),
@@ -132,6 +140,34 @@ class ClawAgentRunner(
                 output = "未知 Agent: $agentId。可用: ${ClawAgentCatalog.all().joinToString { it.id }}",
                 error = "unknown_agent"
             )
+
+        val engine = taskEngine
+        if (AgentRuntimeBridge.canSubmitAsRuntimeTask(agent) && engine != null) {
+            val taskId = "agent-${agent.id}-${System.currentTimeMillis()}"
+            val task = TaskCompiler.fromAgentDefinition(taskId, agent, arguments)
+                ?: return ClawToolCallResult(
+                    success = false,
+                    output = "Agent ${agent.id} 无法映射为 Runtime task_submit 步骤。",
+                    error = "runtime_task_unmapped"
+                )
+            engine.submit(task)
+            onRuntimeTaskSubmitted?.invoke(taskId)
+            agent.steps.forEachIndexed { index, stepId ->
+                notifyStep(
+                    stepListener,
+                    index,
+                    stepId,
+                    agent.stepTitles.getOrElse(index) { stepId },
+                    started = true,
+                    result = null
+                )
+            }
+            return ClawToolCallResult(
+                success = true,
+                output = "Agent: ${agent.id}\nMode: TaskEngine\nSubmitted: task_id=$taskId",
+                runtimeTaskId = taskId
+            )
+        }
 
         if (AgentRuntimeBridge.canSubmitAsRuntimeTask(agent)) {
             return runAsRuntimeTask(agent, arguments, stepListener, onRuntimeTaskSubmitted)

@@ -2,7 +2,9 @@ package com.clawdroid.app.agent.task
 
 import com.clawdroid.app.agent.AgentPlan
 import com.clawdroid.app.agent.AgentPlanStep
+import com.clawdroid.app.skills.ClawAgentCatalog
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TaskCompilerTest {
@@ -19,6 +21,16 @@ class TaskCompilerTest {
 
         assertEquals(listOf("ping", "get_capabilities"), task.steps.map { it.payload })
         assertEquals(listOf(StepKind.Tool, StepKind.Tool), task.steps.map { it.kind })
+    }
+
+    @Test
+    fun compilerBuildsSingleRuntimeSequenceForCatalogAgent() {
+        val agent = requireNotNull(ClawAgentCatalog.byId("runtime_health_sweep"))
+
+        val task = requireNotNull(TaskCompiler.fromAgentDefinition("t1", agent))
+
+        assertEquals(StepKind.RuntimeTask, task.steps.single().kind)
+        assertTrue(task.steps.single().payload.contains("get_capabilities"))
     }
 
     @Test

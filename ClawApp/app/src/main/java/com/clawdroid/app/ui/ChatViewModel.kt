@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clawdroid.app.agent.AgentKernel
+import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.agent.AgentRunPhase
 import com.clawdroid.app.agent.PolicyDecision
 import com.clawdroid.app.agent.WorldSnapshot
@@ -112,7 +113,8 @@ internal enum class ChatTaskHistoryFilter {
 internal class ChatViewModel(
     private val appContext: Context,
     private val overviewController: OverviewController,
-    override val toolDispatcher: ClawToolDispatcher? = null
+    override val toolDispatcher: ClawToolDispatcher? = null,
+    private val taskEngine: TaskEngine? = null
 ) : ViewModel(), AgentToolLoopHost {
     private val _uiState = MutableStateFlow(ChatUiState())
     override val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -961,7 +963,7 @@ internal class ChatViewModel(
             }
         }
         val renderedSteps = mutableListOf<String>()
-        val result = ClawAgentRunner(dispatcher).run(
+        val result = ClawAgentRunner(dispatcher, taskEngine).run(
             agentId = agent.id,
             arguments = arguments,
             stepListener = AgentStepListener { index, stepId, title, started, stepResult ->
@@ -1641,7 +1643,8 @@ internal class ChatViewModel(
         fun provideFactory(
             appContext: Context,
             overviewController: OverviewController,
-            toolDispatcher: ClawToolDispatcher? = null
+            toolDispatcher: ClawToolDispatcher? = null,
+            taskEngine: TaskEngine? = null
         ): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -1652,7 +1655,8 @@ internal class ChatViewModel(
                     return ChatViewModel(
                         appContext = appContext,
                         overviewController = overviewController,
-                        toolDispatcher = toolDispatcher
+                        toolDispatcher = toolDispatcher,
+                        taskEngine = taskEngine
                     ) as T
                 }
             }
@@ -1664,13 +1668,15 @@ internal class ChatViewModel(
 internal fun rememberChatViewModel(
     context: Context,
     overviewController: OverviewController,
-    toolDispatcher: ClawToolDispatcher? = null
+    toolDispatcher: ClawToolDispatcher? = null,
+    taskEngine: TaskEngine? = null
 ): ChatViewModel {
-    val factory = remember(context, overviewController, toolDispatcher) {
+    val factory = remember(context, overviewController, toolDispatcher, taskEngine) {
         ChatViewModel.provideFactory(
             appContext = context.applicationContext,
             overviewController = overviewController,
-            toolDispatcher = toolDispatcher
+            toolDispatcher = toolDispatcher,
+            taskEngine = taskEngine
         )
     }
     return viewModel(factory = factory)

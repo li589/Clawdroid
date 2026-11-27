@@ -7,7 +7,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import com.clawdroid.app.ai.AiAgentOrchestrator
+import com.clawdroid.app.agent.task.StepKind
+import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.data.AppSettingsStore
+import com.clawdroid.app.data.JsonTaskStore
+import com.clawdroid.app.data.SharedPreferencesTaskStorage
 import com.clawdroid.app.focus.XposedFocusRuntimeReporter
 import com.clawdroid.app.focus.XposedViewRuntimeReporter
 import com.clawdroid.app.mcp.McpJsonRpcHandler
@@ -23,10 +27,13 @@ import com.clawdroid.app.tools.LiveToolCapabilityStore
 import com.clawdroid.app.tools.RuntimeEventToolBridge
 import com.clawdroid.app.tools.ToolPermissionGate
 import com.clawdroid.app.tools.ToolServiceRegistry
+import com.clawdroid.app.tools.adapters.LocalToolAdapter
+import com.clawdroid.app.tools.adapters.RuntimeTaskAdapter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Long-lived App graph: Runtime event service, tool stack, MCP/Assist, Xposed reporters.
@@ -36,6 +43,7 @@ internal data class ClawdroidGraph(
     val runtimeEventService: RuntimeEventService,
     val toolServices: ToolServiceRegistry,
     val toolDispatcher: ClawToolDispatcher,
+    val taskEngine: TaskEngine,
     val assistController: AssistMcpController,
     val mcpController: McpServerController,
     val overviewController: OverviewController,
@@ -136,6 +144,20 @@ internal fun rememberClawdroidCompositionRoot(
         )
     }
 
+    val taskEngine = remember(toolDispatcher, eventScope) {
+        TaskEngine(
+            store = JsonTaskStore(SharedPreferencesTaskStorage(appContext)),
+            adapters = mapOf(
+                StepKind.Tool to LocalToolAdapter(toolDispatcher),
+                StepKind.RuntimeTask to RuntimeTaskAdapter(toolDispatcher)
+            ),
+            scope = eventScope
+        )
+    }
+    LaunchedEffect(toolDispatcher, taskEngine) {
+        toolDispatcher.bindTaskEngine(taskEngine)
+    }
+
     DisposableEffect(overviewController, toolDispatcher) {
         overviewController.setCaptureArtifactListener { artifact ->
             toolDispatcher.rememberCapture(artifact)
@@ -145,10 +167,11 @@ internal fun rememberClawdroidCompositionRoot(
         }
     }
 
-    val chatViewModel = rememberChatViewModel(context, overviewController, toolDispatcher)
-    DisposableEffect(overviewController, chatViewModel) {
+    val chatViewModel = rememberChatViewModel(context, overviewController, toolDispatcher, taskEngine)
+    DisposableEffect(overviewController, chatViewModel, taskEngine) {
         overviewController.setRuntimeTaskEventListener { snapshot ->
             chatViewModel.onRuntimeTaskEvent(snapshot)
+            eventScope.launch { taskEngine.applyRuntimeSnapshot(snapshot) }
         }
         onDispose {
             overviewController.setRuntimeTaskEventListener(null)
@@ -179,6 +202,7 @@ internal fun rememberClawdroidCompositionRoot(
         runtimeEventService = runtimeEventService,
         toolServices = toolServices,
         toolDispatcher = toolDispatcher,
+        taskEngine = taskEngine,
         assistController = assistController,
         mcpController = mcpController,
         overviewController = overviewController,

@@ -1,5 +1,6 @@
 package com.clawdroid.app.skills
 
+import com.clawdroid.app.agent.task.TaskEngine
 import com.clawdroid.app.chat.ChatTaskAction
 import com.clawdroid.app.chat.toAgentDefinition
 import com.clawdroid.app.chat.toAgentId
@@ -12,6 +13,7 @@ import com.clawdroid.app.tools.ClawToolCatalog
 import com.clawdroid.app.tools.ClawToolDispatcher
 import com.clawdroid.app.tools.ClawToolExecutor
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -38,6 +40,18 @@ class ClawSkillCatalogTest {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ClawAgentRunnerTest {
+    @Test
+    fun runtimeHealthSweepUsesTaskEngineWhenProvided() = runTest {
+        val dispatcher = ClawToolDispatcher(mockk(relaxed = true))
+        val engine = mockk<TaskEngine>(relaxed = true)
+        val runner = ClawAgentRunner(dispatcher, taskEngine = engine)
+
+        val result = runner.run("runtime_health_sweep")
+
+        assertTrue(result.success)
+        coVerify(exactly = 1) { engine.submit(match { it.title == "运行时体检" }) }
+    }
+
     @Test
     fun runtimeHealthSweepStopsWhenTaskSubmitFails() = runTest {
         val executor = mockk<ClawToolExecutor>(relaxed = true)
