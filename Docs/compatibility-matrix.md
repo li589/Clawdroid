@@ -27,6 +27,7 @@
 | 状态 | Android | ROM / 厂商 | Root 方案 | 模块管理器 | LSPosed | ClawRuntime 安装 | Runtime Probe | Capabilities | 截图 | 文件读取 | 输入注入 | 事件订阅 | 备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 已验证 | Android 13 / SDK 33 | Xiaomi Pad 6 (`23043RP34C`, `pipa`) / MIUI `V14.0.10.0.TMZCNXM` | Magisk `27001`（`su` 上下文 `u:r:magisk:s0`） | Magisk App 已安装；代码侧已审计确认 Runtime 鉴权与模块结构不依赖特定 Root 管理器实现，因此对 Kitsune Mask 手动授权模式保持协议兼容 | Zygisk LSPosed 已安装，标准 Manager 包未稳定检测到；通过当前设备可用管理入口完成模块启用、自作用域授权并重启后，已验证 `lsposed_runtime_loaded=true`，进程 `com.clawdroid.app.debug` | 已安装，`verify.sh` 通过，运行时状态 `running`；最新模块已额外修复 `webroot/verify.json` 文本字段为空问题 | 成功，状态轨迹 `Disconnected -> SocketConnected -> PeerVerified -> ChallengeIssued -> Authenticated -> CapabilitySynced -> Ready` | 成功，初始 `accessibility=false`，启用无障碍后复验为 `root=true`、`accessibility=true`、`lsposed=true`；完成当前设备的 LSPosed 正确授权并重启后，进一步复验为 `lsposed_runtime_loaded=true`、`lsposed_runtime_process="com.clawdroid.app.debug"` | 成功，`capture_screen` 返回 `1440x2304` PNG，`14803` bytes | 成功，`read_file_limited` 读取最近截图前 `4096` bytes / 总大小 `14803` bytes | 成功，`inject_tap(540,1200)` 与 `inject_swipe(540,1800 -> 540,400,350ms)` 均返回 `accepted=true`；`exec_shell_limited("wm size")` 返回 `Physical size: 1800x2880` | 成功，2.5 秒连续订阅收到 `4` 帧；10 秒稳定性订阅收到 `7` 帧；在 `lsposed_runtime_loaded=true` 后再次订阅收到 `4` 帧，`capability_changed` 明确返回 `lsposed_runtime_loaded=true` | `7710a01f`；设备上同时安装了 KernelSU App，但当前 `su` 命令表现为 Magisk 环境。代码审计结论：ClawRuntime 协议与模块结构兼容 Kitsune/手动授权模式，真正的失败边界主要在“App 进程内 Root 未放行”“模块配置未与当前 App 的密钥/签名同步”“Runtime 已运行但会话尚未 Ready”。当前只对 MIUI `V14` 真机完成闭环验证；`MIUI 12` 尚未拿到同等真机证据，不能直接视为已验证 |
+| 已验证 | Android 13 / SDK 33 | Redmi 22041216C (`xaga`) / MIUI `V130 (V13.2.3.0.TLOCNXM)` | KernelSU / SukiSU Ultra，App Root 手动授权 | SukiSU Ultra (`com.sukisu.ultra`) | Zygisk LSPosed + 用户 LSPosed Fix (`com.lsposed.fix`)；Clawdroid 已启用，作用域为 `com.clawdroid.app.debug` 自身 + `system`，重启后 `lsposed_runtime_loaded=true` | 已安装，`verify.sh` 23 项 PASS，运行时 `running` | 成功，`finalState=Ready`，`degradedReason=""` | `root=true`、`accessibility=false`、`lsposed=true`、`lsposed_runtime_loaded=true`；任务/截图/输入/Shell/文件桥 capabilities 均启用 | 成功，1080×2460 PNG | 成功，读取截图前 4096 bytes | 本轮未执行输入注入真机回归 | 成功，continuous 模式收到 daemon/capability/window 事件，关闭原因 `client_stop` | `EAZD4DFIHU5XUGOJ`；SukiSU 通常不弹自动授权框，需手动放行；LSPosed Fix 是用户自有管理工具；无障碍和修改系统设置仍未授权，不影响 Runtime 主链路 |
 | 待验证 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | `v0.1.0` 公开模板，待补真机回归数据 |
 
 ## 记录规范
@@ -67,6 +68,8 @@
 - `ClawRuntime`：`build-runtime.ps1`、`sync-shared-secret.ps1`、`build-magisk.ps1` 已通过
 - `ClawApp`：`:app:compileDebugKotlin` 与 `testDebugUnitTest` 已在本地 `JDK 17 + Gradle 8.13` 环境通过
 - `v0.2`：已补齐 `session`、`events`、`capability_probe` 的纯逻辑回归测试，用于稳定性收口
+- `ClawRuntime/runtime`：`go test -race ./...`、`go vet ./...`、`GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/runtime` 已通过
+- `ClawRuntime/scripts`：51 个构建/打包回归测试通过；Runtime catalog 检查通过
 
 ## 首个真机回归记录
 
@@ -108,6 +111,17 @@
 - 事件订阅：2.5 秒复测收到 `4` 帧，包含 `daemon_status_changed`、`capability_changed`、`window_changed`；关闭原因为 `client_stop`
 - 聊天链路：通过桥接 Receiver 触发 `chat_prompt("获取能力")` 成功返回能力摘要，证明“聊天输入 -> 工具执行 -> 助手回包”链路在当前设备已恢复
 - 调试注意：直接用 `adb shell am start/broadcast` 传递带空格的 extras 时，`wm size`、`/shell wm size` 这类字符串会被宿主 shell 拆参；若只收到 `wm` 或 `/shell`，应先按“命令行传参错误”排查，而不要误判为 Runtime 或聊天业务失败
+
+### 回归批次：2026-11-27 / EAZD4DFIHU5XUGOJ
+
+- 设备：Redmi 22041216C（`xaga`），Android `13` / MIUI `V130 (V13.2.3.0.TLOCNXM)`，1080×2460 / density 440。
+- Root：KernelSU / SukiSU Ultra（`com.sukisu.ultra`）；该方案通常不弹自动授权框，需在管理器手动允许 `com.clawdroid.app.debug`。
+- LSPosed：`zygisk_lsposed` 已安装；用户自有 LSPosed Fix（`com.lsposed.fix`）中 Clawdroid 已启用，作用域为 `com.clawdroid.app.debug` 自身 + `system`。重启后 marker 为 `xposed_injected=true`，`lsposed_runtime_loaded=true`。
+- App：`com.clawdroid.app.debug` / `0.1.0-debug`，APK SHA-256 `c0e6df750e2f45096af2f4dd42ba6cd88cfb5e74d9fca91103a7312943429408`。
+- Runtime：模块 `clawruntime` / `0.2.0`，验收包 SHA-256 `4df7e23d1dd7aa17d734108d6ac64f8af50195a22ecacfb8e1d462c2ef183995`；`verify.sh` 23 项 PASS，`get_runtime_status.module.runtime_pid` 与真实进程一致。
+- 真实结果：Runtime Probe `Ready`；Capabilities 正常；截图 1080×2460 PNG 与文件桥读取成功；`exec_shell_limited("wm size")` 返回 `Physical size: 1080x2460`；continuous 事件订阅收到 daemon/capability/window 事件；聊天页任务列表、提交、查询通过，取消已完成任务正确返回 `[7002]`。
+- 本轮修复：首次 `ping` 在能力同步前被 2004 拒绝，根因是会话 capabilities 被初始化为非 nil 空切片；模块状态文件中的字符串 `runtime_pid` 未被解析。两项均补回归测试并真机复验。
+- 已知限制：无障碍服务和修改系统设置仍未授权；活跃任务取消与失败重试由 Go 单测/竞态测试覆盖，真机验证了取消接口及终态拒绝逻辑。
 
 ### 下一步扩展清单
 

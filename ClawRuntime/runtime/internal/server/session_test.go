@@ -2,6 +2,7 @@ package server
 
 import (
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -84,6 +85,32 @@ func TestHandleRequestRejectsInvalidTimestamp(t *testing.T) {
 	})
 	if !valid.OK {
 		t.Fatalf("current timestamp was rejected: %#v", valid)
+	}
+}
+
+func TestHandleRequestInitializesCapabilitiesBeforePing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.ScreenshotEnabled = true
+	srv := New(cfg, audit.NewLogger())
+	t.Cleanup(srv.taskScheduler.Close)
+	sess := newSession()
+	sess.completeAuthentication("com.example.app", "sha256:signature", time.Now().Unix())
+
+	response := srv.handleRequest(sess, ipc.Request{
+		RequestID: "ping-before-capabilities",
+		Timestamp: time.Now().Unix(),
+		Action:    ipc.ActionPing,
+	})
+	if !response.OK {
+		t.Fatalf("ping before capability sync was rejected: %#v", response)
+	}
+	if !slices.Contains(sess.capabilitiesSnapshot(), ipc.CapabilitySystemPing) {
+		t.Fatalf("ping capability was not initialized: %#v", sess.capabilitiesSnapshot())
+	}
+	if state := sess.currentState(); state != StateReady {
+		t.Fatalf("unexpected session state after ping: got %q want %q", state, StateReady)
 	}
 }
 

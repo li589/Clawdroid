@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"clawdroid/runtime/internal/paths"
 )
@@ -71,8 +72,13 @@ func detectMagiskModuleStatus() magiskModuleStatus {
 			if value, ok := payload["runtime_state"].(string); ok && value != "" {
 				status.RuntimeState = value
 			}
-			if value, ok := payload["runtime_pid"].(float64); ok {
+			switch value := payload["runtime_pid"].(type) {
+			case float64:
 				status.RuntimePID = int(value)
+			case string:
+				if pid, err := strconv.Atoi(value); err == nil {
+					status.RuntimePID = pid
+				}
 			}
 		}
 	}

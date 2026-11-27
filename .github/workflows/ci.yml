@@ -31,6 +31,8 @@ jobs:
         run: go test ./...
       - name: Run Go race tests
         run: go test -race ./...
+      - name: Cross-compile Runtime for Android
+        run: GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/runtime
 
   app-compile:
     runs-on: ubuntu-latest

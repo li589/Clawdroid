@@ -24,6 +24,18 @@ $binaryPath = Join-Path $targetDir $BinaryName
 $temporaryBinaryPath = Join-Path $targetDir (".$BinaryName.$PID.$([guid]::NewGuid().ToString('N')).tmp")
 $temporaryMetadataPath = "$temporaryBinaryPath.build.json"
 $metadataPath = "$binaryPath.build.json"
+
+function Install-AtomicFile {
+    param([string]$Source, [string]$Destination)
+    if (Test-Path $Destination) {
+        $backupPath = "$Destination.$([guid]::NewGuid().ToString('N')).bak"
+        [System.IO.File]::Replace($Source, $Destination, $backupPath)
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    } else {
+        [System.IO.File]::Move($Source, $Destination)
+    }
+}
+
 $revision = (& git -C $runtimeDir rev-parse HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$') {
     throw "Unable to identify the Runtime Git revision; refusing to build unverifiable artifacts."
@@ -78,9 +90,9 @@ try {
     }
 
     # Both binary paths are on the same filesystem; overwrite is an atomic rename.
-    [System.IO.File]::Move($temporaryBinaryPath, $binaryPath, $true)
+    Install-AtomicFile -Source $temporaryBinaryPath -Destination $binaryPath
     try {
-        [System.IO.File]::Move($temporaryMetadataPath, $metadataPath, $true)
+        Install-AtomicFile -Source $temporaryMetadataPath -Destination $metadataPath
     } catch {
         # The sidecar is for humans only. The authoritative trailer is already
         # inside the atomically installed binary, so a stale sidecar is non-fatal.

@@ -25,6 +25,7 @@ SECRET_B = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 SECRET_C = "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef0"
 SIGNATURE_A = "sha256:" + "a" * 64
 PWSH = shutil.which("pwsh")
+WINDOWS_POWERSHELL = shutil.which("powershell") or shutil.which("powershell.exe")
 
 
 @unittest.skipUnless(PWSH, "PowerShell 7 is required for build-script integration tests")
@@ -125,9 +126,15 @@ class BuildScriptsTest(unittest.TestCase):
         env.update(overrides)
         return env
 
-    def run_script(self, name: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    def run_script(
+        self,
+        name: str,
+        *args: str,
+        env: dict[str, str] | None = None,
+        shell: str | None = None,
+    ) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.scripts / name), *args],
+            [shell or PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.scripts / name), *args],
             cwd=self.runtime_root,
             env=env or self.environment(),
             capture_output=True,
@@ -225,6 +232,16 @@ class BuildScriptsTest(unittest.TestCase):
         self.assertEqual(metadata["cgo_enabled"], "0")
         sidecar = json.loads((self.binary.parent / "clawdroid-runtime.build.json").read_text())
         self.assertEqual(sidecar["binary_sha256"], metadata["binary_sha256"])
+
+    @unittest.skipUnless(WINDOWS_POWERSHELL, "Windows PowerShell 5.1 is not available")
+    def test_windows_powershell_build_replaces_existing_binary(self) -> None:
+        self.binary.write_bytes(b"previous-good-runtime")
+
+        result = self.run_script("build-runtime.ps1", shell=WINDOWS_POWERSHELL)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.binary.read_bytes().endswith(packer.BUILD_METADATA_MAGIC))
+        self.assertEqual(list(self.binary.parent.glob("*.tmp")), [])
 
     def test_build_restores_go_environment(self) -> None:
         command = (

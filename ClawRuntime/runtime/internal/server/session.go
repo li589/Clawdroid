@@ -87,11 +87,10 @@ type sessionSnapshot struct {
 
 func newSession() *session {
 	s := &session{
-		id:           randomHex(8),
-		state:        StateDisconnected,
-		authMode:     "hmac-sha256-local-v1",
-		createdAt:    time.Now(),
-		capabilities: []string{},
+		id:        randomHex(8),
+		state:     StateDisconnected,
+		authMode:  "hmac-sha256-local-v1",
+		createdAt: time.Now(),
 	}
 	s.trace = append(s.trace, string(s.state))
 	return s

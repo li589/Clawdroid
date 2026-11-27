@@ -91,6 +91,25 @@ func TestDetectMagiskModuleStatusFromTempTree(t *testing.T) {
 	}
 }
 
+func TestDetectMagiskModuleStatusParsesStringRuntimePID(t *testing.T) {
+	root := t.TempDir()
+	webroot := filepath.Join(root, "clawruntime", "webroot")
+	if err := os.MkdirAll(webroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webroot, "status.json"), []byte(`{"runtime_state":"running","runtime_pid":"42"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	magiskModulePathOverride = filepath.Dir(webroot)
+	defer func() { magiskModulePathOverride = "" }()
+
+	status := detectMagiskModuleStatus()
+	if status.RuntimePID != 42 {
+		t.Fatalf("string runtime pid was not parsed: %+v", status)
+	}
+}
+
 func TestSortedActionNamesIncludesExtensions(t *testing.T) {
 	actions := sortedActionNames()
 	want := map[string]bool{

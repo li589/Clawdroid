@@ -10,7 +10,7 @@ import (
 )
 
 func openNoFollow(path string, flags int, perm os.FileMode) (*os.File, error) {
-	fd, err := syscall.Open(path, flags|syscall.O_NOFOLLOW, int(perm.Perm()))
+	fd, err := syscall.Open(path, flags|syscall.O_NOFOLLOW, uint32(perm.Perm()))
 	if err != nil {
 		return nil, err
 	}
